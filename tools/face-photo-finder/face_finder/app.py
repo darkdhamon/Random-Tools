@@ -84,6 +84,8 @@ class ContextFace:
     bbox: tuple[int, int, int, int]
     status: str
     label: str
+    face_key: str = ""
+    embedding: np.ndarray | None = None
 
 
 @dataclass
@@ -132,12 +134,16 @@ class IdentityRequest:
         self.sharpness = sharpness
         self.profile_eligible = profile_eligible
         self.context_faces = context_faces or (
-            [ContextFace(bbox, "current", "Person to identify")] if bbox else []
+            [ContextFace(bbox, "current", "Person to identify", "current")] if bbox else []
         )
+        self.selected_face_keys: set[str] = {
+            item.face_key for item in self.context_faces if item.status == "current" and item.face_key
+        }
         self.name: str | None = None
         self.skip_remaining = False
         self.not_a_face = False
         self.intentionally_unknown = False
+        self.unknown_everyone = False
         self.save_as_art = False
         self.target_embedding: np.ndarray | None = None
         self.ready = threading.Event()
@@ -199,10 +205,12 @@ def detection_context(
         if face.bbox is None or states.get(index, ("", ""))[0] == "not_face":
             continue
         if index == current_index:
-            annotations.append(ContextFace(face.bbox, "current", "Person to identify"))
+            annotations.append(
+                ContextFace(face.bbox, "current", "Person to identify", f"detected:{index}", face.embedding)
+            )
         else:
             status, label = states.get(index, ("unprocessed", "Unprocessed"))
-            annotations.append(ContextFace(face.bbox, status, label))
+            annotations.append(ContextFace(face.bbox, status, label, f"detected:{index}", face.embedding))
     return annotations
 
 
@@ -514,9 +522,15 @@ class FaceFinderApp(tk.Tk):
                     cached = catalog.cached_image(path)
                     if cached:
                         catalog_faces = catalog.faces_for_image(cached.image_id)
+                        handled_face_ids: set[int] = set()
                         if catalog_all and not skip_unknowns:
                             for face in catalog_faces:
-                                if face.identity_id is not None or face.intentionally_unknown or face.preview is None:
+                                if (
+                                    face.face_id in handled_face_ids
+                                    or face.identity_id is not None
+                                    or face.intentionally_unknown
+                                    or face.preview is None
+                                ):
                                     continue
                                 preview = cv2.imdecode(face.preview, cv2.IMREAD_COLOR)
                                 if preview is None:
@@ -527,7 +541,10 @@ class FaceFinderApp(tk.Tk):
                                         continue
                                     if context_face.face_id == face.face_id:
                                         context_faces.append(
-                                            ContextFace(context_face.bbox, "current", "Person to identify")
+                                            ContextFace(
+                                                context_face.bbox, "current", "Person to identify",
+                                                f"catalog:{context_face.face_id}", context_face.embedding,
+                                            )
                                         )
                                     elif context_face.identity_id is not None:
                                         context_faces.append(
@@ -535,17 +552,28 @@ class FaceFinderApp(tk.Tk):
                                                 context_face.bbox,
                                                 "identified",
                                                 context_face.identity_name or "Identified",
+                                                f"catalog:{context_face.face_id}",
+                                                context_face.embedding,
                                             )
                                         )
                                     elif context_face.intentionally_unknown:
                                         context_faces.append(
-                                            ContextFace(context_face.bbox, "unknown", "Unknown person")
+                                            ContextFace(
+                                                context_face.bbox, "unknown", "Unknown person",
+                                                f"catalog:{context_face.face_id}", context_face.embedding,
+                                            )
                                         )
                                     else:
                                         context_faces.append(
-                                            ContextFace(context_face.bbox, "unprocessed", "Unprocessed")
+                                            ContextFace(
+                                                context_face.bbox, "unprocessed", "Unprocessed",
+                                                f"catalog:{context_face.face_id}", context_face.embedding,
+                                            )
                                         )
-                                name, stop_asking, not_a_face, intentionally_unknown, save_as_art, related = self._request_identity(
+                                (
+                                    name, stop_asking, not_a_face, intentionally_unknown, save_as_art,
+                                    related, selected_face_keys, unknown_everyone,
+                                ) = self._request_identity(
                                     path, preview, known_identities, face.bbox, face.sharpness,
                                     face.profile_eligible, context_faces, face.embedding,
                                 )
@@ -553,11 +581,26 @@ class FaceFinderApp(tk.Tk):
                                 if not_a_face:
                                     catalog.remove_face(face.face_id)
                                 elif intentionally_unknown:
-                                    group_id = catalog.mark_intentionally_unknown(face.face_id)
-                                    if face.profile_eligible:
-                                        unknown_groups = add_unknown_sample(
-                                            unknown_groups, group_id, face.embedding
-                                        )
+                                    if unknown_everyone:
+                                        target_faces = [
+                                            item
+                                            for item in catalog_faces
+                                            if item.identity_id is None and not item.intentionally_unknown
+                                        ]
+                                    else:
+                                        selected_ids = {
+                                            int(key.split(":", 1)[1])
+                                            for key in selected_face_keys
+                                            if key.startswith("catalog:")
+                                        }
+                                        target_faces = [item for item in catalog_faces if item.face_id in selected_ids]
+                                    for target_face in target_faces:
+                                        group_id = catalog.mark_intentionally_unknown(target_face.face_id)
+                                        handled_face_ids.add(target_face.face_id)
+                                        if target_face.profile_eligible:
+                                            unknown_groups = add_unknown_sample(
+                                                unknown_groups, group_id, target_face.embedding
+                                            )
                                 elif name:
                                     identity_id = catalog.get_or_create_identity(name)
                                     catalog.assign_face(face.face_id, identity_id, as_art=save_as_art)
@@ -591,11 +634,16 @@ class FaceFinderApp(tk.Tk):
                         profile_eligible_flags: list[bool] = []
                         art_flags: list[bool] = []
                         review_states: dict[int, tuple[str, str]] = {}
+                        forced_unknown_groups: dict[int, int] = {}
+                        accepted_index_by_detected: dict[int, int] = {}
                         for detected_index, face in enumerate(detected):
                             learning_threshold = max(threshold, 0.55)
                             save_as_art = False
                             forced = forced_identity_decision(path, face.embedding, forced_matches)
-                            if forced is not None and not forced.excluded:
+                            forced_unknown_group = forced_unknown_groups.get(detected_index)
+                            if forced_unknown_group is not None:
+                                identity_id = None
+                            elif forced is not None and not forced.excluded:
                                 identity_id = forced.identity_id
                                 save_as_art = forced.as_art
                             else:
@@ -616,9 +664,9 @@ class FaceFinderApp(tk.Tk):
                                     item.name for item in known_identities if item.identity_id == identity_id
                                 )
                                 review_states[detected_index] = ("identified", identity_name)
-                            unknown_group_id: int | None = None
-                            intentionally_unknown = False
-                            if identity_id is None:
+                            unknown_group_id: int | None = forced_unknown_group
+                            intentionally_unknown = forced_unknown_group is not None
+                            if identity_id is None and forced_unknown_group is None:
                                 unknown_group_id, _unknown_score = best_unknown_group(
                                     face.embedding, unknown_groups, learning_threshold
                                 )
@@ -635,7 +683,10 @@ class FaceFinderApp(tk.Tk):
                                 and catalog_all
                                 and not skip_unknowns
                             ):
-                                name, stop_asking, not_a_face, intentionally_unknown, save_as_art, related = self._request_identity(
+                                (
+                                    name, stop_asking, not_a_face, intentionally_unknown, save_as_art,
+                                    related, selected_face_keys, unknown_everyone,
+                                ) = self._request_identity(
                                     path, face.preview, known_identities, face.bbox, face.sharpness,
                                     face.profile_eligible,
                                     detection_context(detected, detected_index, review_states),
@@ -659,15 +710,41 @@ class FaceFinderApp(tk.Tk):
                                         )
                                     review_states[detected_index] = ("identified", name)
                                 elif intentionally_unknown:
-                                    unknown_group_id = catalog.create_unknown_group()
-                                    if face.profile_eligible:
-                                        unknown_groups = add_unknown_sample(
-                                            unknown_groups, unknown_group_id, face.embedding
-                                        )
-                                    review_states[detected_index] = ("unknown", "Unknown person")
+                                    if unknown_everyone:
+                                        target_indices = [
+                                            index
+                                            for index in range(len(detected))
+                                            if review_states.get(index, ("unprocessed", ""))[0] == "unprocessed"
+                                            or index == detected_index
+                                        ]
+                                    else:
+                                        target_indices = [
+                                            int(key.split(":", 1)[1])
+                                            for key in selected_face_keys
+                                            if key.startswith("detected:")
+                                        ]
+                                    for target_index in target_indices:
+                                        if target_index in forced_unknown_groups:
+                                            continue
+                                        group_id = catalog.create_unknown_group()
+                                        forced_unknown_groups[target_index] = group_id
+                                        target_face = detected[target_index]
+                                        review_states[target_index] = ("unknown", "Unknown person")
+                                        if target_face.profile_eligible:
+                                            unknown_groups = add_unknown_sample(
+                                                unknown_groups, group_id, target_face.embedding
+                                            )
+                                        accepted_index = accepted_index_by_detected.get(target_index)
+                                        if accepted_index is not None:
+                                            assignments[accepted_index] = None
+                                            unknown_statuses[accepted_index] = True
+                                            unknown_group_ids[accepted_index] = group_id
+                                    unknown_group_id = forced_unknown_groups.get(detected_index)
+                                    intentionally_unknown = unknown_group_id is not None
                                 else:
                                     review_states[detected_index] = ("unprocessed", "Unprocessed")
                             accepted_faces.append(face)
+                            accepted_index_by_detected[detected_index] = len(assignments)
                             assignments.append(identity_id)
                             unknown_statuses.append(intentionally_unknown and identity_id is None)
                             unknown_group_ids.append(unknown_group_id if identity_id is None else None)
@@ -742,7 +819,9 @@ class FaceFinderApp(tk.Tk):
         profile_eligible: bool,
         context_faces: list[ContextFace],
         target_embedding: np.ndarray,
-    ) -> tuple[str | None, bool, bool, bool, bool, list[RelatedCandidate]]:
+    ) -> tuple[
+        str | None, bool, bool, bool, bool, list[RelatedCandidate], set[str], bool
+    ]:
         names = [str(getattr(identity, "name")) for identity in identities]
         request = IdentityRequest(
             path, preview, names, bbox, sharpness, profile_eligible, context_faces
@@ -766,6 +845,8 @@ class FaceFinderApp(tk.Tk):
             request.intentionally_unknown,
             request.save_as_art,
             related,
+            set(request.selected_face_keys),
+            request.unknown_everyone,
         )
 
     def _on_prefetched_faces(self, path: Path, faces: list[DetectedFace]) -> None:
@@ -1135,13 +1216,24 @@ class FaceFinderApp(tk.Tk):
             ).pack(anchor="w", pady=(0, 10))
         rgb = cv2.cvtColor(request.preview, cv2.COLOR_BGR2RGB)
         image = Image.fromarray(rgb)
-        image.thumbnail((240, 240), Image.Resampling.LANCZOS)
+        image.thumbnail((200, 200), Image.Resampling.LANCZOS)
         photo = ImageTk.PhotoImage(image)
-        ttk.Label(content, image=photo).pack()
+        visuals = ttk.Frame(content)
+        visuals.pack(fill="x")
+        ttk.Label(visuals, image=photo).pack(side="left", padx=(0, 12))
+        context_image, context_hitboxes = self._render_context_image(request, 600, 300)
+        context_photo = ImageTk.PhotoImage(context_image)
+        context_label = ttk.Label(visuals, image=context_photo, cursor="crosshair")
+        context_label.pack(side="left", fill="both", expand=True)
+        context_label.bind("<Button-1>", lambda event: self._toggle_context_target(request, event.x, event.y))
+        ttk.Label(
+            content,
+            text="Click red reticles to include/exclude additional targets. Selected targets are cyan.",
+        ).pack(anchor="w", pady=(6, 0))
         ttk.Label(content, text="Possible appearances detected so far:").pack(anchor="w", pady=(12, 3))
         related_container = ttk.Frame(content)
         related_container.pack(fill="x")
-        related_canvas = tk.Canvas(related_container, height=210, highlightthickness=0)
+        related_canvas = tk.Canvas(related_container, height=150, highlightthickness=0)
         related_scrollbar = ttk.Scrollbar(related_container, orient="vertical", command=related_canvas.yview)
         related_canvas.configure(yscrollcommand=related_scrollbar.set)
         related_canvas.pack(side="left", fill="both", expand=True)
@@ -1166,12 +1258,14 @@ class FaceFinderApp(tk.Tk):
             not_a_face: bool = False,
             intentionally_unknown: bool = False,
             save_as_art: bool = False,
+            unknown_everyone: bool = False,
         ) -> None:
             request.name = name
             request.skip_remaining = skip_remaining
             request.not_a_face = not_a_face
             request.intentionally_unknown = intentionally_unknown
             request.save_as_art = save_as_art
+            request.unknown_everyone = unknown_everyone
             if skip_remaining:
                 self.cancel_event.set()
             with request.related_lock:
@@ -1195,25 +1289,99 @@ class FaceFinderApp(tk.Tk):
         ttk.Button(buttons, text="Save identity as art", command=lambda: save(True)).pack(
             side="right", padx=8
         )
-        ttk.Button(buttons, text="Skip this face", command=lambda: finish(None)).pack(side="right", padx=8)
-        ttk.Button(buttons, text="Not a face", command=lambda: finish(None, not_a_face=True)).pack(side="right")
-        ttk.Button(
-            buttons,
-            text="I don't know this person",
-            command=lambda: finish(None, intentionally_unknown=True),
-        ).pack(side="right", padx=8)
-        ttk.Button(buttons, text="Skip remaining / stop scan", command=lambda: finish(None, True)).pack(side="left")
-        ttk.Button(buttons, text="View context", command=lambda: self._show_context_image(request)).pack(
+        secondary_buttons = ttk.Frame(content)
+        secondary_buttons.pack(fill="x", pady=(8, 0))
+        ttk.Button(secondary_buttons, text="Skip this face", command=lambda: finish(None)).pack(side="left")
+        ttk.Button(secondary_buttons, text="Not a face", command=lambda: finish(None, not_a_face=True)).pack(
             side="left", padx=8
         )
+        ttk.Button(
+            secondary_buttons,
+            text="I don't know selected people",
+            command=lambda: finish(None, intentionally_unknown=True),
+        ).pack(side="right", padx=8)
+        ttk.Button(
+            secondary_buttons,
+            text="I don't know anyone in this image",
+            command=lambda: finish(None, intentionally_unknown=True, unknown_everyone=True),
+        ).pack(side="right", padx=8)
+        ttk.Button(buttons, text="Skip remaining / stop scan", command=lambda: finish(None, True)).pack(side="left")
         dialog.protocol("WM_DELETE_WINDOW", lambda: finish(None))
         dialog._identity_photo = photo  # type: ignore[attr-defined]
+        dialog._context_photo = context_photo  # type: ignore[attr-defined]
+        dialog._context_label = context_label  # type: ignore[attr-defined]
+        dialog._context_hitboxes = context_hitboxes  # type: ignore[attr-defined]
         dialog._related_frame = related_frame  # type: ignore[attr-defined]
         dialog._related_photos = []  # type: ignore[attr-defined]
         self._refresh_related_faces(request)
         dialog.bind("<Return>", lambda _event: save())
         dialog.update_idletasks()
         dialog.geometry(f"+{self.winfo_rootx() + 80}+{self.winfo_rooty() + 80}")
+
+    def _render_context_image(
+        self, request: IdentityRequest, max_width: int, max_height: int
+    ) -> tuple[Image.Image, list[tuple[str, str, tuple[int, int, int, int]]]]:
+        source = read_image(request.path)
+        image = Image.fromarray(cv2.cvtColor(source, cv2.COLOR_BGR2RGB))
+        image.thumbnail((max_width, max_height), Image.Resampling.LANCZOS)
+        source_height, source_width = source.shape[:2]
+        scale_x = image.width / source_width
+        scale_y = image.height / source_height
+        draw = ImageDraw.Draw(image)
+        hitboxes: list[tuple[str, str, tuple[int, int, int, int]]] = []
+        colors = {
+            "unprocessed": "#ff3030",
+            "current": "#00ffff",
+            "identified": "#20d060",
+            "unknown": "#9a9a9a",
+        }
+        annotations = sorted(request.context_faces, key=lambda item: item.status == "current")
+        for annotation in annotations:
+            x, y, width, height = annotation.bbox
+            left = max(0, round(x * scale_x))
+            top = max(0, round(y * scale_y))
+            right = min(image.width - 1, round((x + width) * scale_x))
+            bottom = min(image.height - 1, round((y + height) * scale_y))
+            display_status = (
+                "current" if annotation.face_key in request.selected_face_keys else annotation.status
+            )
+            color = colors.get(display_status, colors["unprocessed"])
+            center_x = (left + right) // 2
+            center_y = (top + bottom) // 2
+            for outline_color, line_width in (("#101010", 7), (color, 3)):
+                draw.rectangle((left, top, right, bottom), outline=outline_color, width=line_width)
+            radius = max(8, min(20, max(1, right - left) // 8))
+            draw.ellipse(
+                (center_x - radius, center_y - radius, center_x + radius, center_y + radius),
+                outline=color,
+                width=3,
+            )
+            draw.line((center_x - radius * 2, center_y, center_x + radius * 2, center_y), fill=color, width=3)
+            draw.line((center_x, center_y - radius * 2, center_x, center_y + radius * 2), fill=color, width=3)
+            label = "Selected target" if display_status == "current" and annotation.status != "current" else annotation.label
+            label_y = max(0, top - 20)
+            label_box = draw.textbbox((left, label_y), label)
+            draw.rectangle(label_box, fill="#101010")
+            draw.text((left, label_y), label, fill=color)
+            hitboxes.append((annotation.face_key, annotation.status, (left, top, right, bottom)))
+        return image, hitboxes
+
+    def _toggle_context_target(self, request: IdentityRequest, x: int, y: int) -> None:
+        dialog = self.identity_dialog
+        if not dialog:
+            return
+        for face_key, status, (left, top, right, bottom) in reversed(dialog._context_hitboxes):  # type: ignore[attr-defined]
+            if left <= x <= right and top <= y <= bottom and status == "unprocessed":
+                if face_key in request.selected_face_keys:
+                    request.selected_face_keys.remove(face_key)
+                else:
+                    request.selected_face_keys.add(face_key)
+                image, hitboxes = self._render_context_image(request, 600, 300)
+                photo = ImageTk.PhotoImage(image)
+                dialog._context_photo = photo  # type: ignore[attr-defined]
+                dialog._context_hitboxes = hitboxes  # type: ignore[attr-defined]
+                dialog._context_label.configure(image=photo)  # type: ignore[attr-defined]
+                break
 
     def _refresh_related_faces(self, request: IdentityRequest) -> None:
         dialog = self.identity_dialog
