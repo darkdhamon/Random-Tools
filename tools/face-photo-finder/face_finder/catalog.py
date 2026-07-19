@@ -37,6 +37,7 @@ class CatalogFace:
     unknown_group_id: int | None
     sharpness: float | None
     profile_eligible: bool
+    is_art: bool
 
 
 @dataclass(frozen=True)
@@ -90,6 +91,7 @@ class FaceCatalog:
                 unknown_group_id INTEGER REFERENCES unknown_groups(id) ON DELETE SET NULL,
                 sharpness REAL,
                 profile_eligible INTEGER NOT NULL DEFAULT 1,
+                is_art INTEGER NOT NULL DEFAULT 0,
                 UNIQUE(image_id, face_index)
             );
             CREATE INDEX IF NOT EXISTS faces_identity_idx ON faces(identity_id);
@@ -126,6 +128,8 @@ class FaceCatalog:
                         (score, int(score >= MIN_PROFILE_SHARPNESS), face_id),
                     )
             self.connection.commit()
+        if "is_art" not in columns:
+            self.connection.execute("ALTER TABLE faces ADD COLUMN is_art INTEGER NOT NULL DEFAULT 0")
         legacy_unknowns = self.connection.execute(
             "SELECT id FROM faces WHERE intentionally_unknown = 1 AND unknown_group_id IS NULL"
         ).fetchall()
@@ -233,6 +237,7 @@ class FaceCatalog:
         unknown_group_ids: list[int | None] | None = None,
         sharpness_scores: list[float] | None = None,
         profile_eligible: list[bool] | None = None,
+        is_art: list[bool] | None = None,
     ) -> CatalogImage:
         if len(embeddings) != len(identities):
             raise ValueError("Every face must have an identity assignment.")
@@ -256,6 +261,10 @@ class FaceCatalog:
             profile_eligible = [True] * len(embeddings)
         if len(sharpness_scores) != len(embeddings) or len(profile_eligible) != len(embeddings):
             raise ValueError("Every face must have biometric profile-quality values.")
+        if is_art is None:
+            is_art = [False] * len(embeddings)
+        if len(is_art) != len(embeddings):
+            raise ValueError("Every face must have an artwork status.")
         resolved = path.resolve()
         stat = resolved.stat()
         identified_count = sum(value is not None for value in identities)
@@ -278,7 +287,8 @@ class FaceCatalog:
                        image_id, face_index, identity_id, embedding, preview, intentionally_unknown
                        , bbox_x, bbox_y, bbox_width, bbox_height, unknown_group_id
                        , sharpness, profile_eligible
-                   ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                       , is_art
+                   ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 [
                     (
                         image_id,
@@ -291,6 +301,7 @@ class FaceCatalog:
                         unknown_group_ids[index],
                         sharpness_scores[index],
                         int(profile_eligible[index]),
+                        int(is_art[index]),
                     )
                     for index, (embedding, identity_id) in enumerate(zip(embeddings, identities, strict=True))
                 ],
@@ -303,6 +314,7 @@ class FaceCatalog:
                       faces.intentionally_unknown, faces.bbox_x, faces.bbox_y,
                       faces.bbox_width, faces.bbox_height, faces.unknown_group_id
                       , faces.sharpness, faces.profile_eligible
+                      , faces.is_art
                FROM faces LEFT JOIN identities ON identities.id = faces.identity_id
                WHERE faces.image_id = ? ORDER BY faces.face_index""",
             (image_id,),
@@ -316,19 +328,22 @@ class FaceCatalog:
                 row[10],
                 row[11],
                 bool(row[12]),
+                bool(row[13]),
             )
             for row in rows
         ]
 
-    def assign_face(self, face_id: int, identity_id: int) -> None:
+    def assign_face(self, face_id: int, identity_id: int, as_art: bool = False) -> None:
         with self.connection:
             image_row = self.connection.execute("SELECT image_id FROM faces WHERE id = ?", (face_id,)).fetchone()
             if not image_row:
                 return
             self.connection.execute(
                 """UPDATE faces SET identity_id = ?, intentionally_unknown = 0,
-                   unknown_group_id = NULL WHERE id = ?""",
-                (identity_id, face_id),
+                   unknown_group_id = NULL, is_art = ?,
+                   profile_eligible = CASE WHEN ? THEN 0 ELSE profile_eligible END
+                   WHERE id = ?""",
+                (identity_id, int(as_art), int(as_art), face_id),
             )
             self.connection.execute(
                 """UPDATE images SET identified_count =

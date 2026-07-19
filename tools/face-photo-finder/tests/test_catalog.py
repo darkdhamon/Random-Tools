@@ -14,6 +14,28 @@ from face_finder.catalog import (
 
 
 class CatalogTests(unittest.TestCase):
+    def test_art_face_is_linked_to_identity_but_excluded_from_profile(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            image = root / "portrait-drawing.jpg"
+            image.touch()
+            catalog = FaceCatalog(root / "catalog.sqlite3")
+            person_id = catalog.get_or_create_identity("Artwork Subject")
+            stored = catalog.store_scan(
+                image,
+                [np.array([1.0, 0.0], dtype=np.float32)],
+                [person_id],
+                profile_eligible=[False],
+                is_art=[True],
+            )
+            face = catalog.faces_for_image(stored.image_id)[0]
+            self.assertEqual(face.identity_name, "Artwork Subject")
+            self.assertTrue(face.is_art)
+            self.assertFalse(face.profile_eligible)
+            identity = next(item for item in catalog.identities() if item.identity_id == person_id)
+            self.assertEqual(identity.embeddings, ())
+            catalog.close()
+
     def test_reset_removes_all_catalog_data_without_deleting_source_image(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

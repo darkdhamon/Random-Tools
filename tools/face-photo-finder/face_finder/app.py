@@ -79,6 +79,7 @@ class IdentityRequest:
         self.skip_remaining = False
         self.not_a_face = False
         self.intentionally_unknown = False
+        self.save_as_art = False
         self.target_embedding: np.ndarray | None = None
         self.ready = threading.Event()
         self.related_faces: list[tuple[Path, np.ndarray]] = []
@@ -476,7 +477,7 @@ class FaceFinderApp(tk.Tk):
                                         context_faces.append(
                                             ContextFace(context_face.bbox, "unprocessed", "Unprocessed")
                                         )
-                                name, stop_asking, not_a_face, intentionally_unknown = self._request_identity(
+                                name, stop_asking, not_a_face, intentionally_unknown, save_as_art = self._request_identity(
                                     path, preview, known_identities, face.bbox, face.sharpness,
                                     face.profile_eligible, context_faces, face.embedding,
                                 )
@@ -491,7 +492,7 @@ class FaceFinderApp(tk.Tk):
                                         )
                                 elif name:
                                     identity_id = catalog.get_or_create_identity(name)
-                                    catalog.assign_face(face.face_id, identity_id)
+                                    catalog.assign_face(face.face_id, identity_id, as_art=save_as_art)
                                     known_identities = catalog.identities()
                                 if skip_unknowns:
                                     break
@@ -513,6 +514,8 @@ class FaceFinderApp(tk.Tk):
                         assignments: list[int | None] = []
                         unknown_statuses: list[bool] = []
                         unknown_group_ids: list[int | None] = []
+                        profile_eligible_flags: list[bool] = []
+                        art_flags: list[bool] = []
                         review_states: dict[int, tuple[str, str]] = {}
                         for detected_index, face in enumerate(detected):
                             learning_threshold = max(threshold, 0.55)
@@ -533,6 +536,7 @@ class FaceFinderApp(tk.Tk):
                                 review_states[detected_index] = ("identified", identity_name)
                             unknown_group_id: int | None = None
                             intentionally_unknown = False
+                            save_as_art = False
                             if identity_id is None:
                                 unknown_group_id, _unknown_score = best_unknown_group(
                                     face.embedding, unknown_groups, learning_threshold
@@ -550,7 +554,7 @@ class FaceFinderApp(tk.Tk):
                                 and catalog_all
                                 and not skip_unknowns
                             ):
-                                name, stop_asking, not_a_face, intentionally_unknown = self._request_identity(
+                                name, stop_asking, not_a_face, intentionally_unknown, save_as_art = self._request_identity(
                                     path, face.preview, known_identities, face.bbox, face.sharpness,
                                     face.profile_eligible,
                                     detection_context(detected, detected_index, review_states),
@@ -562,7 +566,7 @@ class FaceFinderApp(tk.Tk):
                                     continue
                                 if name:
                                     identity_id = catalog.get_or_create_identity(name)
-                                    if face.profile_eligible:
+                                    if face.profile_eligible and not save_as_art:
                                         known_identities = add_known_sample(
                                             known_identities, identity_id, name, face.embedding
                                         )
@@ -580,13 +584,16 @@ class FaceFinderApp(tk.Tk):
                             assignments.append(identity_id)
                             unknown_statuses.append(intentionally_unknown and identity_id is None)
                             unknown_group_ids.append(unknown_group_id if identity_id is None else None)
+                            profile_eligible_flags.append(face.profile_eligible and not save_as_art)
+                            art_flags.append(save_as_art)
                         detected = accepted_faces
                         previews = [cv2.imencode(".jpg", face.preview)[1] for face in detected]
                         stored = catalog.store_scan(
                             path, [face.embedding for face in detected], assignments, previews, unknown_statuses,
                             [face.bbox for face in detected], unknown_group_ids,
                             [face.sharpness for face in detected],
-                            [face.profile_eligible for face in detected],
+                            profile_eligible_flags,
+                            art_flags,
                         )
                         candidate_embeddings = [face.embedding for face in detected]
                         score = best_similarity(references, candidate_embeddings) if references else -1.0
@@ -601,7 +608,8 @@ class FaceFinderApp(tk.Tk):
                                     path, [face.embedding for face in detected], assignments, previews,
                                     unknown_statuses, [face.bbox for face in detected], unknown_group_ids,
                                     [face.sharpness for face in detected],
-                                    [face.profile_eligible for face in detected],
+                                    profile_eligible_flags,
+                                    art_flags,
                                 )
                         if detected and (catalog_all or score >= threshold):
                             refreshed = catalog.cached_image(path) or stored
@@ -647,7 +655,7 @@ class FaceFinderApp(tk.Tk):
         profile_eligible: bool,
         context_faces: list[ContextFace],
         target_embedding: np.ndarray,
-    ) -> tuple[str | None, bool, bool, bool]:
+    ) -> tuple[str | None, bool, bool, bool, bool]:
         names = [str(getattr(identity, "name")) for identity in identities]
         request = IdentityRequest(
             path, preview, names, bbox, sharpness, profile_eligible, context_faces
@@ -663,7 +671,13 @@ class FaceFinderApp(tk.Tk):
         request.ready.wait()
         if self.identity_request is request:
             self.identity_request = None
-        return request.name, request.skip_remaining, request.not_a_face, request.intentionally_unknown
+        return (
+            request.name,
+            request.skip_remaining,
+            request.not_a_face,
+            request.intentionally_unknown,
+            request.save_as_art,
+        )
 
     def _on_prefetched_faces(self, path: Path, faces: list[DetectedFace]) -> None:
         request = self.identity_request
@@ -902,27 +916,32 @@ class FaceFinderApp(tk.Tk):
             skip_remaining: bool = False,
             not_a_face: bool = False,
             intentionally_unknown: bool = False,
+            save_as_art: bool = False,
         ) -> None:
             request.name = name
             request.skip_remaining = skip_remaining
             request.not_a_face = not_a_face
             request.intentionally_unknown = intentionally_unknown
+            request.save_as_art = save_as_art
             request.ready.set()
             self.identity_dialog = None
             self.identity_request = None
             dialog.grab_release()
             dialog.destroy()
 
-        def save() -> None:
+        def save(save_as_art: bool = False) -> None:
             name = " ".join(name_var.get().split())
             if not name:
                 messagebox.showwarning("Name required", "Enter a name or use one of the skip options.", parent=dialog)
                 return
-            finish(name)
+            finish(name, save_as_art=save_as_art)
 
         buttons = ttk.Frame(content)
         buttons.pack(fill="x", pady=(14, 0))
         ttk.Button(buttons, text="Save identity", command=save).pack(side="right")
+        ttk.Button(buttons, text="Save identity as art", command=lambda: save(True)).pack(
+            side="right", padx=8
+        )
         ttk.Button(buttons, text="Skip this face", command=lambda: finish(None)).pack(side="right", padx=8)
         ttk.Button(buttons, text="Not a face", command=lambda: finish(None, not_a_face=True)).pack(side="right")
         ttk.Button(

@@ -55,6 +55,8 @@ High-confidence automatic matches expand the active profile immediately, improvi
 
 Aligned face crops are checked for focus before profile learning. Blurry faces can still be assigned to named or anonymous identities and remain linked to their source photos, but their embeddings are excluded from active biometric profiles. The identity prompt labels these low-quality samples so the distinction is visible.
 
+For drawings, paintings, statues, and other artwork, use **Save identity as art**. The face remains linked to the named identity and source image with a persistent artwork flag, but it is never admitted into the biometric profile—even when the artwork is sharp.
+
 A lower threshold finds more possible matches but creates more false positives. A higher threshold is stricter but may miss the person. Different ages, angles, lighting, glasses, masks, and small or blurry faces affect accuracy.
 
 ## Privacy, consent, and limitations
