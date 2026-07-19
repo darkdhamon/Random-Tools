@@ -40,6 +40,37 @@ from .scanner import (
 from .settings import AppSettings, load_settings, save_settings
 
 
+def autocomplete_matches(query: str, options: list[str]) -> list[str]:
+    normalized = query.casefold().strip()
+    if not normalized:
+        return list(options)
+    prefixes = [option for option in options if option.casefold().startswith(normalized)]
+    contains = [
+        option
+        for option in options
+        if normalized in option.casefold() and option not in prefixes
+    ]
+    return prefixes + contains
+
+
+class AutocompleteCombobox(ttk.Combobox):
+    def __init__(self, master: tk.Misc, options: list[str], **kwargs: object) -> None:
+        self.options = list(options)
+        super().__init__(master, values=self.options, **kwargs)
+        self.bind("<KeyRelease>", self._on_key_release)
+
+    def _on_key_release(self, event: tk.Event[tk.Misc]) -> None:
+        if event.keysym in {"Up", "Down", "Left", "Right", "Return", "Escape", "Tab"}:
+            return
+        typed = self.get()
+        matches = autocomplete_matches(typed, self.options)
+        self["values"] = matches
+        if event.keysym not in {"BackSpace", "Delete"} and typed and matches:
+            suggestion = matches[0]
+            if suggestion.casefold().startswith(typed.casefold()) and suggestion.casefold() != typed.casefold():
+                self.delete(0, tk.END)
+                self.insert(0, suggestion)
+                self.select_range(len(typed), tk.END)
 class FaceSelectionRequest:
     def __init__(self, path: Path, faces: list[DetectedFace]) -> None:
         self.path = path
@@ -907,7 +938,7 @@ class FaceFinderApp(tk.Tk):
         related_frame.pack(fill="x")
         ttk.Label(content, text="Choose an existing person or type a new name:").pack(anchor="w", pady=(12, 3))
         name_var = tk.StringVar()
-        name_box = ttk.Combobox(content, textvariable=name_var, values=request.names, width=38)
+        name_box = AutocompleteCombobox(content, request.names, textvariable=name_var, width=38)
         name_box.pack(fill="x")
         name_box.focus_set()
 

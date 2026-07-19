@@ -18,6 +18,7 @@ A private, local desktop tool that recursively scans a folder and finds photos l
 - pre-processes upcoming uncached photos with a separate bounded background detector while identity questions are open;
 - catalogs all face-containing photos when no reference or known person is selected, prompting to name unfamiliar faces;
 - searches by a previously learned person from the **Known person** list without requiring another reference photo;
+- autocompletes identity names case-insensitively while still allowing new names;
 - provides a two-step danger-confirmed **Reset face database** action—including typing `RESET`—that removes all biometric and scan-cache data without touching source photos or saved preferences;
 - opens matches, exports a CSV report, or copies selected/all matches;
 - never modifies source photos and does not upload images or face data.
