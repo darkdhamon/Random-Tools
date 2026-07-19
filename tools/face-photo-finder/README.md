@@ -15,6 +15,7 @@ A private, local desktop tool that recursively scans a folder and finds photos l
 - restores the previously selected reference photos and last-used search folder when reopened;
 - maintains a local SQLite face catalog with identity names, embeddings, image fingerprints, detected-face counts, and identified-face counts;
 - reuses cached results for unchanged photos and analyzes only new or modified files;
+- pre-processes upcoming uncached photos with a separate bounded background detector while identity questions are open;
 - catalogs all face-containing photos when no reference or known person is selected, prompting to name unfamiliar faces;
 - searches by a previously learned person from the **Known person** list without requiring another reference photo;
 - provides a two-step danger-confirmed **Reset face database** action—including typing `RESET`—that removes all biometric and scan-cache data without touching source photos or saved preferences;
@@ -47,6 +48,8 @@ On macOS/Linux, activate with `source .venv/bin/activate` instead.
 To build or update the identity catalog, clear the reference photos, leave **Known person** blank, and start a scan. Every photo containing a face is included, and every detected face in a multi-person photo is checked independently. For an unfamiliar face, choose an existing identity, enter a new name, view the complete photo inside the app with a target reticle marking the current person, mark a false detection as **Not a face**, choose **I don't know this person** for a member of the general public, skip that face, or skip the remaining prompts for that scan. A normally skipped face is offered again on the next all-faces scan. An intentionally unknown person is placed in an anonymous biometric group, so matching appearances in later photos—and in future scans—do not prompt again. A later targeted reference can still identify that anonymous person. Names and anonymous groups learned early in a scan are used immediately on the remaining photos.
 
 The context viewer marks every detected face: red for unprocessed faces, cyan for the person currently being identified, green with the saved name for identified people, and gray for intentionally unknown people. Detections marked **Not a face** are removed from later overlays.
+
+While an unfamiliar-face question is open, background detection continues for up to 60 upcoming photos. The prompt shows up to eight possible appearances of the active person discovered so far, and updates as more are detected. This queue is memory-bounded and does not bypass manual identity decisions.
 
 High-confidence automatic matches expand the active profile immediately, improving recognition of later angles and lighting conditions in the same scan. Automatic profile learning uses a stricter threshold than result searching, discards near-duplicate samples, and caps active profiles at 64 varied samples to reduce accidental profile drift.
 

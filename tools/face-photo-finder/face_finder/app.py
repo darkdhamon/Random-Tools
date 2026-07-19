@@ -26,6 +26,7 @@ from .catalog import (
     default_catalog_path,
 )
 from .models import ensure_models
+from .prefetch import DetectionPrefetcher
 from .scanner import (
     DetectedFace,
     FaceEngine,
@@ -78,7 +79,17 @@ class IdentityRequest:
         self.skip_remaining = False
         self.not_a_face = False
         self.intentionally_unknown = False
+        self.target_embedding: np.ndarray | None = None
         self.ready = threading.Event()
+        self.related_faces: list[tuple[Path, np.ndarray]] = []
+        self.related_lock = threading.Lock()
+
+    def add_related_face(self, path: Path, preview: np.ndarray) -> bool:
+        with self.related_lock:
+            if len(self.related_faces) >= 12 or any(existing_path == path for existing_path, _ in self.related_faces):
+                return False
+            self.related_faces.append((path, preview))
+            return True
 
 
 def add_known_sample(
@@ -149,6 +160,7 @@ class FaceFinderApp(tk.Tk):
         self.face_request: FaceSelectionRequest | None = None
         self.identity_dialog: tk.Toplevel | None = None
         self.identity_request: IdentityRequest | None = None
+        self.prefetcher: DetectionPrefetcher | None = None
         self.folder_var = tk.StringVar()
         self.known_person_var = tk.StringVar()
         self.results_view_var = tk.StringVar(value="details")
@@ -414,6 +426,14 @@ class FaceFinderApp(tk.Tk):
                 self.events.put(("status", "Cataloging every photo that contains a face…"))
 
             files = image_files(folder)
+            uncached_paths = [path for path in files if catalog.cached_image(path) is None]
+            self.prefetcher = DetectionPrefetcher(
+                uncached_paths,
+                lambda: FaceEngine(detector, recognizer),
+                self.cancel_event,
+                self._on_prefetched_faces,
+            )
+            self.prefetcher.start()
             results: list[MatchResult] = []
             skip_unknowns = False
             for index, path in enumerate(files, start=1):
@@ -458,7 +478,7 @@ class FaceFinderApp(tk.Tk):
                                         )
                                 name, stop_asking, not_a_face, intentionally_unknown = self._request_identity(
                                     path, preview, known_identities, face.bbox, face.sharpness,
-                                    face.profile_eligible, context_faces,
+                                    face.profile_eligible, context_faces, face.embedding,
                                 )
                                 skip_unknowns = skip_unknowns or stop_asking
                                 if not_a_face:
@@ -488,7 +508,7 @@ class FaceFinderApp(tk.Tk):
                                 path, score, refreshed.face_count, refreshed.identified_count, cached=True
                             )
                     else:
-                        detected = engine.detect_faces(path)
+                        detected = self.prefetcher.get(path)
                         accepted_faces: list[DetectedFace] = []
                         assignments: list[int | None] = []
                         unknown_statuses: list[bool] = []
@@ -534,6 +554,7 @@ class FaceFinderApp(tk.Tk):
                                     path, face.preview, known_identities, face.bbox, face.sharpness,
                                     face.profile_eligible,
                                     detection_context(detected, detected_index, review_states),
+                                    face.embedding,
                                 )
                                 skip_unknowns = skip_unknowns or stop_asking
                                 if not_a_face:
@@ -601,6 +622,9 @@ class FaceFinderApp(tk.Tk):
             else:
                 self.events.put(("error", str(exc)))
         finally:
+            if self.prefetcher:
+                self.prefetcher.stop()
+                self.prefetcher = None
             if catalog:
                 catalog.close()
 
@@ -622,14 +646,35 @@ class FaceFinderApp(tk.Tk):
         sharpness: float | None,
         profile_eligible: bool,
         context_faces: list[ContextFace],
+        target_embedding: np.ndarray,
     ) -> tuple[str | None, bool, bool, bool]:
         names = [str(getattr(identity, "name")) for identity in identities]
         request = IdentityRequest(
             path, preview, names, bbox, sharpness, profile_eligible, context_faces
         )
+        request.target_embedding = target_embedding
+        request.add_related_face(path, preview)
+        self.identity_request = request
+        if self.prefetcher:
+            for related_path, face in self.prefetcher.buffered_faces():
+                if float(np.dot(target_embedding, face.embedding)) >= 0.55:
+                    request.add_related_face(related_path, face.preview)
         self.events.put(("identify_face", request))
         request.ready.wait()
+        if self.identity_request is request:
+            self.identity_request = None
         return request.name, request.skip_remaining, request.not_a_face, request.intentionally_unknown
+
+    def _on_prefetched_faces(self, path: Path, faces: list[DetectedFace]) -> None:
+        request = self.identity_request
+        if request is None:
+            return
+        target = getattr(request, "target_embedding", None)
+        if target is None:
+            return
+        for face in faces:
+            if float(np.dot(target, face.embedding)) >= 0.55 and request.add_related_face(path, face.preview):
+                self.events.put(("related_face", request))
 
     def _drain_events(self) -> None:
         try:
@@ -651,6 +696,9 @@ class FaceFinderApp(tk.Tk):
                 elif kind == "identify_face":
                     assert isinstance(payload, IdentityRequest)
                     self._show_identity_prompt(payload)
+                elif kind == "related_face":
+                    if payload is self.identity_request and self.identity_dialog:
+                        self._refresh_related_faces(payload)  # type: ignore[arg-type]
                 elif kind == "identity_names":
                     self._refresh_known_people(list(payload))  # type: ignore[arg-type]
                 elif kind == "done":
@@ -840,6 +888,9 @@ class FaceFinderApp(tk.Tk):
         image.thumbnail((240, 240), Image.Resampling.LANCZOS)
         photo = ImageTk.PhotoImage(image)
         ttk.Label(content, image=photo).pack()
+        ttk.Label(content, text="Possible appearances detected so far:").pack(anchor="w", pady=(12, 3))
+        related_frame = ttk.Frame(content)
+        related_frame.pack(fill="x")
         ttk.Label(content, text="Choose an existing person or type a new name:").pack(anchor="w", pady=(12, 3))
         name_var = tk.StringVar()
         name_box = ttk.Combobox(content, textvariable=name_var, values=request.names, width=38)
@@ -885,9 +936,34 @@ class FaceFinderApp(tk.Tk):
         )
         dialog.protocol("WM_DELETE_WINDOW", lambda: finish(None))
         dialog._identity_photo = photo  # type: ignore[attr-defined]
+        dialog._related_frame = related_frame  # type: ignore[attr-defined]
+        dialog._related_photos = []  # type: ignore[attr-defined]
+        self._refresh_related_faces(request)
         dialog.bind("<Return>", lambda _event: save())
         dialog.update_idletasks()
         dialog.geometry(f"+{self.winfo_rootx() + 80}+{self.winfo_rooty() + 80}")
+
+    def _refresh_related_faces(self, request: IdentityRequest) -> None:
+        dialog = self.identity_dialog
+        if not dialog or not dialog.winfo_exists():
+            return
+        frame = dialog._related_frame  # type: ignore[attr-defined]
+        for child in frame.winfo_children():
+            child.destroy()
+        photos: list[ImageTk.PhotoImage] = []
+        with request.related_lock:
+            related = list(request.related_faces)
+        for index, (path, preview) in enumerate(related[:8]):
+            rgb = cv2.cvtColor(preview, cv2.COLOR_BGR2RGB)
+            image = Image.fromarray(rgb)
+            image.thumbnail((92, 92), Image.Resampling.LANCZOS)
+            photo = ImageTk.PhotoImage(image)
+            photos.append(photo)
+            card = ttk.Frame(frame, padding=(0, 0, 6, 0))
+            card.grid(row=index // 4, column=index % 4, sticky="n")
+            ttk.Label(card, image=photo).pack()
+            ttk.Label(card, text=path.name, width=14, anchor="center").pack()
+        dialog._related_photos = photos  # type: ignore[attr-defined]
 
     def _show_context_image(self, request: IdentityRequest) -> tk.Toplevel | None:
         try:
