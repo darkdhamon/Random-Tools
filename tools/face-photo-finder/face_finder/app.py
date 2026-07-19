@@ -12,7 +12,7 @@ import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
 
 import cv2
-from PIL import Image, ImageTk
+from PIL import Image, ImageDraw, ImageOps, ImageTk
 
 from .models import ensure_models
 from .scanner import DetectedFace, FaceEngine, MatchResult, ScanProgress, build_reference_embeddings, scan_folder
@@ -30,10 +30,12 @@ class FaceFinderApp(tk.Tk):
     def __init__(self) -> None:
         super().__init__()
         self.title("Face Photo Finder")
-        self.geometry("980x650")
-        self.minsize(760, 500)
+        self.geometry("1080x780")
+        self.minsize(800, 650)
         self.references: list[Path] = []
         self.matches: list[MatchResult] = []
+        self.reference_photos: list[ImageTk.PhotoImage] = []
+        self.result_photos: dict[str, ImageTk.PhotoImage] = {}
         self.events: queue.Queue[tuple[str, object]] = queue.Queue()
         self.cancel_event = threading.Event()
         self.worker: threading.Thread | None = None
@@ -50,8 +52,12 @@ class FaceFinderApp(tk.Tk):
         outer.pack(fill="both", expand=True)
 
         ttk.Label(outer, text="Reference photos (one clear face per photo)").grid(row=0, column=0, sticky="w")
-        self.reference_label = ttk.Label(outer, text="None selected")
-        self.reference_label.grid(row=1, column=0, sticky="ew", padx=(0, 8))
+        reference_panel = ttk.Frame(outer)
+        reference_panel.grid(row=1, column=0, sticky="ew", padx=(0, 8))
+        self.reference_label = ttk.Label(reference_panel, text="None selected")
+        self.reference_label.pack(anchor="w")
+        self.reference_thumbnails = ttk.Frame(reference_panel)
+        self.reference_thumbnails.pack(anchor="w", pady=(6, 0))
         ttk.Button(outer, text="Choose photos…", command=self.choose_references).grid(row=1, column=1)
 
         ttk.Label(outer, text="Folder to scan (subfolders included)").grid(row=2, column=0, sticky="w", pady=(12, 0))
@@ -75,10 +81,20 @@ class FaceFinderApp(tk.Tk):
         self.progress.grid(row=5, column=0, columnspan=2, sticky="ew")
         ttk.Label(outer, textvariable=self.status_var).grid(row=6, column=0, columnspan=2, sticky="w", pady=(4, 8))
 
-        self.tree = ttk.Treeview(outer, columns=("score", "faces", "path"), show="headings", selectmode="extended")
+        style = ttk.Style(self)
+        style.configure("Results.Treeview", rowheight=84)
+        self.tree = ttk.Treeview(
+            outer,
+            columns=("score", "faces", "path"),
+            show="tree headings",
+            selectmode="extended",
+            style="Results.Treeview",
+        )
+        self.tree.heading("#0", text="Preview")
         self.tree.heading("score", text="Similarity")
         self.tree.heading("faces", text="Faces")
         self.tree.heading("path", text="Photo")
+        self.tree.column("#0", width=120, minwidth=120, anchor="center", stretch=False)
         self.tree.column("score", width=90, anchor="center", stretch=False)
         self.tree.column("faces", width=60, anchor="center", stretch=False)
         self.tree.column("path", width=700)
@@ -100,6 +116,36 @@ class FaceFinderApp(tk.Tk):
         if names:
             self.references = [Path(name) for name in names]
             self.reference_label.config(text=f"{len(self.references)} selected: " + ", ".join(path.name for path in self.references[:3]))
+            self._show_reference_thumbnails()
+
+    def _show_reference_thumbnails(self) -> None:
+        for child in self.reference_thumbnails.winfo_children():
+            child.destroy()
+        self.reference_photos.clear()
+        for index, path in enumerate(self.references[:6]):
+            photo = self._thumbnail(path, (110, 82))
+            self.reference_photos.append(photo)
+            card = ttk.Frame(self.reference_thumbnails, padding=(0, 0, 8, 0))
+            card.grid(row=0, column=index)
+            ttk.Label(card, image=photo).pack()
+            ttk.Label(card, text=path.name, width=16, anchor="center").pack()
+        if len(self.references) > 6:
+            ttk.Label(self.reference_thumbnails, text=f"+{len(self.references) - 6} more").grid(row=0, column=6, padx=8)
+
+    def _thumbnail(self, path: Path, size: tuple[int, int]) -> ImageTk.PhotoImage:
+        try:
+            with Image.open(path) as source:
+                image = ImageOps.exif_transpose(source).convert("RGB")
+                image.thumbnail(size, Image.Resampling.LANCZOS)
+                background = Image.new("RGB", size, "#e6e6e6")
+                offset = ((size[0] - image.width) // 2, (size[1] - image.height) // 2)
+                background.paste(image, offset)
+        except Exception:
+            background = Image.new("RGB", size, "#e6e6e6")
+            draw = ImageDraw.Draw(background)
+            draw.line((10, 10, size[0] - 10, size[1] - 10), fill="#999999", width=3)
+            draw.line((size[0] - 10, 10, 10, size[1] - 10), fill="#999999", width=3)
+        return ImageTk.PhotoImage(background)
 
     def choose_folder(self) -> None:
         name = filedialog.askdirectory(title="Choose folder to scan")
@@ -115,6 +161,7 @@ class FaceFinderApp(tk.Tk):
             messagebox.showerror("Folder required", "Choose an existing folder to scan.")
             return
         self.matches.clear()
+        self.result_photos.clear()
         self.tree.delete(*self.tree.get_children())
         self.cancel_event.clear()
         self.scan_button.config(state="disabled")
@@ -176,7 +223,17 @@ class FaceFinderApp(tk.Tk):
         self.after(100, self._drain_events)
 
     def _add_match(self, match: MatchResult) -> None:
-        self.tree.insert("", "end", iid=str(match.path), values=(f"{match.score:.3f}", match.face_count, str(match.path)))
+        item_id = str(match.path)
+        photo = self._thumbnail(match.path, (112, 78))
+        self.result_photos[item_id] = photo
+        self.tree.insert(
+            "",
+            "end",
+            iid=item_id,
+            image=photo,
+            text=match.path.name,
+            values=(f"{match.score:.3f}", match.face_count, str(match.path)),
+        )
 
     def _finish(self, status: str) -> None:
         self.status_var.set(status)
