@@ -4,7 +4,7 @@ import unittest
 
 import numpy as np
 
-from face_finder.catalog import FaceCatalog, best_known_identity
+from face_finder.catalog import FaceCatalog, best_known_identity, best_unknown_group
 
 
 class CatalogTests(unittest.TestCase):
@@ -72,11 +72,21 @@ class CatalogTests(unittest.TestCase):
             image = root / "public-event.jpg"
             image.touch()
             catalog = FaceCatalog(root / "catalog.sqlite3")
+            group_id = catalog.create_unknown_group()
             stored = catalog.store_scan(
-                image, [np.array([1.0, 0.0], dtype=np.float32)], [None], intentionally_unknown=[True]
+                image,
+                [np.array([1.0, 0.0], dtype=np.float32)],
+                [None],
+                intentionally_unknown=[True],
+                unknown_group_ids=[group_id],
             )
             face = catalog.faces_for_image(stored.image_id)[0]
             self.assertTrue(face.intentionally_unknown)
+            self.assertEqual(face.unknown_group_id, group_id)
+            matched_group, _score = best_unknown_group(
+                np.array([0.98, 0.02], dtype=np.float32), catalog.unknown_groups(), 0.8
+            )
+            self.assertEqual(matched_group, group_id)
             person_id = catalog.get_or_create_identity("Later Identified")
             catalog.assign_face(face.face_id, person_id)
             identified = catalog.faces_for_image(stored.image_id)[0]

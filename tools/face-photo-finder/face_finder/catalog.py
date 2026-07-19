@@ -16,6 +16,12 @@ class KnownIdentity:
 
 
 @dataclass(frozen=True)
+class UnknownGroup:
+    group_id: int
+    embeddings: tuple[np.ndarray, ...]
+
+
+@dataclass(frozen=True)
 class CatalogFace:
     face_id: int
     identity_id: int | None
@@ -24,6 +30,7 @@ class CatalogFace:
     preview: np.ndarray | None
     intentionally_unknown: bool
     bbox: tuple[int, int, int, int] | None
+    unknown_group_id: int | None
 
 
 @dataclass(frozen=True)
@@ -58,6 +65,10 @@ class FaceCatalog:
                 identified_count INTEGER NOT NULL,
                 scanned_at TEXT NOT NULL
             );
+            CREATE TABLE IF NOT EXISTS unknown_groups (
+                id INTEGER PRIMARY KEY,
+                created_at TEXT NOT NULL
+            );
             CREATE TABLE IF NOT EXISTS faces (
                 id INTEGER PRIMARY KEY,
                 image_id INTEGER NOT NULL REFERENCES images(id) ON DELETE CASCADE,
@@ -70,6 +81,7 @@ class FaceCatalog:
                 bbox_y INTEGER,
                 bbox_width INTEGER,
                 bbox_height INTEGER,
+                unknown_group_id INTEGER REFERENCES unknown_groups(id) ON DELETE SET NULL,
                 UNIQUE(image_id, face_index)
             );
             CREATE INDEX IF NOT EXISTS faces_identity_idx ON faces(identity_id);
@@ -85,6 +97,20 @@ class FaceCatalog:
         for column in ("bbox_x", "bbox_y", "bbox_width", "bbox_height"):
             if column not in columns:
                 self.connection.execute(f"ALTER TABLE faces ADD COLUMN {column} INTEGER")
+        if "unknown_group_id" not in columns:
+            self.connection.execute("ALTER TABLE faces ADD COLUMN unknown_group_id INTEGER")
+        legacy_unknowns = self.connection.execute(
+            "SELECT id FROM faces WHERE intentionally_unknown = 1 AND unknown_group_id IS NULL"
+        ).fetchall()
+        with self.connection:
+            for (face_id,) in legacy_unknowns:
+                cursor = self.connection.execute(
+                    "INSERT INTO unknown_groups(created_at) VALUES (?)",
+                    (datetime.now(timezone.utc).isoformat(),),
+                )
+                self.connection.execute(
+                    "UPDATE faces SET unknown_group_id = ? WHERE id = ?", (cursor.lastrowid, face_id)
+                )
 
     def close(self) -> None:
         self.connection.close()
@@ -101,6 +127,26 @@ class FaceCatalog:
             if blob is not None:
                 grouped[(identity_id, name)].append(np.frombuffer(blob, dtype=np.float32).copy())
         return [KnownIdentity(key[0], key[1], tuple(values)) for key, values in grouped.items()]
+
+    def unknown_groups(self) -> list[UnknownGroup]:
+        rows = self.connection.execute(
+            """SELECT unknown_groups.id, faces.embedding
+               FROM unknown_groups LEFT JOIN faces ON faces.unknown_group_id = unknown_groups.id
+               ORDER BY unknown_groups.id, faces.id"""
+        ).fetchall()
+        grouped: dict[int, list[np.ndarray]] = {}
+        for group_id, blob in rows:
+            grouped.setdefault(int(group_id), [])
+            if blob is not None:
+                grouped[int(group_id)].append(np.frombuffer(blob, dtype=np.float32).copy())
+        return [UnknownGroup(group_id, tuple(values)) for group_id, values in grouped.items()]
+
+    def create_unknown_group(self) -> int:
+        cursor = self.connection.execute(
+            "INSERT INTO unknown_groups(created_at) VALUES (?)", (datetime.now(timezone.utc).isoformat(),)
+        )
+        self.connection.commit()
+        return int(cursor.lastrowid)
 
     def get_or_create_identity(self, name: str) -> int:
         clean_name = " ".join(name.split())
@@ -142,6 +188,7 @@ class FaceCatalog:
         previews: list[np.ndarray] | None = None,
         intentionally_unknown: list[bool] | None = None,
         boxes: list[tuple[int, int, int, int] | None] | None = None,
+        unknown_group_ids: list[int | None] | None = None,
     ) -> CatalogImage:
         if len(embeddings) != len(identities):
             raise ValueError("Every face must have an identity assignment.")
@@ -155,6 +202,10 @@ class FaceCatalog:
             boxes = [(0, 0, 0, 0)] * len(embeddings)
         if len(boxes) != len(embeddings):
             raise ValueError("Every face must have a bounding-box value.")
+        if unknown_group_ids is None:
+            unknown_group_ids = [None] * len(embeddings)
+        if len(unknown_group_ids) != len(embeddings):
+            raise ValueError("Every face must have an anonymous identity-group value.")
         resolved = path.resolve()
         stat = resolved.stat()
         identified_count = sum(value is not None for value in identities)
@@ -175,8 +226,8 @@ class FaceCatalog:
             self.connection.executemany(
                 """INSERT INTO faces(
                        image_id, face_index, identity_id, embedding, preview, intentionally_unknown
-                       , bbox_x, bbox_y, bbox_width, bbox_height
-                   ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                       , bbox_x, bbox_y, bbox_width, bbox_height, unknown_group_id
+                   ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 [
                     (
                         image_id,
@@ -186,6 +237,7 @@ class FaceCatalog:
                         previews[index].tobytes() if previews is not None else None,
                         int(intentionally_unknown[index]),
                         *(boxes[index] if boxes[index] is not None else (None, None, None, None)),
+                        unknown_group_ids[index],
                     )
                     for index, (embedding, identity_id) in enumerate(zip(embeddings, identities, strict=True))
                 ],
@@ -196,7 +248,7 @@ class FaceCatalog:
         rows = self.connection.execute(
             """SELECT faces.id, faces.identity_id, identities.name, faces.embedding, faces.preview,
                       faces.intentionally_unknown, faces.bbox_x, faces.bbox_y,
-                      faces.bbox_width, faces.bbox_height
+                      faces.bbox_width, faces.bbox_height, faces.unknown_group_id
                FROM faces LEFT JOIN identities ON identities.id = faces.identity_id
                WHERE faces.image_id = ? ORDER BY faces.face_index""",
             (image_id,),
@@ -207,6 +259,7 @@ class FaceCatalog:
                 np.frombuffer(row[4], dtype=np.uint8).copy() if row[4] is not None else None,
                 bool(row[5]),
                 (int(row[6]), int(row[7]), int(row[8]), int(row[9])) if row[6] is not None else None,
+                row[10],
             )
             for row in rows
         ]
@@ -217,7 +270,8 @@ class FaceCatalog:
             if not image_row:
                 return
             self.connection.execute(
-                "UPDATE faces SET identity_id = ?, intentionally_unknown = 0 WHERE id = ?",
+                """UPDATE faces SET identity_id = ?, intentionally_unknown = 0,
+                   unknown_group_id = NULL WHERE id = ?""",
                 (identity_id, face_id),
             )
             self.connection.execute(
@@ -227,11 +281,15 @@ class FaceCatalog:
                 (image_row[0],),
             )
 
-    def mark_intentionally_unknown(self, face_id: int) -> None:
+    def mark_intentionally_unknown(self, face_id: int) -> int:
+        group_id = self.create_unknown_group()
         with self.connection:
             self.connection.execute(
-                "UPDATE faces SET identity_id = NULL, intentionally_unknown = 1 WHERE id = ?", (face_id,)
+                """UPDATE faces SET identity_id = NULL, intentionally_unknown = 1,
+                   unknown_group_id = ? WHERE id = ?""",
+                (group_id, face_id),
             )
+        return group_id
 
     def remove_face(self, face_id: int) -> None:
         """Mark a detector false-positive by removing it and refreshing image counts."""
@@ -260,6 +318,19 @@ def best_known_identity(
             score = float(np.dot(embedding, known))
             if score > best_score:
                 best_id, best_score = identity.identity_id, score
+    return (best_id if best_score >= threshold else None), best_score
+
+
+def best_unknown_group(
+    embedding: np.ndarray, groups: list[UnknownGroup], threshold: float
+) -> tuple[int | None, float]:
+    best_id: int | None = None
+    best_score = -1.0
+    for group in groups:
+        for known in group.embeddings:
+            score = float(np.dot(embedding, known))
+            if score > best_score:
+                best_id, best_score = group.group_id, score
     return (best_id if best_score >= threshold else None), best_score
 
 

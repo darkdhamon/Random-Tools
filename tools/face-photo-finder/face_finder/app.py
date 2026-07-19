@@ -15,7 +15,14 @@ import cv2
 import numpy as np
 from PIL import Image, ImageDraw, ImageOps, ImageTk
 
-from .catalog import FaceCatalog, KnownIdentity, best_known_identity, default_catalog_path
+from .catalog import (
+    FaceCatalog,
+    KnownIdentity,
+    UnknownGroup,
+    best_known_identity,
+    best_unknown_group,
+    default_catalog_path,
+)
 from .models import ensure_models
 from .scanner import (
     DetectedFace,
@@ -66,6 +73,22 @@ def add_known_sample(
             updated.append(identity)
     if not found:
         updated.append(KnownIdentity(identity_id, name, (embedding,)))
+    return updated
+
+
+def add_unknown_sample(
+    groups: list[UnknownGroup], group_id: int, embedding: np.ndarray
+) -> list[UnknownGroup]:
+    updated: list[UnknownGroup] = []
+    found = False
+    for group in groups:
+        if group.group_id == group_id:
+            updated.append(UnknownGroup(group_id, group.embeddings + (embedding,)))
+            found = True
+        else:
+            updated.append(group)
+    if not found:
+        updated.append(UnknownGroup(group_id, (embedding,)))
     return updated
 
 
@@ -334,6 +357,7 @@ class FaceFinderApp(tk.Tk):
             engine = FaceEngine(detector, recognizer)
             catalog = FaceCatalog(default_catalog_path())
             known_identities = catalog.identities()
+            unknown_groups = catalog.unknown_groups()
             selected_identity = next((item for item in known_identities if item.name == known_person), None)
             catalog_all = not reference_paths and selected_identity is None
             target_identity_id = selected_identity.identity_id if selected_identity else None
@@ -374,7 +398,10 @@ class FaceFinderApp(tk.Tk):
                                 if not_a_face:
                                     catalog.remove_face(face.face_id)
                                 elif intentionally_unknown:
-                                    catalog.mark_intentionally_unknown(face.face_id)
+                                    group_id = catalog.mark_intentionally_unknown(face.face_id)
+                                    unknown_groups = add_unknown_sample(
+                                        unknown_groups, group_id, face.embedding
+                                    )
                                 elif name:
                                     identity_id = catalog.get_or_create_identity(name)
                                     catalog.assign_face(face.face_id, identity_id)
@@ -398,9 +425,22 @@ class FaceFinderApp(tk.Tk):
                         accepted_faces: list[DetectedFace] = []
                         assignments: list[int | None] = []
                         unknown_statuses: list[bool] = []
+                        unknown_group_ids: list[int | None] = []
                         for face in detected:
                             identity_id, _score = best_known_identity(face.embedding, known_identities, max(threshold, 0.50))
-                            if identity_id is None and catalog_all and not skip_unknowns:
+                            unknown_group_id: int | None = None
+                            intentionally_unknown = False
+                            if identity_id is None:
+                                unknown_group_id, _unknown_score = best_unknown_group(
+                                    face.embedding, unknown_groups, max(threshold, 0.50)
+                                )
+                                intentionally_unknown = unknown_group_id is not None
+                            if (
+                                identity_id is None
+                                and unknown_group_id is None
+                                and catalog_all
+                                and not skip_unknowns
+                            ):
                                 name, stop_asking, not_a_face, intentionally_unknown = self._request_identity(
                                     path, face.preview, known_identities, face.bbox
                                 )
@@ -412,16 +452,20 @@ class FaceFinderApp(tk.Tk):
                                     known_identities = add_known_sample(
                                         known_identities, identity_id, name, face.embedding
                                     )
+                                elif intentionally_unknown:
+                                    unknown_group_id = catalog.create_unknown_group()
+                                    unknown_groups = add_unknown_sample(
+                                        unknown_groups, unknown_group_id, face.embedding
+                                    )
                             accepted_faces.append(face)
                             assignments.append(identity_id)
-                            unknown_statuses.append(
-                                intentionally_unknown if identity_id is None and catalog_all and not skip_unknowns else False
-                            )
+                            unknown_statuses.append(intentionally_unknown and identity_id is None)
+                            unknown_group_ids.append(unknown_group_id if identity_id is None else None)
                         detected = accepted_faces
                         previews = [cv2.imencode(".jpg", face.preview)[1] for face in detected]
                         stored = catalog.store_scan(
                             path, [face.embedding for face in detected], assignments, previews, unknown_statuses,
-                            [face.bbox for face in detected],
+                            [face.bbox for face in detected], unknown_group_ids,
                         )
                         candidate_embeddings = [face.embedding for face in detected]
                         score = best_similarity(references, candidate_embeddings) if references else -1.0
@@ -430,10 +474,11 @@ class FaceFinderApp(tk.Tk):
                                 if assignments[face_index] is None and best_similarity(references, [face.embedding]) >= threshold:
                                     assignments[face_index] = target_identity_id
                                     unknown_statuses[face_index] = False
+                                    unknown_group_ids[face_index] = None
                             if assignments != [face.identity_id for face in catalog.faces_for_image(stored.image_id)]:
                                 catalog.store_scan(
                                     path, [face.embedding for face in detected], assignments, previews,
-                                    unknown_statuses, [face.bbox for face in detected],
+                                    unknown_statuses, [face.bbox for face in detected], unknown_group_ids,
                                 )
                         if detected and (catalog_all or score >= threshold):
                             refreshed = catalog.cached_image(path) or stored
