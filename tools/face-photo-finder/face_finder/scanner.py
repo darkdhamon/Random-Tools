@@ -17,6 +17,8 @@ class MatchResult:
     path: Path
     score: float
     face_count: int
+    identified_count: int = 0
+    cached: bool = False
 
 
 @dataclass(frozen=True)

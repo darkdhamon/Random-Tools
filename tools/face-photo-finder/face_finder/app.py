@@ -12,10 +12,20 @@ import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
 
 import cv2
+import numpy as np
 from PIL import Image, ImageDraw, ImageOps, ImageTk
 
+from .catalog import FaceCatalog, KnownIdentity, best_known_identity, default_catalog_path
 from .models import ensure_models
-from .scanner import DetectedFace, FaceEngine, MatchResult, ScanProgress, build_reference_embeddings, scan_folder
+from .scanner import (
+    DetectedFace,
+    FaceEngine,
+    MatchResult,
+    ScanProgress,
+    best_similarity,
+    build_reference_embeddings,
+    image_files,
+)
 from .settings import AppSettings, load_settings, save_settings
 
 
@@ -25,6 +35,32 @@ class FaceSelectionRequest:
         self.faces = faces
         self.selected: list[int] = []
         self.ready = threading.Event()
+
+
+class IdentityRequest:
+    def __init__(self, path: Path, preview: np.ndarray, names: list[str]) -> None:
+        self.path = path
+        self.preview = preview
+        self.names = names
+        self.name: str | None = None
+        self.skip_remaining = False
+        self.ready = threading.Event()
+
+
+def add_known_sample(
+    identities: list[KnownIdentity], identity_id: int, name: str, embedding: np.ndarray
+) -> list[KnownIdentity]:
+    updated: list[KnownIdentity] = []
+    found = False
+    for identity in identities:
+        if identity.identity_id == identity_id:
+            updated.append(KnownIdentity(identity_id, identity.name, identity.embeddings + (embedding,)))
+            found = True
+        else:
+            updated.append(identity)
+    if not found:
+        updated.append(KnownIdentity(identity_id, name, (embedding,)))
+    return updated
 
 
 class FaceFinderApp(tk.Tk):
@@ -44,7 +80,10 @@ class FaceFinderApp(tk.Tk):
         self.worker: threading.Thread | None = None
         self.face_dialog: tk.Toplevel | None = None
         self.face_request: FaceSelectionRequest | None = None
+        self.identity_dialog: tk.Toplevel | None = None
+        self.identity_request: IdentityRequest | None = None
         self.folder_var = tk.StringVar()
+        self.known_person_var = tk.StringVar()
         self.results_view_var = tk.StringVar(value="details")
         self.threshold_var = tk.DoubleVar(value=0.45)
         self.status_var = tk.StringVar(value="Choose reference photos and a folder to scan.")
@@ -64,7 +103,16 @@ class FaceFinderApp(tk.Tk):
         self.reference_label.pack(anchor="w")
         self.reference_thumbnails = ttk.Frame(reference_panel)
         self.reference_thumbnails.pack(anchor="w", pady=(6, 0))
-        ttk.Button(outer, text="Choose photos…", command=self.choose_references).grid(row=1, column=1)
+        reference_actions = ttk.Frame(outer)
+        reference_actions.grid(row=1, column=1, sticky="n")
+        ttk.Button(reference_actions, text="Choose photos…", command=self.choose_references).pack(fill="x")
+        ttk.Button(reference_actions, text="Clear photos", command=self.clear_references).pack(fill="x", pady=(4, 10))
+        ttk.Label(reference_actions, text="Or choose a known person").pack(anchor="w")
+        self.known_person_combo = ttk.Combobox(
+            reference_actions, textvariable=self.known_person_var, state="readonly", width=24
+        )
+        self.known_person_combo.pack(fill="x", pady=(3, 0))
+        self._refresh_known_people()
 
         ttk.Label(outer, text="Folder to scan (subfolders included)").grid(row=2, column=0, sticky="w", pady=(12, 0))
         ttk.Entry(outer, textvariable=self.folder_var).grid(row=3, column=0, sticky="ew", padx=(0, 8))
@@ -106,7 +154,7 @@ class FaceFinderApp(tk.Tk):
         style.configure("Results.Treeview", rowheight=84)
         self.tree = ttk.Treeview(
             self.results_container,
-            columns=("score", "faces", "path"),
+            columns=("score", "faces", "identified", "cached", "path"),
             show="tree headings",
             selectmode="extended",
             style="Results.Treeview",
@@ -114,10 +162,14 @@ class FaceFinderApp(tk.Tk):
         self.tree.heading("#0", text="Preview")
         self.tree.heading("score", text="Similarity")
         self.tree.heading("faces", text="Faces")
+        self.tree.heading("identified", text="Identified")
+        self.tree.heading("cached", text="Cached")
         self.tree.heading("path", text="Photo")
         self.tree.column("#0", width=120, minwidth=120, anchor="center", stretch=False)
         self.tree.column("score", width=90, anchor="center", stretch=False)
         self.tree.column("faces", width=60, anchor="center", stretch=False)
+        self.tree.column("identified", width=75, anchor="center", stretch=False)
+        self.tree.column("cached", width=65, anchor="center", stretch=False)
         self.tree.column("path", width=700)
         self.tree.grid(row=0, column=0, sticky="nsew")
         self.tree.bind("<Double-1>", lambda _event: self.open_selected())
@@ -154,6 +206,25 @@ class FaceFinderApp(tk.Tk):
             self.reference_label.config(text=f"{len(self.references)} selected: " + ", ".join(path.name for path in self.references[:3]))
             self._show_reference_thumbnails()
             self._save_settings()
+
+    def clear_references(self) -> None:
+        self.references.clear()
+        self.reference_label.config(text="None selected — catalog all faces or choose a known person")
+        self._show_reference_thumbnails()
+        self._save_settings()
+
+    def _refresh_known_people(self, names: list[str] | None = None) -> None:
+        if names is None:
+            catalog = FaceCatalog(default_catalog_path())
+            try:
+                names = [identity.name for identity in catalog.identities()]
+            finally:
+                catalog.close()
+        current = self.known_person_var.get()
+        values = [""] + names
+        self.known_person_combo["values"] = values
+        if current not in values:
+            self.known_person_var.set("")
 
     def _restore_settings(self) -> None:
         settings = load_settings()
@@ -224,9 +295,6 @@ class FaceFinderApp(tk.Tk):
 
     def start_scan(self) -> None:
         folder = Path(self.folder_var.get())
-        if not self.references:
-            messagebox.showerror("Reference required", "Choose at least one reference photo.")
-            return
         if not folder.is_dir():
             messagebox.showerror("Folder required", "Choose an existing folder to scan.")
             return
@@ -243,23 +311,122 @@ class FaceFinderApp(tk.Tk):
         self.cancel_button.config(state="normal")
         self.progress["value"] = 0
         threshold = self.threshold_var.get()
-        self.worker = threading.Thread(target=self._scan_worker, args=(folder, threshold), daemon=True)
+        references = list(self.references)
+        known_person = self.known_person_var.get().strip()
+        self.worker = threading.Thread(
+            target=self._scan_worker, args=(folder, threshold, references, known_person), daemon=True
+        )
         self.worker.start()
 
-    def _scan_worker(self, folder: Path, threshold: float) -> None:
+    def _scan_worker(
+        self, folder: Path, threshold: float, reference_paths: list[Path], known_person: str
+    ) -> None:
+        catalog: FaceCatalog | None = None
         try:
             model_dir = Path(__file__).resolve().parents[1] / "models"
             detector, recognizer = ensure_models(model_dir, lambda value: self.events.put(("status", value)))
             engine = FaceEngine(detector, recognizer)
-            self.events.put(("status", "Reading reference faces…"))
-            references = build_reference_embeddings(engine, self.references, self._request_face_selection)
-            results = scan_folder(engine, folder, references, threshold, self._on_progress, self.cancel_event)
+            catalog = FaceCatalog(default_catalog_path())
+            known_identities = catalog.identities()
+            selected_identity = next((item for item in known_identities if item.name == known_person), None)
+            catalog_all = not reference_paths and selected_identity is None
+            target_identity_id = selected_identity.identity_id if selected_identity else None
+            if selected_identity:
+                references = list(selected_identity.embeddings)
+                if not references:
+                    raise ValueError(f"{known_person} has no learned face samples yet.")
+            elif reference_paths:
+                self.events.put(("status", "Reading reference faces…"))
+                references = build_reference_embeddings(engine, reference_paths, self._request_face_selection)
+            else:
+                references = []
+                self.events.put(("status", "Cataloging every photo that contains a face…"))
+
+            files = image_files(folder)
+            results: list[MatchResult] = []
+            skip_unknowns = False
+            for index, path in enumerate(files, start=1):
+                if self.cancel_event.is_set():
+                    break
+                error: str | None = None
+                match: MatchResult | None = None
+                try:
+                    cached = catalog.cached_image(path)
+                    if cached:
+                        catalog_faces = catalog.faces_for_image(cached.image_id)
+                        if catalog_all and not skip_unknowns:
+                            for face in catalog_faces:
+                                if face.identity_id is not None or face.preview is None:
+                                    continue
+                                preview = cv2.imdecode(face.preview, cv2.IMREAD_COLOR)
+                                name, stop_asking = self._request_identity(path, preview, known_identities)
+                                skip_unknowns = skip_unknowns or stop_asking
+                                if name:
+                                    identity_id = catalog.get_or_create_identity(name)
+                                    catalog.assign_face(face.face_id, identity_id)
+                                    known_identities = catalog.identities()
+                                if skip_unknowns:
+                                    break
+                        candidate_embeddings = [face.embedding for face in catalog_faces]
+                        score = best_similarity(references, candidate_embeddings) if references else -1.0
+                        if target_identity_id is not None:
+                            for face in catalog_faces:
+                                if face.identity_id is None and best_similarity(references, [face.embedding]) >= threshold:
+                                    catalog.assign_face(face.face_id, target_identity_id)
+                        if cached.face_count and (catalog_all or score >= threshold):
+                            refreshed = catalog.cached_image(path) or cached
+                            match = MatchResult(
+                                path, score, refreshed.face_count, refreshed.identified_count, cached=True
+                            )
+                    else:
+                        detected = engine.detect_faces(path)
+                        assignments: list[int | None] = []
+                        for face in detected:
+                            identity_id, _score = best_known_identity(face.embedding, known_identities, max(threshold, 0.50))
+                            if identity_id is None and catalog_all and not skip_unknowns:
+                                name, stop_asking = self._request_identity(path, face.preview, known_identities)
+                                skip_unknowns = skip_unknowns or stop_asking
+                                if name:
+                                    identity_id = catalog.get_or_create_identity(name)
+                                    known_identities = add_known_sample(
+                                        known_identities, identity_id, name, face.embedding
+                                    )
+                            assignments.append(identity_id)
+                        previews = [cv2.imencode(".jpg", face.preview)[1] for face in detected]
+                        stored = catalog.store_scan(
+                            path, [face.embedding for face in detected], assignments, previews
+                        )
+                        candidate_embeddings = [face.embedding for face in detected]
+                        score = best_similarity(references, candidate_embeddings) if references else -1.0
+                        if target_identity_id is not None and score >= threshold:
+                            for face_index, face in enumerate(detected):
+                                if assignments[face_index] is None and best_similarity(references, [face.embedding]) >= threshold:
+                                    assignments[face_index] = target_identity_id
+                            if assignments != [face.identity_id for face in catalog.faces_for_image(stored.image_id)]:
+                                catalog.store_scan(
+                                    path, [face.embedding for face in detected], assignments, previews
+                                )
+                        if detected and (catalog_all or score >= threshold):
+                            refreshed = catalog.cached_image(path) or stored
+                            match = MatchResult(
+                                path, score, len(detected), refreshed.identified_count, cached=False
+                            )
+                    if match:
+                        results.append(match)
+                except Exception as exc:
+                    error = str(exc)
+                self._on_progress(ScanProgress(index, len(files), path, match, error))
+            results.sort(key=lambda item: (-item.score, str(item.path).casefold()))
+            self.events.put(("identity_names", [item.name for item in catalog.identities()]))
             self.events.put(("done", results))
         except Exception as exc:
             if self.cancel_event.is_set():
                 self.events.put(("done", []))
             else:
                 self.events.put(("error", str(exc)))
+        finally:
+            if catalog:
+                catalog.close()
 
     def _on_progress(self, value: ScanProgress) -> None:
         self.events.put(("progress", value))
@@ -269,6 +436,15 @@ class FaceFinderApp(tk.Tk):
         self.events.put(("select_faces", request))
         request.ready.wait()
         return request.selected
+
+    def _request_identity(
+        self, path: Path, preview: np.ndarray, identities: list[object]
+    ) -> tuple[str | None, bool]:
+        names = [str(getattr(identity, "name")) for identity in identities]
+        request = IdentityRequest(path, preview, names)
+        self.events.put(("identify_face", request))
+        request.ready.wait()
+        return request.name, request.skip_remaining
 
     def _drain_events(self) -> None:
         try:
@@ -287,6 +463,11 @@ class FaceFinderApp(tk.Tk):
                 elif kind == "select_faces":
                     assert isinstance(payload, FaceSelectionRequest)
                     self._show_face_picker(payload)
+                elif kind == "identify_face":
+                    assert isinstance(payload, IdentityRequest)
+                    self._show_identity_prompt(payload)
+                elif kind == "identity_names":
+                    self._refresh_known_people(list(payload))  # type: ignore[arg-type]
                 elif kind == "done":
                     self.matches = list(payload)  # type: ignore[arg-type]
                     self._finish(f"Found {len(self.matches)} matching photo(s)." if not self.cancel_event.is_set() else f"Cancelled. Found {len(self.matches)} match(es).")
@@ -307,7 +488,13 @@ class FaceFinderApp(tk.Tk):
             iid=item_id,
             image=photo,
             text=match.path.name,
-            values=(f"{match.score:.3f}", match.face_count, str(match.path)),
+            values=(
+                f"{match.score:.3f}" if match.score >= 0 else "All faces",
+                match.face_count,
+                match.identified_count,
+                "Yes" if match.cached else "No",
+                str(match.path),
+            ),
         )
         self._add_gallery_match(match)
 
@@ -325,7 +512,12 @@ class FaceFinderApp(tk.Tk):
         preview = ttk.Label(card, image=photo, cursor="hand2")
         preview.pack()
         ttk.Checkbutton(card, text=match.path.name, variable=selected).pack(anchor="w", pady=(5, 0))
-        ttk.Label(card, text=f"Similarity {match.score:.3f} • {match.face_count} face(s)").pack(anchor="w")
+        score_text = f"Similarity {match.score:.3f}" if match.score >= 0 else "All faces"
+        ttk.Label(
+            card,
+            text=f"{score_text} • {match.identified_count}/{match.face_count} identified"
+            + (" • cached" if match.cached else ""),
+        ).pack(anchor="w")
         preview.bind("<Button-1>", lambda _event, value=selected: value.set(not value.get()))
         preview.bind("<Double-1>", lambda _event, path=match.path: self._open_path(path))
 
@@ -394,6 +586,55 @@ class FaceFinderApp(tk.Tk):
         dialog.update_idletasks()
         dialog.geometry(f"+{self.winfo_rootx() + 50}+{self.winfo_rooty() + 50}")
 
+    def _show_identity_prompt(self, request: IdentityRequest) -> None:
+        dialog = tk.Toplevel(self)
+        self.identity_dialog = dialog
+        self.identity_request = request
+        dialog.title("Identify unfamiliar face")
+        dialog.transient(self)
+        dialog.grab_set()
+
+        content = ttk.Frame(dialog, padding=16)
+        content.pack(fill="both", expand=True)
+        ttk.Label(content, text=f"Who is this person in {request.path.name}?").pack(anchor="w", pady=(0, 10))
+        rgb = cv2.cvtColor(request.preview, cv2.COLOR_BGR2RGB)
+        image = Image.fromarray(rgb)
+        image.thumbnail((240, 240), Image.Resampling.LANCZOS)
+        photo = ImageTk.PhotoImage(image)
+        ttk.Label(content, image=photo).pack()
+        ttk.Label(content, text="Choose an existing person or type a new name:").pack(anchor="w", pady=(12, 3))
+        name_var = tk.StringVar()
+        name_box = ttk.Combobox(content, textvariable=name_var, values=request.names, width=38)
+        name_box.pack(fill="x")
+        name_box.focus_set()
+
+        def finish(name: str | None, skip_remaining: bool = False) -> None:
+            request.name = name
+            request.skip_remaining = skip_remaining
+            request.ready.set()
+            self.identity_dialog = None
+            self.identity_request = None
+            dialog.grab_release()
+            dialog.destroy()
+
+        def save() -> None:
+            name = " ".join(name_var.get().split())
+            if not name:
+                messagebox.showwarning("Name required", "Enter a name or use one of the skip options.", parent=dialog)
+                return
+            finish(name)
+
+        buttons = ttk.Frame(content)
+        buttons.pack(fill="x", pady=(14, 0))
+        ttk.Button(buttons, text="Save identity", command=save).pack(side="right")
+        ttk.Button(buttons, text="Skip this face", command=lambda: finish(None)).pack(side="right", padx=8)
+        ttk.Button(buttons, text="Skip remaining", command=lambda: finish(None, True)).pack(side="left")
+        dialog.protocol("WM_DELETE_WINDOW", lambda: finish(None))
+        dialog._identity_photo = photo  # type: ignore[attr-defined]
+        dialog.bind("<Return>", lambda _event: save())
+        dialog.update_idletasks()
+        dialog.geometry(f"+{self.winfo_rootx() + 80}+{self.winfo_rooty() + 80}")
+
     def cancel_scan(self) -> None:
         self.cancel_event.set()
         if self.face_request and self.face_dialog:
@@ -402,6 +643,12 @@ class FaceFinderApp(tk.Tk):
             self.face_dialog.destroy()
             self.face_request = None
             self.face_dialog = None
+        if self.identity_request and self.identity_dialog:
+            self.identity_request.skip_remaining = True
+            self.identity_request.ready.set()
+            self.identity_dialog.destroy()
+            self.identity_request = None
+            self.identity_dialog = None
         self.status_var.set("Cancelling after the current photo…")
 
     def selected_paths(self) -> list[Path]:
@@ -409,7 +656,7 @@ class FaceFinderApp(tk.Tk):
             selected = [Path(path) for path, value in self.gallery_selected.items() if value.get()]
             return selected or [Path(path) for path in self.gallery_selected]
         selected = self.tree.selection() or self.tree.get_children()
-        return [Path(self.tree.item(item, "values")[2]) for item in selected]
+        return [Path(self.tree.item(item, "values")[4]) for item in selected]
 
     def open_selected(self) -> None:
         paths = self.selected_paths()
@@ -432,8 +679,12 @@ class FaceFinderApp(tk.Tk):
         if name:
             with Path(name).open("w", newline="", encoding="utf-8-sig") as output:
                 writer = csv.writer(output)
-                writer.writerow(["path", "similarity", "faces_detected"])
-                writer.writerows((str(item.path), f"{item.score:.6f}", item.face_count) for item in self.matches)
+                writer.writerow(["path", "similarity", "faces_detected", "faces_identified", "cached"])
+                writer.writerows(
+                    (str(item.path), f"{item.score:.6f}" if item.score >= 0 else "", item.face_count,
+                     item.identified_count, item.cached)
+                    for item in self.matches
+                )
             self.status_var.set(f"Exported {len(self.matches)} rows to {name}")
 
     def copy_matches(self) -> None:

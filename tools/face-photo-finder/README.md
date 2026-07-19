@@ -13,6 +13,10 @@ A private, local desktop tool that recursively scans a folder and finds photos l
 - displays oriented thumbnails for the reference images and every matching photo;
 - toggles results between a detailed list and a large-thumbnail gallery with selectable cards;
 - restores the previously selected reference photos and last-used search folder when reopened;
+- maintains a local SQLite face catalog with identity names, embeddings, image fingerprints, detected-face counts, and identified-face counts;
+- reuses cached results for unchanged photos and analyzes only new or modified files;
+- catalogs all face-containing photos when no reference or known person is selected, prompting to name unfamiliar faces;
+- searches by a previously learned person from the **Known person** list without requiring another reference photo;
 - opens matches, exports a CSV report, or copies selected/all matches;
 - never modifies source photos and does not upload images or face data.
 
@@ -33,11 +37,13 @@ On macOS/Linux, activate with `source .venv/bin/activate` instead.
 
 ## Use
 
-1. Select one or more clear reference photos. If a photo contains multiple faces, choose one or several people from the thumbnail picker that appears when the scan starts.
+1. To find a specific person, select clear reference photos or choose someone from **Known person**. If a reference contains multiple faces, choose one or several people from the thumbnail picker.
 2. Select the folder containing the photo collection.
 3. Leave match strictness at `0.45` initially and start the scan.
 4. Review the ranked results. Double-click a row to open the original.
 5. Export paths as CSV or copy matches to another folder. Copying preserves originals and resolves duplicate filenames automatically.
+
+To build or update the identity catalog, clear the reference photos, leave **Known person** blank, and start a scan. Every photo containing a face is included. For an unfamiliar face, choose an existing identity, enter a new name, skip that face, or skip the remaining prompts for that scan. Names learned early in a scan are used to recognize later faces immediately.
 
 A lower threshold finds more possible matches but creates more false positives. A higher threshold is stricter but may miss the person. Different ages, angles, lighting, glasses, masks, and small or blurry faces affect accuracy.
 
@@ -45,7 +51,7 @@ A lower threshold finds more possible matches but creates more false positives. 
 
 Face embeddings are biometric data. Use this tool only on photos you are authorized to process and follow applicable consent, privacy, and retention requirements. Processing stays on the computer, but the first run downloads the MIT-licensed YuNet and SFace models from the official OpenCV Zoo.
 
-For convenience, the app stores only the selected image paths and last search-folder path in the current user's local application-data folder. It does not persist face embeddings or copies of the photos. Missing paths are removed automatically on the next launch.
+The app stores preferences in `FacePhotoFinder/settings.json` and its biometric catalog in `FacePhotoFinder/face-catalog.sqlite3` inside the current user's local application-data folder. The catalog contains names, face embeddings, small aligned face previews, source paths and file fingerprints, and scan statistics. It does not copy full source photos. Treat the catalog as sensitive biometric data and protect or delete it according to your privacy and retention needs. Missing source files are ignored during searches.
 
 Face recognition is probabilistic and can perform differently across demographic groups. Results are leads, not proof of identity. Review every result manually; do not use the tool for high-impact decisions, surveillance, or identification without consent.
 
