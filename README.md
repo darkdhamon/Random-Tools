@@ -32,7 +32,7 @@ Shared documentation and reusable assets belong in `docs/` and `shared/` respect
 
 ## Tool index
 
-No tools have been added yet.
+- [Face Photo Finder](tools/face-photo-finder/README.md) — recursively find photos likely to contain a person shown in reference images, with all processing performed locally.
 
 ## Contributing
 
