@@ -10,6 +10,7 @@ import shutil
 import subprocess
 import sys
 import threading
+import time
 import tkinter as tk
 from tkinter import filedialog, messagebox, simpledialog, ttk
 
@@ -157,6 +158,9 @@ class IdentityRequest:
         self.related_faces: list[RelatedCandidate] = []
         self.related_lock = threading.Lock()
         self.accepting_related = True
+        self.related_refresh_pending = False
+        self.context_base_image: Image.Image | None = None
+        self.context_source_size: tuple[int, int] | None = None
 
     def add_related_face(self, path: Path, embedding: np.ndarray, preview: np.ndarray) -> bool:
         with self.related_lock:
@@ -854,6 +858,14 @@ class FaceFinderApp(tk.Tk):
             )],
         )
         request.target_embedding = target_embedding
+        # Decode and resize the potentially very large source image on the scan
+        # worker, before asking Tk to construct the dialog.
+        source = read_image(path)
+        source_height, source_width = source.shape[:2]
+        context_base = Image.fromarray(cv2.cvtColor(source, cv2.COLOR_BGR2RGB))
+        context_base.thumbnail((600, 300), Image.Resampling.LANCZOS)
+        request.context_base_image = context_base
+        request.context_source_size = (source_width, source_height)
         self.identity_request = request
         if self.prefetcher:
             for related_path, face in self.prefetcher.buffered_faces():
@@ -883,17 +895,28 @@ class FaceFinderApp(tk.Tk):
         target = getattr(request, "target_embedding", None)
         if target is None:
             return
+        added = False
         for face in faces:
             if (
                 float(np.dot(target, face.embedding)) >= 0.55
                 and request.add_related_face(path, face.embedding, face.preview)
             ):
-                self.events.put(("related_face", request))
+                added = True
+        if added:
+            with request.related_lock:
+                if not request.related_refresh_pending:
+                    request.related_refresh_pending = True
+                    self.events.put(("related_face", request))
 
     def _drain_events(self) -> None:
+        started = time.perf_counter()
+        handled = 0
         try:
-            while True:
+            # Bound each pump so a large progress/result burst cannot monopolize Tk's
+            # event loop and make buttons, painting, and window movement stop responding.
+            while handled < 20 and time.perf_counter() - started < 0.015:
                 kind, payload = self.events.get_nowait()
+                handled += 1
                 if kind == "status":
                     self.status_var.set(str(payload))
                 elif kind == "progress":
@@ -912,7 +935,11 @@ class FaceFinderApp(tk.Tk):
                     self._show_identity_prompt(payload)
                 elif kind == "related_face":
                     if payload is self.identity_request and self.identity_dialog:
-                        self._refresh_related_faces(payload)  # type: ignore[arg-type]
+                        request = payload
+                        assert isinstance(request, IdentityRequest)
+                        # Coalesce rapid prefetch notifications. Rebuilding dozens of Tk
+                        # thumbnail widgets for every newly detected photo was quadratic.
+                        self.after(150, lambda value=request: self._apply_related_refresh(value))
                 elif kind == "identity_names":
                     self._refresh_known_people(list(payload))  # type: ignore[arg-type]
                 elif kind == "done":
@@ -923,7 +950,13 @@ class FaceFinderApp(tk.Tk):
                     messagebox.showerror("Scan failed", str(payload))
         except queue.Empty:
             pass
-        self.after(100, self._drain_events)
+        self.after(10 if not self.events.empty() else 75, self._drain_events)
+
+    def _apply_related_refresh(self, request: IdentityRequest) -> None:
+        with request.related_lock:
+            request.related_refresh_pending = False
+        if request is self.identity_request and self.identity_dialog:
+            self._refresh_related_faces(request)
 
     def _add_match(self, match: MatchResult) -> None:
         item_id = str(match.path)
@@ -1391,10 +1424,14 @@ class FaceFinderApp(tk.Tk):
     def _render_context_image(
         self, request: IdentityRequest, max_width: int, max_height: int
     ) -> tuple[Image.Image, list[tuple[str, str, tuple[int, int, int, int]]]]:
-        source = read_image(request.path)
-        image = Image.fromarray(cv2.cvtColor(source, cv2.COLOR_BGR2RGB))
-        image.thumbnail((max_width, max_height), Image.Resampling.LANCZOS)
-        source_height, source_width = source.shape[:2]
+        if request.context_base_image is not None and request.context_source_size is not None:
+            image = request.context_base_image.copy()
+            source_width, source_height = request.context_source_size
+        else:
+            source = read_image(request.path)
+            image = Image.fromarray(cv2.cvtColor(source, cv2.COLOR_BGR2RGB))
+            image.thumbnail((max_width, max_height), Image.Resampling.LANCZOS)
+            source_height, source_width = source.shape[:2]
         scale_x = image.width / source_width
         scale_y = image.height / source_height
         draw = ImageDraw.Draw(image)

@@ -69,8 +69,11 @@ class FaceCatalog:
     def __init__(self, path: Path) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
         self.path = path
-        self.connection = sqlite3.connect(path)
+        self.connection = sqlite3.connect(path, timeout=10.0)
         self.connection.execute("PRAGMA foreign_keys = ON")
+        self.connection.execute("PRAGMA journal_mode = WAL")
+        self.connection.execute("PRAGMA synchronous = NORMAL")
+        self.connection.execute("PRAGMA busy_timeout = 10000")
         self.connection.executescript(
             """
             CREATE TABLE IF NOT EXISTS identities (
@@ -121,16 +124,6 @@ class FaceCatalog:
             self.connection.execute("ALTER TABLE identities ADD COLUMN birth_year INTEGER")
         if "capture_year" not in image_columns:
             self.connection.execute("ALTER TABLE images ADD COLUMN capture_year INTEGER")
-        missing_years = self.connection.execute(
-            "SELECT id, path FROM images WHERE capture_year IS NULL"
-        ).fetchall()
-        with self.connection:
-            for image_id, image_path in missing_years:
-                year = image_capture_year(Path(image_path))
-                if year is not None:
-                    self.connection.execute(
-                        "UPDATE images SET capture_year = ? WHERE id = ?", (year, image_id)
-                    )
         if "preview" not in columns:
             self.connection.execute("ALTER TABLE faces ADD COLUMN preview BLOB")
         if "intentionally_unknown" not in columns:
@@ -314,7 +307,17 @@ class FaceCatalog:
         ).fetchone()
         if missing_geometry:
             return None
-        return CatalogImage(int(row[0]), Path(row[1]), int(row[2]), int(row[3]), int(row[4]), int(row[5]), row[6])
+        capture_year = row[6]
+        if capture_year is None:
+            # Enrich legacy rows lazily during the background scan. Doing this for the
+            # whole library when a UI dialog opens can make Tk appear frozen.
+            capture_year = image_capture_year(path)
+            if capture_year is not None:
+                with self.connection:
+                    self.connection.execute(
+                        "UPDATE images SET capture_year = ? WHERE id = ?", (capture_year, row[0])
+                    )
+        return CatalogImage(int(row[0]), Path(row[1]), int(row[2]), int(row[3]), int(row[4]), int(row[5]), capture_year)
 
     def store_scan(
         self,

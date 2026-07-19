@@ -51,6 +51,8 @@ class DetectionPrefetcher:
                 except Exception as exc:
                     faces = []
                     result = (None, str(exc))
+                if self.cancel.is_set() or self.stop_event.is_set():
+                    break
                 with self.condition:
                     self.results[path] = result
                     self.condition.notify_all()

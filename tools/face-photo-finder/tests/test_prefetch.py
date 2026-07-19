@@ -21,6 +21,15 @@ class FakeEngine:
         ]
 
 
+class SlowEngine(FakeEngine):
+    entered = threading.Event()
+
+    def detect_faces(self, path: Path) -> list[DetectedFace]:
+        self.entered.set()
+        time.sleep(0.1)
+        return super().detect_faces(path)
+
+
 class DetectionPrefetchTests(unittest.TestCase):
     def test_detection_continues_while_consumer_is_waiting(self) -> None:
         paths = [Path(f"{index}.jpg") for index in range(5)]
@@ -43,6 +52,18 @@ class DetectionPrefetchTests(unittest.TestCase):
         prefetcher.start()
         prefetcher.stop()
         self.assertFalse(cancel.is_set())
+
+    def test_stopped_detection_does_not_publish_a_late_callback(self) -> None:
+        callbacks: list[Path] = []
+        SlowEngine.entered.clear()
+        prefetcher = DetectionPrefetcher(
+            [Path("1.jpg")], SlowEngine, threading.Event(), lambda path, _faces: callbacks.append(path)
+        )
+        prefetcher.start()
+        self.assertTrue(SlowEngine.entered.wait(1))
+        prefetcher.stop()
+        prefetcher.thread.join(1)
+        self.assertEqual(callbacks, [])
 
 
 if __name__ == "__main__":
