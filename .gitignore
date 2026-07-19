@@ -1,0 +1,55 @@
+# Environment and secrets
+.env
+.env.*
+!.env.example
+*.local
+secrets.*
+
+# Editors and operating systems
+.idea/
+.vscode/
+*.suo
+*.user
+*.userosscache
+*.sln.docstates
+.DS_Store
+Thumbs.db
+
+# Logs and temporary files
+*.log
+*.tmp
+*.temp
+*.bak
+*.swp
+tmp/
+temp/
+
+# JavaScript / TypeScript
+node_modules/
+dist/
+coverage/
+.next/
+
+# .NET
+bin/
+obj/
+TestResults/
+artifacts/
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Java / JVM
+.gradle/
+build/
+target/
+
+# Local tool output
+out/
+output/
