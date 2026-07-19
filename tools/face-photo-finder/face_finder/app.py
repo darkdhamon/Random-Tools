@@ -16,6 +16,7 @@ from PIL import Image, ImageDraw, ImageOps, ImageTk
 
 from .models import ensure_models
 from .scanner import DetectedFace, FaceEngine, MatchResult, ScanProgress, build_reference_embeddings, scan_folder
+from .settings import AppSettings, load_settings, save_settings
 
 
 class FaceSelectionRequest:
@@ -45,6 +46,8 @@ class FaceFinderApp(tk.Tk):
         self.threshold_var = tk.DoubleVar(value=0.45)
         self.status_var = tk.StringVar(value="Choose reference photos and a folder to scan.")
         self._build()
+        self._restore_settings()
+        self.protocol("WM_DELETE_WINDOW", self._close)
         self.after(100, self._drain_events)
 
     def _build(self) -> None:
@@ -117,6 +120,39 @@ class FaceFinderApp(tk.Tk):
             self.references = [Path(name) for name in names]
             self.reference_label.config(text=f"{len(self.references)} selected: " + ", ".join(path.name for path in self.references[:3]))
             self._show_reference_thumbnails()
+            self._save_settings()
+
+    def _restore_settings(self) -> None:
+        settings = load_settings()
+        self.references = list(settings.reference_paths)
+        if self.references:
+            self.reference_label.config(
+                text=f"{len(self.references)} restored: " + ", ".join(path.name for path in self.references[:3])
+            )
+            self._show_reference_thumbnails()
+        if settings.search_folder:
+            self.folder_var.set(str(settings.search_folder))
+        if self.references and settings.search_folder:
+            self.status_var.set("Previous reference photos and search folder restored.")
+        elif self.references:
+            self.status_var.set("Previous reference photos restored.")
+        elif settings.search_folder:
+            self.status_var.set("Last search folder restored.")
+
+    def _save_settings(self) -> None:
+        folder = Path(self.folder_var.get()) if self.folder_var.get() else None
+        if folder is not None and not folder.is_dir():
+            folder = None
+        try:
+            save_settings(AppSettings(tuple(self.references), folder))
+        except OSError:
+            # Remembering paths is a convenience and should never block a scan.
+            pass
+
+    def _close(self) -> None:
+        self.cancel_event.set()
+        self._save_settings()
+        self.destroy()
 
     def _show_reference_thumbnails(self) -> None:
         for child in self.reference_thumbnails.winfo_children():
@@ -151,6 +187,7 @@ class FaceFinderApp(tk.Tk):
         name = filedialog.askdirectory(title="Choose folder to scan")
         if name:
             self.folder_var.set(name)
+            self._save_settings()
 
     def start_scan(self) -> None:
         folder = Path(self.folder_var.get())
@@ -160,6 +197,7 @@ class FaceFinderApp(tk.Tk):
         if not folder.is_dir():
             messagebox.showerror("Folder required", "Choose an existing folder to scan.")
             return
+        self._save_settings()
         self.matches.clear()
         self.result_photos.clear()
         self.tree.delete(*self.tree.get_children())

@@ -11,6 +11,7 @@ A private, local desktop tool that recursively scans a folder and finds photos l
 - shows a face picker when a reference photo contains multiple people, allowing one or several faces to be selected;
 - shows every match with its similarity score;
 - displays oriented thumbnails for the reference images and every matching photo;
+- restores the previously selected reference photos and last-used search folder when reopened;
 - opens matches, exports a CSV report, or copies selected/all matches;
 - never modifies source photos and does not upload images or face data.
 
@@ -42,6 +43,8 @@ A lower threshold finds more possible matches but creates more false positives. 
 ## Privacy, consent, and limitations
 
 Face embeddings are biometric data. Use this tool only on photos you are authorized to process and follow applicable consent, privacy, and retention requirements. Processing stays on the computer, but the first run downloads the MIT-licensed YuNet and SFace models from the official OpenCV Zoo.
+
+For convenience, the app stores only the selected image paths and last search-folder path in the current user's local application-data folder. It does not persist face embeddings or copies of the photos. Missing paths are removed automatically on the next launch.
 
 Face recognition is probabilistic and can perform differently across demographic groups. Results are leads, not proof of identity. Review every result manually; do not use the tool for high-impact decisions, surveillance, or identification without consent.
 
