@@ -1172,6 +1172,8 @@ class FaceFinderApp(tk.Tk):
             request.not_a_face = not_a_face
             request.intentionally_unknown = intentionally_unknown
             request.save_as_art = save_as_art
+            if skip_remaining:
+                self.cancel_event.set()
             with request.related_lock:
                 request.accepting_related = False
             request.ready.set()
@@ -1200,7 +1202,7 @@ class FaceFinderApp(tk.Tk):
             text="I don't know this person",
             command=lambda: finish(None, intentionally_unknown=True),
         ).pack(side="right", padx=8)
-        ttk.Button(buttons, text="Skip remaining", command=lambda: finish(None, True)).pack(side="left")
+        ttk.Button(buttons, text="Skip remaining / stop scan", command=lambda: finish(None, True)).pack(side="left")
         ttk.Button(buttons, text="View context", command=lambda: self._show_context_image(request)).pack(
             side="left", padx=8
         )
