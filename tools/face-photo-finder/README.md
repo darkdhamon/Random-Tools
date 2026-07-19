@@ -57,6 +57,8 @@ While an unfamiliar-face question is open, background detection continues for up
 
 High-confidence automatic matches expand the active profile immediately, improving recognition of later angles and lighting conditions in the same scan. Automatic profile learning uses a stricter threshold than result searching, discards near-duplicate samples, and caps active profiles at 64 varied samples to reduce accidental profile drift.
 
+Profiles are also organized by the photo's capture year. The app reads the EXIF date taken when available, then checks the filename for a four-digit year, and finally falls back to the file modification year. Matching uses samples from the same year first, or the nearest represented year when that year has no samples. The 64-sample profile is balanced across years so heavily photographed recent periods do not displace older appearances. In **Manage identities**, save a person's birth year to record the corresponding age for each photo year; birth year is descriptive metadata and does not weaken matching when it is unknown.
+
 Aligned face crops are checked for focus before profile learning. Blurry faces can still be assigned to named or anonymous identities and remain linked to their source photos, but their embeddings are excluded from active biometric profiles. The identity prompt labels these low-quality samples so the distinction is visible.
 
 For drawings, paintings, statues, and other artwork, use **Save identity as art**. The face remains linked to the named identity and source image with a persistent artwork flag, but it is never admitted into the biometric profile—even when the artwork is sharp.

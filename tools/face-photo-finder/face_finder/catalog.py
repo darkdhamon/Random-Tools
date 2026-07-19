@@ -3,10 +3,12 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
+import re
 import sqlite3
 
 import numpy as np
 import cv2
+from PIL import Image
 
 PROFILE_MAX_SAMPLES = 64
 PROFILE_DUPLICATE_SIMILARITY = 0.92
@@ -17,6 +19,8 @@ class KnownIdentity:
     identity_id: int
     name: str
     embeddings: tuple[np.ndarray, ...]
+    sample_years: tuple[int | None, ...] = ()
+    birth_year: int | None = None
 
 
 @dataclass(frozen=True)
@@ -48,6 +52,7 @@ class CatalogImage:
     modified_ns: int
     face_count: int
     identified_count: int
+    capture_year: int | None = None
 
 
 @dataclass(frozen=True)
@@ -57,6 +62,7 @@ class IdentityAssignment:
     preview: np.ndarray | None
     is_art: bool
     profile_eligible: bool
+    capture_year: int | None = None
 
 
 class FaceCatalog:
@@ -70,7 +76,8 @@ class FaceCatalog:
             CREATE TABLE IF NOT EXISTS identities (
                 id INTEGER PRIMARY KEY,
                 name TEXT NOT NULL COLLATE NOCASE UNIQUE,
-                created_at TEXT NOT NULL
+                created_at TEXT NOT NULL,
+                birth_year INTEGER
             );
             CREATE TABLE IF NOT EXISTS images (
                 id INTEGER PRIMARY KEY,
@@ -79,7 +86,8 @@ class FaceCatalog:
                 modified_ns INTEGER NOT NULL,
                 face_count INTEGER NOT NULL,
                 identified_count INTEGER NOT NULL,
-                scanned_at TEXT NOT NULL
+                scanned_at TEXT NOT NULL,
+                capture_year INTEGER
             );
             CREATE TABLE IF NOT EXISTS unknown_groups (
                 id INTEGER PRIMARY KEY,
@@ -107,6 +115,22 @@ class FaceCatalog:
             """
         )
         columns = {row[1] for row in self.connection.execute("PRAGMA table_info(faces)")}
+        identity_columns = {row[1] for row in self.connection.execute("PRAGMA table_info(identities)")}
+        image_columns = {row[1] for row in self.connection.execute("PRAGMA table_info(images)")}
+        if "birth_year" not in identity_columns:
+            self.connection.execute("ALTER TABLE identities ADD COLUMN birth_year INTEGER")
+        if "capture_year" not in image_columns:
+            self.connection.execute("ALTER TABLE images ADD COLUMN capture_year INTEGER")
+        missing_years = self.connection.execute(
+            "SELECT id, path FROM images WHERE capture_year IS NULL"
+        ).fetchall()
+        with self.connection:
+            for image_id, image_path in missing_years:
+                year = image_capture_year(Path(image_path))
+                if year is not None:
+                    self.connection.execute(
+                        "UPDATE images SET capture_year = ? WHERE id = ?", (year, image_id)
+                    )
         if "preview" not in columns:
             self.connection.execute("ALTER TABLE faces ADD COLUMN preview BLOB")
         if "intentionally_unknown" not in columns:
@@ -166,19 +190,34 @@ class FaceCatalog:
 
     def identities(self) -> list[KnownIdentity]:
         rows = self.connection.execute(
-            """SELECT identities.id, identities.name, faces.embedding
+            """SELECT identities.id, identities.name, identities.birth_year,
+                      faces.embedding, images.capture_year
                FROM identities LEFT JOIN faces ON faces.identity_id = identities.id
                     AND faces.profile_eligible = 1
+               LEFT JOIN images ON images.id = faces.image_id
                ORDER BY identities.name, faces.id"""
         ).fetchall()
-        grouped: dict[tuple[int, str], list[np.ndarray]] = {}
-        for identity_id, name, blob in rows:
-            grouped.setdefault((identity_id, name), [])
+        grouped: dict[tuple[int, str, int | None], list[tuple[np.ndarray, int | None]]] = {}
+        for identity_id, name, birth_year, blob, capture_year in rows:
+            grouped.setdefault((identity_id, name, birth_year), [])
             if blob is not None:
-                grouped[(identity_id, name)].append(np.frombuffer(blob, dtype=np.float32).copy())
-        return [
-            KnownIdentity(key[0], key[1], bounded_profile(values)) for key, values in grouped.items()
-        ]
+                grouped[(identity_id, name, birth_year)].append(
+                    (np.frombuffer(blob, dtype=np.float32).copy(), capture_year)
+                )
+        identities: list[KnownIdentity] = []
+        for key, values in grouped.items():
+            samples = bounded_profile_samples(values)
+            identities.append(KnownIdentity(key[0], key[1], tuple(v[0] for v in samples),
+                                            tuple(v[1] for v in samples), key[2]))
+        return identities
+
+    def set_identity_birth_year(self, identity_id: int, birth_year: int | None) -> None:
+        if birth_year is not None and not 1900 <= birth_year <= datetime.now().year:
+            raise ValueError("Birth year must be between 1900 and the current year.")
+        with self.connection:
+            self.connection.execute(
+                "UPDATE identities SET birth_year = ? WHERE id = ?", (birth_year, identity_id)
+            )
 
     def unknown_groups(self) -> list[UnknownGroup]:
         rows = self.connection.execute(
@@ -219,7 +258,8 @@ class FaceCatalog:
 
     def identity_assignments(self, identity_id: int) -> list[IdentityAssignment]:
         rows = self.connection.execute(
-            """SELECT faces.id, images.path, faces.preview, faces.is_art, faces.profile_eligible
+            """SELECT faces.id, images.path, faces.preview, faces.is_art, faces.profile_eligible,
+                      images.capture_year
                FROM faces JOIN images ON images.id = faces.image_id
                WHERE faces.identity_id = ? ORDER BY images.path, faces.face_index""",
             (identity_id,),
@@ -231,6 +271,7 @@ class FaceCatalog:
                 np.frombuffer(row[2], dtype=np.uint8).copy() if row[2] is not None else None,
                 bool(row[3]),
                 bool(row[4]),
+                row[5],
             )
             for row in rows
         ]
@@ -263,7 +304,7 @@ class FaceCatalog:
         except OSError:
             return None
         row = self.connection.execute(
-            "SELECT id, path, size, modified_ns, face_count, identified_count FROM images WHERE path = ?",
+            "SELECT id, path, size, modified_ns, face_count, identified_count, capture_year FROM images WHERE path = ?",
             (str(path.resolve()),),
         ).fetchone()
         if not row or row[2] != stat.st_size or row[3] != stat.st_mtime_ns:
@@ -273,7 +314,7 @@ class FaceCatalog:
         ).fetchone()
         if missing_geometry:
             return None
-        return CatalogImage(int(row[0]), Path(row[1]), int(row[2]), int(row[3]), int(row[4]), int(row[5]))
+        return CatalogImage(int(row[0]), Path(row[1]), int(row[2]), int(row[3]), int(row[4]), int(row[5]), row[6])
 
     def store_scan(
         self,
@@ -316,17 +357,18 @@ class FaceCatalog:
             raise ValueError("Every face must have an artwork status.")
         resolved = path.resolve()
         stat = resolved.stat()
+        capture_year = image_capture_year(resolved)
         identified_count = sum(value is not None for value in identities)
         with self.connection:
             self.connection.execute(
-                """INSERT INTO images(path, size, modified_ns, face_count, identified_count, scanned_at)
-                   VALUES (?, ?, ?, ?, ?, ?)
+                """INSERT INTO images(path, size, modified_ns, face_count, identified_count, scanned_at, capture_year)
+                   VALUES (?, ?, ?, ?, ?, ?, ?)
                    ON CONFLICT(path) DO UPDATE SET size=excluded.size, modified_ns=excluded.modified_ns,
                    face_count=excluded.face_count, identified_count=excluded.identified_count,
-                   scanned_at=excluded.scanned_at""",
+                   scanned_at=excluded.scanned_at, capture_year=excluded.capture_year""",
                 (
                     str(resolved), stat.st_size, stat.st_mtime_ns, len(embeddings), identified_count,
-                    datetime.now(timezone.utc).isoformat(),
+                    datetime.now(timezone.utc).isoformat(), capture_year,
                 ),
             )
             image_id = int(self.connection.execute("SELECT id FROM images WHERE path = ?", (str(resolved),)).fetchone()[0])
@@ -355,7 +397,7 @@ class FaceCatalog:
                     for index, (embedding, identity_id) in enumerate(zip(embeddings, identities, strict=True))
                 ],
             )
-        return CatalogImage(image_id, resolved, stat.st_size, stat.st_mtime_ns, len(embeddings), identified_count)
+        return CatalogImage(image_id, resolved, stat.st_size, stat.st_mtime_ns, len(embeddings), identified_count, capture_year)
 
     def faces_for_image(self, image_id: int) -> list[CatalogFace]:
         rows = self.connection.execute(
@@ -429,12 +471,13 @@ class FaceCatalog:
 
 
 def best_known_identity(
-    embedding: np.ndarray, identities: list[KnownIdentity], threshold: float
+    embedding: np.ndarray, identities: list[KnownIdentity], threshold: float,
+    capture_year: int | None = None,
 ) -> tuple[int | None, float]:
     best_id: int | None = None
     best_score = -1.0
     for identity in identities:
-        for known in identity.embeddings:
+        for known in identity_embeddings_for_year(identity, capture_year):
             score = float(np.dot(embedding, known))
             if score > best_score:
                 best_id, best_score = identity.identity_id, score
@@ -442,13 +485,14 @@ def best_known_identity(
 
 
 def closest_identity_matches(
-    embedding: np.ndarray, identities: list[KnownIdentity], limit: int = 3
+    embedding: np.ndarray, identities: list[KnownIdentity], limit: int = 3,
+    capture_year: int | None = None,
 ) -> list[tuple[KnownIdentity, float]]:
     ranked: list[tuple[KnownIdentity, float]] = []
     for identity in identities:
         if not identity.embeddings:
             continue
-        score = max(float(np.dot(embedding, known)) for known in identity.embeddings)
+        score = max(float(np.dot(embedding, known)) for known in identity_embeddings_for_year(identity, capture_year))
         ranked.append((identity, score))
     ranked.sort(key=lambda item: (-item[1], item[0].name.casefold()))
     return ranked[:limit]
@@ -477,6 +521,64 @@ def bounded_profile(embeddings: list[np.ndarray] | tuple[np.ndarray, ...]) -> tu
         if len(selected) >= PROFILE_MAX_SAMPLES:
             break
     return tuple(selected)
+
+
+def bounded_profile_samples(
+    samples: list[tuple[np.ndarray, int | None]],
+) -> tuple[tuple[np.ndarray, int | None], ...]:
+    """Keep a varied profile while reserving representation for every capture year."""
+    ordered = sorted(samples, key=lambda item: (item[1] is None, item[1] or 0))
+    selected: list[tuple[np.ndarray, int | None]] = []
+    for sample in ordered:
+        if selected and max(float(np.dot(sample[0], known[0])) for known in selected) >= PROFILE_DUPLICATE_SIMILARITY:
+            continue
+        selected.append(sample)
+    if len(selected) <= PROFILE_MAX_SAMPLES:
+        return tuple(selected)
+    # Round-robin years prevents a heavily photographed recent year from crowding out older appearances.
+    buckets: dict[int | None, list[tuple[np.ndarray, int | None]]] = {}
+    for sample in selected:
+        buckets.setdefault(sample[1], []).append(sample)
+    balanced: list[tuple[np.ndarray, int | None]] = []
+    while len(balanced) < PROFILE_MAX_SAMPLES and any(buckets.values()):
+        for year in sorted(buckets, key=lambda value: (value is None, value or 0)):
+            if buckets[year] and len(balanced) < PROFILE_MAX_SAMPLES:
+                balanced.append(buckets[year].pop(0))
+    return tuple(balanced)
+
+
+def identity_embeddings_for_year(identity: KnownIdentity, capture_year: int | None) -> tuple[np.ndarray, ...]:
+    if capture_year is None or len(identity.sample_years) != len(identity.embeddings):
+        return identity.embeddings
+    dated = [(embedding, year) for embedding, year in zip(identity.embeddings, identity.sample_years, strict=True)
+             if year is not None]
+    if not dated:
+        return identity.embeddings
+    exact = tuple(embedding for embedding, year in dated if year == capture_year)
+    if exact:
+        return exact
+    nearest_distance = min(abs(int(year) - capture_year) for _embedding, year in dated)
+    nearest = tuple(embedding for embedding, year in dated if abs(int(year) - capture_year) == nearest_distance)
+    return nearest or identity.embeddings
+
+
+def image_capture_year(path: Path) -> int | None:
+    """Read EXIF capture year, then a year in the filename, then filesystem modification year."""
+    try:
+        with Image.open(path) as image:
+            exif = image.getexif()
+            for tag in (36867, 36868, 306):
+                value = exif.get(tag)
+                if value and (match := re.match(r"(19\d{2}|20\d{2})", str(value))):
+                    return int(match.group(1))
+    except (OSError, ValueError):
+        pass
+    if match := re.search(r"(?<!\d)(19\d{2}|20\d{2})(?!\d)", path.stem):
+        return int(match.group(1))
+    try:
+        return datetime.fromtimestamp(path.stat().st_mtime).year
+    except OSError:
+        return None
 
 
 def default_catalog_path() -> Path:

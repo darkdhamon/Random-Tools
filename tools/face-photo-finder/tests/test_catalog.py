@@ -12,10 +12,40 @@ from face_finder.catalog import (
     best_unknown_group,
     bounded_profile,
     closest_identity_matches,
+    identity_embeddings_for_year,
+    image_capture_year,
 )
 
 
 class CatalogTests(unittest.TestCase):
+    def test_year_specific_profile_prefers_exact_then_nearest_year(self) -> None:
+        old = np.array([1.0, 0.0], dtype=np.float32)
+        recent = np.array([0.0, 1.0], dtype=np.float32)
+        identity = KnownIdentity(1, "Age Range", (old, recent), (2004, 2025), 1985)
+        self.assertEqual(identity_embeddings_for_year(identity, 2004), (old,))
+        self.assertEqual(identity_embeddings_for_year(identity, 2023), (recent,))
+
+    def test_capture_year_can_be_read_from_filename(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            image = Path(temporary) / "college-trip-2004.jpg"
+            image.write_bytes(b"not an image")
+            self.assertEqual(image_capture_year(image), 2004)
+
+    def test_birth_year_and_capture_year_round_trip(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            image = root / "portrait-2012.jpg"
+            image.write_bytes(b"placeholder")
+            catalog = FaceCatalog(root / "catalog.sqlite3")
+            identity_id = catalog.get_or_create_identity("Dated Person")
+            catalog.set_identity_birth_year(identity_id, 1985)
+            catalog.store_scan(image, [np.array([1.0, 0.0], dtype=np.float32)], [identity_id])
+            identity = catalog.identities()[0]
+            self.assertEqual(identity.birth_year, 1985)
+            self.assertEqual(identity.sample_years, (2012,))
+            self.assertEqual(catalog.cached_image(image).capture_year, 2012)  # type: ignore[union-attr]
+            catalog.close()
+
     def test_closest_identity_matches_are_ranked_with_percent_ready_scores(self) -> None:
         identities = [
             KnownIdentity(1, "Second", (np.array([0.7, 0.3], dtype=np.float32),)),

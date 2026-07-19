@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import csv
 from dataclasses import dataclass
+from datetime import datetime
 import os
 from pathlib import Path
 import queue
@@ -23,8 +24,11 @@ from .catalog import (
     best_known_identity,
     best_unknown_group,
     bounded_profile,
+    bounded_profile_samples,
     closest_identity_matches,
     default_catalog_path,
+    identity_embeddings_for_year,
+    image_capture_year,
 )
 from .models import ensure_models
 from .prefetch import DetectionPrefetcher
@@ -167,19 +171,27 @@ class IdentityRequest:
 
 
 def add_known_sample(
-    identities: list[KnownIdentity], identity_id: int, name: str, embedding: np.ndarray
+    identities: list[KnownIdentity], identity_id: int, name: str, embedding: np.ndarray,
+    capture_year: int | None = None,
 ) -> list[KnownIdentity]:
     updated: list[KnownIdentity] = []
     found = False
     for identity in identities:
         if identity.identity_id == identity_id:
-            updated.append(KnownIdentity(identity_id, identity.name, identity.embeddings + (embedding,)))
+            updated.append(KnownIdentity(identity_id, identity.name, identity.embeddings + (embedding,),
+                                         identity.sample_years + (capture_year,), identity.birth_year))
             found = True
         else:
             updated.append(identity)
     if not found:
-        updated.append(KnownIdentity(identity_id, name, (embedding,)))
-    return [KnownIdentity(item.identity_id, item.name, bounded_profile(item.embeddings)) for item in updated]
+        updated.append(KnownIdentity(identity_id, name, (embedding,), (capture_year,)))
+    result: list[KnownIdentity] = []
+    for item in updated:
+        years = item.sample_years if len(item.sample_years) == len(item.embeddings) else (None,) * len(item.embeddings)
+        samples = bounded_profile_samples(list(zip(item.embeddings, years, strict=True)))
+        result.append(KnownIdentity(item.identity_id, item.name, tuple(v[0] for v in samples),
+                                    tuple(v[1] for v in samples), item.birth_year))
+    return result
 
 
 def add_unknown_sample(
@@ -522,6 +534,9 @@ class FaceFinderApp(tk.Tk):
                 error: str | None = None
                 match: MatchResult | None = None
                 try:
+                    capture_year = image_capture_year(path)
+                    if selected_identity:
+                        references = list(identity_embeddings_for_year(selected_identity, capture_year))
                     cached = catalog.cached_image(path)
                     if cached:
                         catalog_faces = catalog.faces_for_image(cached.image_id)
@@ -651,7 +666,7 @@ class FaceFinderApp(tk.Tk):
                                 save_as_art = forced.as_art
                             else:
                                 identity_id, _identity_score = best_known_identity(
-                                    face.embedding, known_identities, learning_threshold
+                                    face.embedding, known_identities, learning_threshold, capture_year
                                 )
                                 if forced is not None and forced.excluded and identity_id == forced.identity_id:
                                     identity_id = None
@@ -660,7 +675,7 @@ class FaceFinderApp(tk.Tk):
                                     item for item in known_identities if item.identity_id == identity_id
                                 )
                                 known_identities = add_known_sample(
-                                    known_identities, identity_id, identity.name, face.embedding
+                                    known_identities, identity_id, identity.name, face.embedding, capture_year
                                 )
                             if identity_id is not None:
                                 identity_name = next(
@@ -709,7 +724,7 @@ class FaceFinderApp(tk.Tk):
                                         )
                                     if face.profile_eligible and not save_as_art:
                                         known_identities = add_known_sample(
-                                            known_identities, identity_id, name, face.embedding
+                                            known_identities, identity_id, name, face.embedding, capture_year
                                         )
                                     review_states[detected_index] = ("identified", name)
                                 elif intentionally_unknown:
@@ -834,7 +849,9 @@ class FaceFinderApp(tk.Tk):
             sharpness,
             profile_eligible,
             context_faces,
-            [(identity.name, score) for identity, score in closest_identity_matches(target_embedding, identities)],
+            [(identity.name, score) for identity, score in closest_identity_matches(
+                target_embedding, identities, capture_year=image_capture_year(path)
+            )],
         )
         request.target_embedding = target_embedding
         self.identity_request = request
@@ -1031,33 +1048,42 @@ class FaceFinderApp(tk.Tk):
 
         source_var = tk.StringVar()
         target_var = tk.StringVar()
+        birth_year_var = tk.StringVar()
         ttk.Label(outer, text="Profile containing incorrect assignments:").grid(row=0, column=0, sticky="w")
         source_combo = ttk.Combobox(outer, textvariable=source_var, state="readonly", width=34)
         source_combo.grid(row=1, column=0, sticky="w", pady=(3, 10))
         ttk.Label(outer, text="Reassign selected entries to:").grid(row=0, column=1, sticky="w", padx=(12, 0))
         target_combo = AutocompleteCombobox(outer, [], textvariable=target_var, width=34)
         target_combo.grid(row=1, column=1, sticky="ew", padx=(12, 0), pady=(3, 10))
+        age_frame = ttk.Frame(outer)
+        age_frame.grid(row=1, column=2, sticky="w", padx=(12, 0), pady=(3, 10))
+        ttk.Label(age_frame, text="Birth year:").pack(side="left")
+        ttk.Entry(age_frame, textvariable=birth_year_var, width=7).pack(side="left", padx=(5, 0))
 
         style = ttk.Style(dialog)
         style.configure("IdentityManager.Treeview", rowheight=84)
         tree = ttk.Treeview(
             outer,
-            columns=("path", "type", "profile"),
+            columns=("path", "year", "age", "type", "profile"),
             show="tree headings",
             selectmode="extended",
             style="IdentityManager.Treeview",
         )
         tree.heading("#0", text="Face")
         tree.heading("path", text="Source photo")
+        tree.heading("year", text="Year")
+        tree.heading("age", text="Age")
         tree.heading("type", text="Type")
         tree.heading("profile", text="Profile sample")
         tree.column("#0", width=100, stretch=False)
-        tree.column("path", width=650)
+        tree.column("path", width=510)
+        tree.column("year", width=60, anchor="center", stretch=False)
+        tree.column("age", width=60, anchor="center", stretch=False)
         tree.column("type", width=70, anchor="center", stretch=False)
         tree.column("profile", width=100, anchor="center", stretch=False)
-        tree.grid(row=2, column=0, columnspan=2, sticky="nsew")
+        tree.grid(row=2, column=0, columnspan=3, sticky="nsew")
         scrollbar = ttk.Scrollbar(outer, orient="vertical", command=tree.yview)
-        scrollbar.grid(row=2, column=2, sticky="ns")
+        scrollbar.grid(row=2, column=3, sticky="ns")
         tree.configure(yscrollcommand=scrollbar.set)
         photos: dict[str, ImageTk.PhotoImage] = {}
         identity_by_name: dict[str, KnownIdentity] = {}
@@ -1084,6 +1110,7 @@ class FaceFinderApp(tk.Tk):
             identity = identity_by_name.get(source_var.get())
             if not identity:
                 return
+            birth_year_var.set(str(identity.birth_year) if identity.birth_year else "")
             for assignment in catalog.identity_assignments(identity.identity_id):
                 item_id = str(assignment.face_id)
                 if assignment.preview is not None:
@@ -1101,6 +1128,9 @@ class FaceFinderApp(tk.Tk):
                     text=assignment.image_path.name,
                     values=(
                         str(assignment.image_path),
+                        assignment.capture_year or "Unknown",
+                        assignment.capture_year - identity.birth_year
+                        if assignment.capture_year and identity.birth_year else "—",
                         "Artwork" if assignment.is_art else "Photo",
                         "Yes" if assignment.profile_eligible else "No",
                     ),
@@ -1134,11 +1164,31 @@ class FaceFinderApp(tk.Tk):
             self.status_var.set(f"Reassigned {changed} face/photo assignment(s) to {target_name}.")
 
         buttons = ttk.Frame(outer)
-        buttons.grid(row=3, column=0, columnspan=2, sticky="ew", pady=(10, 0))
+        buttons.grid(row=3, column=0, columnspan=3, sticky="ew", pady=(10, 0))
         ttk.Button(buttons, text="Reassign selected", command=lambda: reassign(False)).pack(side="right")
         ttk.Button(buttons, text="Reassign all / merge profile", command=lambda: reassign(True)).pack(
             side="right", padx=8
         )
+
+        def save_birth_year() -> None:
+            identity = identity_by_name.get(source_var.get())
+            if not identity:
+                return
+            text = birth_year_var.get().strip()
+            try:
+                year = int(text) if text else None
+                catalog.set_identity_birth_year(identity.identity_id, year)
+            except ValueError as exc:
+                messagebox.showwarning("Invalid birth year", str(exc), parent=dialog)
+                return
+            age = datetime.now().year - year if year else None
+            refresh_identity_lists(identity.name)
+            self.status_var.set(
+                f"Saved birth year {year} for {identity.name} (approximately age {age} this year)."
+                if year else f"Cleared birth year for {identity.name}."
+            )
+
+        ttk.Button(buttons, text="Save birth year", command=save_birth_year).pack(side="left", padx=(8, 0))
 
         def close_dialog() -> None:
             catalog.close()
