@@ -11,6 +11,7 @@ A private, local desktop tool that recursively scans a folder and finds photos l
 - shows a face picker when a reference photo contains multiple people, allowing one or several faces to be selected;
 - shows every match with its similarity score;
 - displays oriented thumbnails for the reference images and every matching photo;
+- toggles results between a detailed list and a large-thumbnail gallery with selectable cards;
 - restores the previously selected reference photos and last-used search folder when reopened;
 - opens matches, exports a CSV report, or copies selected/all matches;
 - never modifies source photos and does not upload images or face data.

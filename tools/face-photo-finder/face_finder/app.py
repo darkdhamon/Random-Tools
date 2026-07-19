@@ -37,12 +37,15 @@ class FaceFinderApp(tk.Tk):
         self.matches: list[MatchResult] = []
         self.reference_photos: list[ImageTk.PhotoImage] = []
         self.result_photos: dict[str, ImageTk.PhotoImage] = {}
+        self.gallery_photos: dict[str, ImageTk.PhotoImage] = {}
+        self.gallery_selected: dict[str, tk.BooleanVar] = {}
         self.events: queue.Queue[tuple[str, object]] = queue.Queue()
         self.cancel_event = threading.Event()
         self.worker: threading.Thread | None = None
         self.face_dialog: tk.Toplevel | None = None
         self.face_request: FaceSelectionRequest | None = None
         self.folder_var = tk.StringVar()
+        self.results_view_var = tk.StringVar(value="details")
         self.threshold_var = tk.DoubleVar(value=0.45)
         self.status_var = tk.StringVar(value="Choose reference photos and a folder to scan.")
         self._build()
@@ -84,10 +87,25 @@ class FaceFinderApp(tk.Tk):
         self.progress.grid(row=5, column=0, columnspan=2, sticky="ew")
         ttk.Label(outer, textvariable=self.status_var).grid(row=6, column=0, columnspan=2, sticky="w", pady=(4, 8))
 
+        view_bar = ttk.Frame(outer)
+        view_bar.grid(row=7, column=0, columnspan=2, sticky="ew", pady=(0, 6))
+        ttk.Label(view_bar, text="Results view:").pack(side="left")
+        ttk.Radiobutton(
+            view_bar, text="Details", value="details", variable=self.results_view_var, command=self._toggle_results_view
+        ).pack(side="left", padx=(8, 2))
+        ttk.Radiobutton(
+            view_bar, text="Gallery", value="gallery", variable=self.results_view_var, command=self._toggle_results_view
+        ).pack(side="left", padx=2)
+
+        self.results_container = ttk.Frame(outer)
+        self.results_container.grid(row=8, column=0, columnspan=2, sticky="nsew")
+        self.results_container.columnconfigure(0, weight=1)
+        self.results_container.rowconfigure(0, weight=1)
+
         style = ttk.Style(self)
         style.configure("Results.Treeview", rowheight=84)
         self.tree = ttk.Treeview(
-            outer,
+            self.results_container,
             columns=("score", "faces", "path"),
             show="tree headings",
             selectmode="extended",
@@ -101,18 +119,33 @@ class FaceFinderApp(tk.Tk):
         self.tree.column("score", width=90, anchor="center", stretch=False)
         self.tree.column("faces", width=60, anchor="center", stretch=False)
         self.tree.column("path", width=700)
-        self.tree.grid(row=7, column=0, columnspan=2, sticky="nsew")
+        self.tree.grid(row=0, column=0, sticky="nsew")
         self.tree.bind("<Double-1>", lambda _event: self.open_selected())
 
+        self.gallery_canvas = tk.Canvas(self.results_container, highlightthickness=0)
+        self.gallery_scrollbar = ttk.Scrollbar(
+            self.results_container, orient="vertical", command=self.gallery_canvas.yview
+        )
+        self.gallery_canvas.configure(yscrollcommand=self.gallery_scrollbar.set)
+        self.gallery_frame = ttk.Frame(self.gallery_canvas)
+        self.gallery_window = self.gallery_canvas.create_window((0, 0), window=self.gallery_frame, anchor="nw")
+        self.gallery_frame.bind(
+            "<Configure>", lambda _event: self.gallery_canvas.configure(scrollregion=self.gallery_canvas.bbox("all"))
+        )
+        self.gallery_canvas.bind(
+            "<Configure>", lambda event: self.gallery_canvas.itemconfigure(self.gallery_window, width=event.width)
+        )
+        self.gallery_canvas.bind("<MouseWheel>", lambda event: self.gallery_canvas.yview_scroll(-event.delta // 120, "units"))
+
         actions = ttk.Frame(outer)
-        actions.grid(row=8, column=0, columnspan=2, sticky="ew", pady=(10, 0))
+        actions.grid(row=9, column=0, columnspan=2, sticky="ew", pady=(10, 0))
         ttk.Button(actions, text="Open selected", command=self.open_selected).pack(side="left")
         ttk.Button(actions, text="Export CSV…", command=self.export_csv).pack(side="left", padx=8)
         ttk.Button(actions, text="Copy matches…", command=self.copy_matches).pack(side="left")
         ttk.Label(actions, text="Verify matches before relying on them; face recognition can be wrong.").pack(side="right")
 
         outer.columnconfigure(0, weight=1)
-        outer.rowconfigure(7, weight=1)
+        outer.rowconfigure(8, weight=1)
 
     def choose_references(self) -> None:
         names = filedialog.askopenfilenames(title="Choose reference photos", filetypes=[("Images", "*.jpg *.jpeg *.png *.webp *.bmp *.tif *.tiff")])
@@ -200,7 +233,11 @@ class FaceFinderApp(tk.Tk):
         self._save_settings()
         self.matches.clear()
         self.result_photos.clear()
+        self.gallery_photos.clear()
+        self.gallery_selected.clear()
         self.tree.delete(*self.tree.get_children())
+        for child in self.gallery_frame.winfo_children():
+            child.destroy()
         self.cancel_event.clear()
         self.scan_button.config(state="disabled")
         self.cancel_button.config(state="normal")
@@ -272,6 +309,35 @@ class FaceFinderApp(tk.Tk):
             text=match.path.name,
             values=(f"{match.score:.3f}", match.face_count, str(match.path)),
         )
+        self._add_gallery_match(match)
+
+    def _add_gallery_match(self, match: MatchResult) -> None:
+        item_id = str(match.path)
+        index = len(self.gallery_selected)
+        photo = self._thumbnail(match.path, (210, 150))
+        selected = tk.BooleanVar(value=False)
+        self.gallery_photos[item_id] = photo
+        self.gallery_selected[item_id] = selected
+
+        card = ttk.Frame(self.gallery_frame, padding=8, relief="ridge")
+        card.grid(row=index // 3, column=index % 3, padx=6, pady=6, sticky="nsew")
+        self.gallery_frame.columnconfigure(index % 3, weight=1)
+        preview = ttk.Label(card, image=photo, cursor="hand2")
+        preview.pack()
+        ttk.Checkbutton(card, text=match.path.name, variable=selected).pack(anchor="w", pady=(5, 0))
+        ttk.Label(card, text=f"Similarity {match.score:.3f} • {match.face_count} face(s)").pack(anchor="w")
+        preview.bind("<Button-1>", lambda _event, value=selected: value.set(not value.get()))
+        preview.bind("<Double-1>", lambda _event, path=match.path: self._open_path(path))
+
+    def _toggle_results_view(self) -> None:
+        if self.results_view_var.get() == "gallery":
+            self.tree.grid_remove()
+            self.gallery_canvas.grid(row=0, column=0, sticky="nsew")
+            self.gallery_scrollbar.grid(row=0, column=1, sticky="ns")
+        else:
+            self.gallery_canvas.grid_remove()
+            self.gallery_scrollbar.grid_remove()
+            self.tree.grid()
 
     def _finish(self, status: str) -> None:
         self.status_var.set(status)
@@ -339,18 +405,24 @@ class FaceFinderApp(tk.Tk):
         self.status_var.set("Cancelling after the current photo…")
 
     def selected_paths(self) -> list[Path]:
+        if self.results_view_var.get() == "gallery":
+            selected = [Path(path) for path, value in self.gallery_selected.items() if value.get()]
+            return selected or [Path(path) for path in self.gallery_selected]
         selected = self.tree.selection() or self.tree.get_children()
         return [Path(self.tree.item(item, "values")[2]) for item in selected]
 
     def open_selected(self) -> None:
         paths = self.selected_paths()
         if paths:
-            if sys.platform == "win32":
-                os.startfile(paths[0])  # type: ignore[attr-defined]
-            elif sys.platform == "darwin":
-                subprocess.Popen(["open", str(paths[0])])
-            else:
-                subprocess.Popen(["xdg-open", str(paths[0])])
+            self._open_path(paths[0])
+
+    def _open_path(self, path: Path) -> None:
+        if sys.platform == "win32":
+            os.startfile(path)  # type: ignore[attr-defined]
+        elif sys.platform == "darwin":
+            subprocess.Popen(["open", str(path)])
+        else:
+            subprocess.Popen(["xdg-open", str(path)])
 
     def export_csv(self) -> None:
         if not self.matches:
