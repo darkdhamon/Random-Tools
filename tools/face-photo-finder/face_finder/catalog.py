@@ -22,6 +22,7 @@ class CatalogFace:
     identity_name: str | None
     embedding: np.ndarray
     preview: np.ndarray | None
+    intentionally_unknown: bool
 
 
 @dataclass(frozen=True)
@@ -63,6 +64,7 @@ class FaceCatalog:
                 identity_id INTEGER REFERENCES identities(id) ON DELETE SET NULL,
                 embedding BLOB NOT NULL,
                 preview BLOB,
+                intentionally_unknown INTEGER NOT NULL DEFAULT 0,
                 UNIQUE(image_id, face_index)
             );
             CREATE INDEX IF NOT EXISTS faces_identity_idx ON faces(identity_id);
@@ -71,6 +73,10 @@ class FaceCatalog:
         columns = {row[1] for row in self.connection.execute("PRAGMA table_info(faces)")}
         if "preview" not in columns:
             self.connection.execute("ALTER TABLE faces ADD COLUMN preview BLOB")
+        if "intentionally_unknown" not in columns:
+            self.connection.execute(
+                "ALTER TABLE faces ADD COLUMN intentionally_unknown INTEGER NOT NULL DEFAULT 0"
+            )
 
     def close(self) -> None:
         self.connection.close()
@@ -121,11 +127,16 @@ class FaceCatalog:
         embeddings: list[np.ndarray],
         identities: list[int | None],
         previews: list[np.ndarray] | None = None,
+        intentionally_unknown: list[bool] | None = None,
     ) -> CatalogImage:
         if len(embeddings) != len(identities):
             raise ValueError("Every face must have an identity assignment.")
         if previews is not None and len(previews) != len(embeddings):
             raise ValueError("Every face must have a corresponding preview.")
+        if intentionally_unknown is None:
+            intentionally_unknown = [False] * len(embeddings)
+        if len(intentionally_unknown) != len(embeddings):
+            raise ValueError("Every face must have an unknown-person status.")
         resolved = path.resolve()
         stat = resolved.stat()
         identified_count = sum(value is not None for value in identities)
@@ -144,7 +155,9 @@ class FaceCatalog:
             image_id = int(self.connection.execute("SELECT id FROM images WHERE path = ?", (str(resolved),)).fetchone()[0])
             self.connection.execute("DELETE FROM faces WHERE image_id = ?", (image_id,))
             self.connection.executemany(
-                "INSERT INTO faces(image_id, face_index, identity_id, embedding, preview) VALUES (?, ?, ?, ?, ?)",
+                """INSERT INTO faces(
+                       image_id, face_index, identity_id, embedding, preview, intentionally_unknown
+                   ) VALUES (?, ?, ?, ?, ?, ?)""",
                 [
                     (
                         image_id,
@@ -152,6 +165,7 @@ class FaceCatalog:
                         identity_id,
                         embedding.astype(np.float32).tobytes(),
                         previews[index].tobytes() if previews is not None else None,
+                        int(intentionally_unknown[index]),
                     )
                     for index, (embedding, identity_id) in enumerate(zip(embeddings, identities, strict=True))
                 ],
@@ -160,7 +174,8 @@ class FaceCatalog:
 
     def faces_for_image(self, image_id: int) -> list[CatalogFace]:
         rows = self.connection.execute(
-            """SELECT faces.id, faces.identity_id, identities.name, faces.embedding, faces.preview
+            """SELECT faces.id, faces.identity_id, identities.name, faces.embedding, faces.preview,
+                      faces.intentionally_unknown
                FROM faces LEFT JOIN identities ON identities.id = faces.identity_id
                WHERE faces.image_id = ? ORDER BY faces.face_index""",
             (image_id,),
@@ -169,6 +184,7 @@ class FaceCatalog:
             CatalogFace(
                 int(row[0]), row[1], row[2], np.frombuffer(row[3], dtype=np.float32).copy(),
                 np.frombuffer(row[4], dtype=np.uint8).copy() if row[4] is not None else None,
+                bool(row[5]),
             )
             for row in rows
         ]
@@ -178,12 +194,21 @@ class FaceCatalog:
             image_row = self.connection.execute("SELECT image_id FROM faces WHERE id = ?", (face_id,)).fetchone()
             if not image_row:
                 return
-            self.connection.execute("UPDATE faces SET identity_id = ? WHERE id = ?", (identity_id, face_id))
+            self.connection.execute(
+                "UPDATE faces SET identity_id = ?, intentionally_unknown = 0 WHERE id = ?",
+                (identity_id, face_id),
+            )
             self.connection.execute(
                 """UPDATE images SET identified_count =
                    (SELECT COUNT(*) FROM faces WHERE faces.image_id = images.id AND identity_id IS NOT NULL)
                    WHERE id = ?""",
                 (image_row[0],),
+            )
+
+    def mark_intentionally_unknown(self, face_id: int) -> None:
+        with self.connection:
+            self.connection.execute(
+                "UPDATE faces SET identity_id = NULL, intentionally_unknown = 1 WHERE id = ?", (face_id,)
             )
 
     def remove_face(self, face_id: int) -> None:

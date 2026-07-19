@@ -45,6 +45,7 @@ class IdentityRequest:
         self.name: str | None = None
         self.skip_remaining = False
         self.not_a_face = False
+        self.intentionally_unknown = False
         self.ready = threading.Event()
 
 
@@ -357,17 +358,19 @@ class FaceFinderApp(tk.Tk):
                         catalog_faces = catalog.faces_for_image(cached.image_id)
                         if catalog_all and not skip_unknowns:
                             for face in catalog_faces:
-                                if face.identity_id is not None or face.preview is None:
+                                if face.identity_id is not None or face.intentionally_unknown or face.preview is None:
                                     continue
                                 preview = cv2.imdecode(face.preview, cv2.IMREAD_COLOR)
                                 if preview is None:
                                     continue
-                                name, stop_asking, not_a_face = self._request_identity(
+                                name, stop_asking, not_a_face, intentionally_unknown = self._request_identity(
                                     path, preview, known_identities
                                 )
                                 skip_unknowns = skip_unknowns or stop_asking
                                 if not_a_face:
                                     catalog.remove_face(face.face_id)
+                                elif intentionally_unknown:
+                                    catalog.mark_intentionally_unknown(face.face_id)
                                 elif name:
                                     identity_id = catalog.get_or_create_identity(name)
                                     catalog.assign_face(face.face_id, identity_id)
@@ -390,10 +393,11 @@ class FaceFinderApp(tk.Tk):
                         detected = engine.detect_faces(path)
                         accepted_faces: list[DetectedFace] = []
                         assignments: list[int | None] = []
+                        unknown_statuses: list[bool] = []
                         for face in detected:
                             identity_id, _score = best_known_identity(face.embedding, known_identities, max(threshold, 0.50))
                             if identity_id is None and catalog_all and not skip_unknowns:
-                                name, stop_asking, not_a_face = self._request_identity(
+                                name, stop_asking, not_a_face, intentionally_unknown = self._request_identity(
                                     path, face.preview, known_identities
                                 )
                                 skip_unknowns = skip_unknowns or stop_asking
@@ -406,10 +410,13 @@ class FaceFinderApp(tk.Tk):
                                     )
                             accepted_faces.append(face)
                             assignments.append(identity_id)
+                            unknown_statuses.append(
+                                intentionally_unknown if identity_id is None and catalog_all and not skip_unknowns else False
+                            )
                         detected = accepted_faces
                         previews = [cv2.imencode(".jpg", face.preview)[1] for face in detected]
                         stored = catalog.store_scan(
-                            path, [face.embedding for face in detected], assignments, previews
+                            path, [face.embedding for face in detected], assignments, previews, unknown_statuses
                         )
                         candidate_embeddings = [face.embedding for face in detected]
                         score = best_similarity(references, candidate_embeddings) if references else -1.0
@@ -417,9 +424,10 @@ class FaceFinderApp(tk.Tk):
                             for face_index, face in enumerate(detected):
                                 if assignments[face_index] is None and best_similarity(references, [face.embedding]) >= threshold:
                                     assignments[face_index] = target_identity_id
+                                    unknown_statuses[face_index] = False
                             if assignments != [face.identity_id for face in catalog.faces_for_image(stored.image_id)]:
                                 catalog.store_scan(
-                                    path, [face.embedding for face in detected], assignments, previews
+                                    path, [face.embedding for face in detected], assignments, previews, unknown_statuses
                                 )
                         if detected and (catalog_all or score >= threshold):
                             refreshed = catalog.cached_image(path) or stored
@@ -454,12 +462,12 @@ class FaceFinderApp(tk.Tk):
 
     def _request_identity(
         self, path: Path, preview: np.ndarray, identities: list[object]
-    ) -> tuple[str | None, bool, bool]:
+    ) -> tuple[str | None, bool, bool, bool]:
         names = [str(getattr(identity, "name")) for identity in identities]
         request = IdentityRequest(path, preview, names)
         self.events.put(("identify_face", request))
         request.ready.wait()
-        return request.name, request.skip_remaining, request.not_a_face
+        return request.name, request.skip_remaining, request.not_a_face, request.intentionally_unknown
 
     def _drain_events(self) -> None:
         try:
@@ -623,10 +631,16 @@ class FaceFinderApp(tk.Tk):
         name_box.pack(fill="x")
         name_box.focus_set()
 
-        def finish(name: str | None, skip_remaining: bool = False, not_a_face: bool = False) -> None:
+        def finish(
+            name: str | None,
+            skip_remaining: bool = False,
+            not_a_face: bool = False,
+            intentionally_unknown: bool = False,
+        ) -> None:
             request.name = name
             request.skip_remaining = skip_remaining
             request.not_a_face = not_a_face
+            request.intentionally_unknown = intentionally_unknown
             request.ready.set()
             self.identity_dialog = None
             self.identity_request = None
@@ -645,6 +659,11 @@ class FaceFinderApp(tk.Tk):
         ttk.Button(buttons, text="Save identity", command=save).pack(side="right")
         ttk.Button(buttons, text="Skip this face", command=lambda: finish(None)).pack(side="right", padx=8)
         ttk.Button(buttons, text="Not a face", command=lambda: finish(None, not_a_face=True)).pack(side="right")
+        ttk.Button(
+            buttons,
+            text="I don't know this person",
+            command=lambda: finish(None, intentionally_unknown=True),
+        ).pack(side="right", padx=8)
         ttk.Button(buttons, text="Skip remaining", command=lambda: finish(None, True)).pack(side="left")
         ttk.Button(buttons, text="Open full image", command=lambda: self._open_path(request.path)).pack(
             side="left", padx=8

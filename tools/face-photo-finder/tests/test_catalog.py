@@ -63,6 +63,24 @@ class CatalogTests(unittest.TestCase):
             self.assertTrue(all(face.identity_id is None for face in faces))
             reopened.close()
 
+    def test_intentionally_unknown_face_is_persisted_and_can_later_be_identified(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            image = root / "public-event.jpg"
+            image.touch()
+            catalog = FaceCatalog(root / "catalog.sqlite3")
+            stored = catalog.store_scan(
+                image, [np.array([1.0, 0.0], dtype=np.float32)], [None], intentionally_unknown=[True]
+            )
+            face = catalog.faces_for_image(stored.image_id)[0]
+            self.assertTrue(face.intentionally_unknown)
+            person_id = catalog.get_or_create_identity("Later Identified")
+            catalog.assign_face(face.face_id, person_id)
+            identified = catalog.faces_for_image(stored.image_id)[0]
+            self.assertFalse(identified.intentionally_unknown)
+            self.assertEqual(identified.identity_name, "Later Identified")
+            catalog.close()
+
     def test_best_known_identity_applies_threshold(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             catalog = FaceCatalog(Path(temporary) / "catalog.sqlite3")
