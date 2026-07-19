@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import csv
+from dataclasses import dataclass
 import os
 from pathlib import Path
 import queue
@@ -46,6 +47,13 @@ class FaceSelectionRequest:
         self.ready = threading.Event()
 
 
+@dataclass(frozen=True)
+class ContextFace:
+    bbox: tuple[int, int, int, int]
+    status: str
+    label: str
+
+
 class IdentityRequest:
     def __init__(
         self,
@@ -55,6 +63,7 @@ class IdentityRequest:
         bbox: tuple[int, int, int, int] | None = None,
         sharpness: float | None = None,
         profile_eligible: bool = True,
+        context_faces: list[ContextFace] | None = None,
     ) -> None:
         self.path = path
         self.preview = preview
@@ -62,6 +71,9 @@ class IdentityRequest:
         self.bbox = bbox
         self.sharpness = sharpness
         self.profile_eligible = profile_eligible
+        self.context_faces = context_faces or (
+            [ContextFace(bbox, "current", "Person to identify")] if bbox else []
+        )
         self.name: str | None = None
         self.skip_remaining = False
         self.not_a_face = False
@@ -99,6 +111,23 @@ def add_unknown_sample(
     if not found:
         updated.append(UnknownGroup(group_id, (embedding,)))
     return updated
+
+
+def detection_context(
+    faces: list[DetectedFace],
+    current_index: int,
+    states: dict[int, tuple[str, str]],
+) -> list[ContextFace]:
+    annotations: list[ContextFace] = []
+    for index, face in enumerate(faces):
+        if face.bbox is None or states.get(index, ("", ""))[0] == "not_face":
+            continue
+        if index == current_index:
+            annotations.append(ContextFace(face.bbox, "current", "Person to identify"))
+        else:
+            status, label = states.get(index, ("unprocessed", "Unprocessed"))
+            annotations.append(ContextFace(face.bbox, status, label))
+    return annotations
 
 
 class FaceFinderApp(tk.Tk):
@@ -403,9 +432,33 @@ class FaceFinderApp(tk.Tk):
                                 preview = cv2.imdecode(face.preview, cv2.IMREAD_COLOR)
                                 if preview is None:
                                     continue
+                                context_faces = []
+                                for context_face in catalog_faces:
+                                    if context_face.bbox is None:
+                                        continue
+                                    if context_face.face_id == face.face_id:
+                                        context_faces.append(
+                                            ContextFace(context_face.bbox, "current", "Person to identify")
+                                        )
+                                    elif context_face.identity_id is not None:
+                                        context_faces.append(
+                                            ContextFace(
+                                                context_face.bbox,
+                                                "identified",
+                                                context_face.identity_name or "Identified",
+                                            )
+                                        )
+                                    elif context_face.intentionally_unknown:
+                                        context_faces.append(
+                                            ContextFace(context_face.bbox, "unknown", "Unknown person")
+                                        )
+                                    else:
+                                        context_faces.append(
+                                            ContextFace(context_face.bbox, "unprocessed", "Unprocessed")
+                                        )
                                 name, stop_asking, not_a_face, intentionally_unknown = self._request_identity(
                                     path, preview, known_identities, face.bbox, face.sharpness,
-                                    face.profile_eligible,
+                                    face.profile_eligible, context_faces,
                                 )
                                 skip_unknowns = skip_unknowns or stop_asking
                                 if not_a_face:
@@ -440,7 +493,8 @@ class FaceFinderApp(tk.Tk):
                         assignments: list[int | None] = []
                         unknown_statuses: list[bool] = []
                         unknown_group_ids: list[int | None] = []
-                        for face in detected:
+                        review_states: dict[int, tuple[str, str]] = {}
+                        for detected_index, face in enumerate(detected):
                             learning_threshold = max(threshold, 0.55)
                             identity_id, _identity_score = best_known_identity(
                                 face.embedding, known_identities, learning_threshold
@@ -452,6 +506,11 @@ class FaceFinderApp(tk.Tk):
                                 known_identities = add_known_sample(
                                     known_identities, identity_id, identity.name, face.embedding
                                 )
+                            if identity_id is not None:
+                                identity_name = next(
+                                    item.name for item in known_identities if item.identity_id == identity_id
+                                )
+                                review_states[detected_index] = ("identified", identity_name)
                             unknown_group_id: int | None = None
                             intentionally_unknown = False
                             if identity_id is None:
@@ -463,6 +522,8 @@ class FaceFinderApp(tk.Tk):
                                     unknown_groups = add_unknown_sample(
                                         unknown_groups, unknown_group_id, face.embedding
                                     )
+                                if unknown_group_id is not None:
+                                    review_states[detected_index] = ("unknown", "Unknown person")
                             if (
                                 identity_id is None
                                 and unknown_group_id is None
@@ -472,9 +533,11 @@ class FaceFinderApp(tk.Tk):
                                 name, stop_asking, not_a_face, intentionally_unknown = self._request_identity(
                                     path, face.preview, known_identities, face.bbox, face.sharpness,
                                     face.profile_eligible,
+                                    detection_context(detected, detected_index, review_states),
                                 )
                                 skip_unknowns = skip_unknowns or stop_asking
                                 if not_a_face:
+                                    review_states[detected_index] = ("not_face", "Not a face")
                                     continue
                                 if name:
                                     identity_id = catalog.get_or_create_identity(name)
@@ -482,12 +545,16 @@ class FaceFinderApp(tk.Tk):
                                         known_identities = add_known_sample(
                                             known_identities, identity_id, name, face.embedding
                                         )
+                                    review_states[detected_index] = ("identified", name)
                                 elif intentionally_unknown:
                                     unknown_group_id = catalog.create_unknown_group()
                                     if face.profile_eligible:
                                         unknown_groups = add_unknown_sample(
                                             unknown_groups, unknown_group_id, face.embedding
                                         )
+                                    review_states[detected_index] = ("unknown", "Unknown person")
+                                else:
+                                    review_states[detected_index] = ("unprocessed", "Unprocessed")
                             accepted_faces.append(face)
                             assignments.append(identity_id)
                             unknown_statuses.append(intentionally_unknown and identity_id is None)
@@ -554,9 +621,12 @@ class FaceFinderApp(tk.Tk):
         bbox: tuple[int, int, int, int] | None,
         sharpness: float | None,
         profile_eligible: bool,
+        context_faces: list[ContextFace],
     ) -> tuple[str | None, bool, bool, bool]:
         names = [str(getattr(identity, "name")) for identity in identities]
-        request = IdentityRequest(path, preview, names, bbox, sharpness, profile_eligible)
+        request = IdentityRequest(
+            path, preview, names, bbox, sharpness, profile_eligible, context_faces
+        )
         self.events.put(("identify_face", request))
         request.ready.wait()
         return request.name, request.skip_remaining, request.not_a_face, request.intentionally_unknown
@@ -832,34 +902,46 @@ class FaceFinderApp(tk.Tk):
         max_height = min(820, max(450, self.winfo_screenheight() - 200))
         image.thumbnail((max_width, max_height), Image.Resampling.LANCZOS)
 
-        if request.bbox:
+        if request.context_faces:
             source_height, source_width = source.shape[:2]
             scale_x = image.width / source_width
             scale_y = image.height / source_height
-            x, y, width, height = request.bbox
-            left = max(0, round(x * scale_x))
-            top = max(0, round(y * scale_y))
-            right = min(image.width - 1, round((x + width) * scale_x))
-            bottom = min(image.height - 1, round((y + height) * scale_y))
-            center_x = (left + right) // 2
-            center_y = (top + bottom) // 2
             draw = ImageDraw.Draw(image)
-            color = "#00ffff"
-            shadow = "#001010"
-            for offset_color, line_width in ((shadow, 8), (color, 4)):
-                draw.rectangle((left, top, right, bottom), outline=offset_color, width=line_width)
-            radius = max(12, min(28, (right - left) // 8))
-            draw.ellipse(
-                (center_x - radius, center_y - radius, center_x + radius, center_y + radius),
-                outline=color,
-                width=4,
-            )
-            draw.line((center_x - radius * 2, center_y, center_x + radius * 2, center_y), fill=color, width=3)
-            draw.line((center_x, center_y - radius * 2, center_x, center_y + radius * 2), fill=color, width=3)
-            label = "Person to identify"
-            label_box = draw.textbbox((left, max(0, top - 24)), label)
-            draw.rectangle(label_box, fill="#001010")
-            draw.text((left, max(0, top - 24)), label, fill=color)
+            colors = {
+                "unprocessed": "#ff3030",
+                "current": "#00ffff",
+                "identified": "#20d060",
+                "unknown": "#9a9a9a",
+            }
+            # Draw the active cyan target last so it remains visually dominant.
+            annotations = sorted(request.context_faces, key=lambda item: item.status == "current")
+            for annotation in annotations:
+                x, y, width, height = annotation.bbox
+                left = max(0, round(x * scale_x))
+                top = max(0, round(y * scale_y))
+                right = min(image.width - 1, round((x + width) * scale_x))
+                bottom = min(image.height - 1, round((y + height) * scale_y))
+                center_x = (left + right) // 2
+                center_y = (top + bottom) // 2
+                color = colors.get(annotation.status, colors["unprocessed"])
+                for outline_color, line_width in (("#101010", 8), (color, 4)):
+                    draw.rectangle((left, top, right, bottom), outline=outline_color, width=line_width)
+                radius = max(9, min(24, max(1, right - left) // 8))
+                draw.ellipse(
+                    (center_x - radius, center_y - radius, center_x + radius, center_y + radius),
+                    outline=color,
+                    width=3,
+                )
+                draw.line(
+                    (center_x - radius * 2, center_y, center_x + radius * 2, center_y), fill=color, width=3
+                )
+                draw.line(
+                    (center_x, center_y - radius * 2, center_x, center_y + radius * 2), fill=color, width=3
+                )
+                label_y = max(0, top - 20)
+                label_box = draw.textbbox((left, label_y), annotation.label)
+                draw.rectangle(label_box, fill="#101010")
+                draw.text((left, label_y), annotation.label, fill=color)
 
         viewer = tk.Toplevel(self)
         viewer.title(f"Context — {request.path.name}")
@@ -868,6 +950,10 @@ class FaceFinderApp(tk.Tk):
         frame.pack(fill="both", expand=True)
         photo = ImageTk.PhotoImage(image)
         ttk.Label(frame, image=photo).pack()
+        ttk.Label(
+            frame,
+            text="Red: unprocessed   •   Cyan: identifying now   •   Green: identified   •   Gray: unknown",
+        ).pack(anchor="w", pady=(8, 0))
         ttk.Label(frame, text=str(request.path), wraplength=max_width).pack(anchor="w", pady=(8, 4))
         def close_viewer() -> None:
             viewer.grab_release()
