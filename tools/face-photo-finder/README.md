@@ -20,6 +20,7 @@ A private, local desktop tool that recursively scans a folder and finds photos l
 - catalogs all face-containing photos when no reference or known person is selected, prompting to name unfamiliar faces;
 - searches by a previously learned person from the **Known person** list without requiring another reference photo;
 - autocompletes identity names case-insensitively while still allowing new names;
+- shows up to three closest named-profile buttons with match percentages when automatic recognition is uncertain;
 - provides a two-step danger-confirmed **Reset face database** action—including typing `RESET`—that removes all biometric and scan-cache data without touching source photos or saved preferences;
 - includes **Manage identities** for reviewing face/photo assignments, moving selected entries, or merging an entire duplicate profile into an existing or newly named profile;
 - opens matches, exports a CSV report, or copies selected/all matches;

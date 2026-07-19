@@ -23,6 +23,7 @@ from .catalog import (
     best_known_identity,
     best_unknown_group,
     bounded_profile,
+    closest_identity_matches,
     default_catalog_path,
 )
 from .models import ensure_models
@@ -126,6 +127,7 @@ class IdentityRequest:
         sharpness: float | None = None,
         profile_eligible: bool = True,
         context_faces: list[ContextFace] | None = None,
+        suggestions: list[tuple[str, float]] | None = None,
     ) -> None:
         self.path = path
         self.preview = preview
@@ -136,6 +138,7 @@ class IdentityRequest:
         self.context_faces = context_faces or (
             [ContextFace(bbox, "current", "Person to identify", "current")] if bbox else []
         )
+        self.suggestions = suggestions or []
         self.selected_face_keys: set[str] = {
             item.face_key for item in self.context_faces if item.status == "current" and item.face_key
         }
@@ -824,7 +827,14 @@ class FaceFinderApp(tk.Tk):
     ]:
         names = [str(getattr(identity, "name")) for identity in identities]
         request = IdentityRequest(
-            path, preview, names, bbox, sharpness, profile_eligible, context_faces
+            path,
+            preview,
+            names,
+            bbox,
+            sharpness,
+            profile_eligible,
+            context_faces,
+            [(identity.name, score) for identity, score in closest_identity_matches(target_embedding, identities)],
         )
         request.target_embedding = target_embedding
         self.identity_request = request
@@ -1282,6 +1292,16 @@ class FaceFinderApp(tk.Tk):
                 messagebox.showwarning("Name required", "Enter a name or use one of the skip options.", parent=dialog)
                 return
             finish(name, save_as_art=save_as_art)
+
+        if request.suggestions:
+            suggestion_frame = ttk.LabelFrame(content, text="Closest named profiles — click to identify", padding=8)
+            suggestion_frame.pack(fill="x", pady=(10, 0))
+            for name, score in request.suggestions:
+                ttk.Button(
+                    suggestion_frame,
+                    text=f"{name} — {max(0.0, min(1.0, score)) * 100:.1f}%",
+                    command=lambda value=name: finish(value),
+                ).pack(side="left", padx=(0, 8))
 
         buttons = ttk.Frame(content)
         buttons.pack(fill="x", pady=(14, 0))

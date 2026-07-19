@@ -7,13 +7,25 @@ import numpy as np
 from face_finder.catalog import (
     PROFILE_MAX_SAMPLES,
     FaceCatalog,
+    KnownIdentity,
     best_known_identity,
     best_unknown_group,
     bounded_profile,
+    closest_identity_matches,
 )
 
 
 class CatalogTests(unittest.TestCase):
+    def test_closest_identity_matches_are_ranked_with_percent_ready_scores(self) -> None:
+        identities = [
+            KnownIdentity(1, "Second", (np.array([0.7, 0.3], dtype=np.float32),)),
+            KnownIdentity(2, "Closest", (np.array([0.9, 0.1], dtype=np.float32),)),
+            KnownIdentity(3, "No Samples", ()),
+        ]
+        matches = closest_identity_matches(np.array([1.0, 0.0], dtype=np.float32), identities)
+        self.assertEqual([item.name for item, _score in matches], ["Closest", "Second"])
+        self.assertAlmostEqual(matches[0][1], 0.9, places=5)
+
     def test_face_assignments_can_be_moved_and_empty_duplicate_removed(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

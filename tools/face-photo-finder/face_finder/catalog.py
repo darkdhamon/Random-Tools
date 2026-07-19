@@ -441,6 +441,19 @@ def best_known_identity(
     return (best_id if best_score >= threshold else None), best_score
 
 
+def closest_identity_matches(
+    embedding: np.ndarray, identities: list[KnownIdentity], limit: int = 3
+) -> list[tuple[KnownIdentity, float]]:
+    ranked: list[tuple[KnownIdentity, float]] = []
+    for identity in identities:
+        if not identity.embeddings:
+            continue
+        score = max(float(np.dot(embedding, known)) for known in identity.embeddings)
+        ranked.append((identity, score))
+    ranked.sort(key=lambda item: (-item[1], item[0].name.casefold()))
+    return ranked[:limit]
+
+
 def best_unknown_group(
     embedding: np.ndarray, groups: list[UnknownGroup], threshold: float
 ) -> tuple[int | None, float]:
