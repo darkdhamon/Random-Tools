@@ -186,6 +186,22 @@ class FaceCatalog:
                 (image_row[0],),
             )
 
+    def remove_face(self, face_id: int) -> None:
+        """Mark a detector false-positive by removing it and refreshing image counts."""
+        with self.connection:
+            image_row = self.connection.execute("SELECT image_id FROM faces WHERE id = ?", (face_id,)).fetchone()
+            if not image_row:
+                return
+            image_id = int(image_row[0])
+            self.connection.execute("DELETE FROM faces WHERE id = ?", (face_id,))
+            self.connection.execute(
+                """UPDATE images SET
+                   face_count = (SELECT COUNT(*) FROM faces WHERE faces.image_id = images.id),
+                   identified_count = (SELECT COUNT(*) FROM faces WHERE faces.image_id = images.id AND identity_id IS NOT NULL)
+                   WHERE id = ?""",
+                (image_id,),
+            )
+
 
 def best_known_identity(
     embedding: np.ndarray, identities: list[KnownIdentity], threshold: float

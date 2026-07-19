@@ -27,6 +27,10 @@ class CatalogTests(unittest.TestCase):
             self.assertIsNone(faces[1].identity_name)
             catalog.assign_face(faces[1].face_id, person_id)
             self.assertEqual(catalog.cached_image(image).identified_count, 2)  # type: ignore[union-attr]
+            catalog.remove_face(faces[1].face_id)
+            after_removal = catalog.cached_image(image)
+            self.assertEqual(after_removal.face_count, 1)  # type: ignore[union-attr]
+            self.assertEqual(after_removal.identified_count, 1)  # type: ignore[union-attr]
             catalog.close()
 
     def test_modified_image_is_not_returned_as_cached(self) -> None:
@@ -39,6 +43,25 @@ class CatalogTests(unittest.TestCase):
             image.write_bytes(b"different size")
             self.assertIsNone(catalog.cached_image(image))
             catalog.close()
+
+    def test_unidentified_faces_remain_available_after_reopening_catalog(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            image = root / "group.jpg"
+            image.touch()
+            catalog_path = root / "catalog.sqlite3"
+            catalog = FaceCatalog(catalog_path)
+            stored = catalog.store_scan(
+                image,
+                [np.array([1.0, 0.0], dtype=np.float32), np.array([0.0, 1.0], dtype=np.float32)],
+                [None, None],
+            )
+            catalog.close()
+            reopened = FaceCatalog(catalog_path)
+            faces = reopened.faces_for_image(stored.image_id)
+            self.assertEqual(len(faces), 2)
+            self.assertTrue(all(face.identity_id is None for face in faces))
+            reopened.close()
 
     def test_best_known_identity_applies_threshold(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -55,4 +78,3 @@ class CatalogTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-

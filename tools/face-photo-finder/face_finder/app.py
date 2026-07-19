@@ -44,6 +44,7 @@ class IdentityRequest:
         self.names = names
         self.name: str | None = None
         self.skip_remaining = False
+        self.not_a_face = False
         self.ready = threading.Event()
 
 
@@ -359,39 +360,53 @@ class FaceFinderApp(tk.Tk):
                                 if face.identity_id is not None or face.preview is None:
                                     continue
                                 preview = cv2.imdecode(face.preview, cv2.IMREAD_COLOR)
-                                name, stop_asking = self._request_identity(path, preview, known_identities)
+                                if preview is None:
+                                    continue
+                                name, stop_asking, not_a_face = self._request_identity(
+                                    path, preview, known_identities
+                                )
                                 skip_unknowns = skip_unknowns or stop_asking
-                                if name:
+                                if not_a_face:
+                                    catalog.remove_face(face.face_id)
+                                elif name:
                                     identity_id = catalog.get_or_create_identity(name)
                                     catalog.assign_face(face.face_id, identity_id)
                                     known_identities = catalog.identities()
                                 if skip_unknowns:
                                     break
+                        catalog_faces = catalog.faces_for_image(cached.image_id)
                         candidate_embeddings = [face.embedding for face in catalog_faces]
                         score = best_similarity(references, candidate_embeddings) if references else -1.0
                         if target_identity_id is not None:
                             for face in catalog_faces:
                                 if face.identity_id is None and best_similarity(references, [face.embedding]) >= threshold:
                                     catalog.assign_face(face.face_id, target_identity_id)
-                        if cached.face_count and (catalog_all or score >= threshold):
+                        if catalog_faces and (catalog_all or score >= threshold):
                             refreshed = catalog.cached_image(path) or cached
                             match = MatchResult(
                                 path, score, refreshed.face_count, refreshed.identified_count, cached=True
                             )
                     else:
                         detected = engine.detect_faces(path)
+                        accepted_faces: list[DetectedFace] = []
                         assignments: list[int | None] = []
                         for face in detected:
                             identity_id, _score = best_known_identity(face.embedding, known_identities, max(threshold, 0.50))
                             if identity_id is None and catalog_all and not skip_unknowns:
-                                name, stop_asking = self._request_identity(path, face.preview, known_identities)
+                                name, stop_asking, not_a_face = self._request_identity(
+                                    path, face.preview, known_identities
+                                )
                                 skip_unknowns = skip_unknowns or stop_asking
+                                if not_a_face:
+                                    continue
                                 if name:
                                     identity_id = catalog.get_or_create_identity(name)
                                     known_identities = add_known_sample(
                                         known_identities, identity_id, name, face.embedding
                                     )
+                            accepted_faces.append(face)
                             assignments.append(identity_id)
+                        detected = accepted_faces
                         previews = [cv2.imencode(".jpg", face.preview)[1] for face in detected]
                         stored = catalog.store_scan(
                             path, [face.embedding for face in detected], assignments, previews
@@ -439,12 +454,12 @@ class FaceFinderApp(tk.Tk):
 
     def _request_identity(
         self, path: Path, preview: np.ndarray, identities: list[object]
-    ) -> tuple[str | None, bool]:
+    ) -> tuple[str | None, bool, bool]:
         names = [str(getattr(identity, "name")) for identity in identities]
         request = IdentityRequest(path, preview, names)
         self.events.put(("identify_face", request))
         request.ready.wait()
-        return request.name, request.skip_remaining
+        return request.name, request.skip_remaining, request.not_a_face
 
     def _drain_events(self) -> None:
         try:
@@ -608,9 +623,10 @@ class FaceFinderApp(tk.Tk):
         name_box.pack(fill="x")
         name_box.focus_set()
 
-        def finish(name: str | None, skip_remaining: bool = False) -> None:
+        def finish(name: str | None, skip_remaining: bool = False, not_a_face: bool = False) -> None:
             request.name = name
             request.skip_remaining = skip_remaining
+            request.not_a_face = not_a_face
             request.ready.set()
             self.identity_dialog = None
             self.identity_request = None
@@ -628,7 +644,11 @@ class FaceFinderApp(tk.Tk):
         buttons.pack(fill="x", pady=(14, 0))
         ttk.Button(buttons, text="Save identity", command=save).pack(side="right")
         ttk.Button(buttons, text="Skip this face", command=lambda: finish(None)).pack(side="right", padx=8)
+        ttk.Button(buttons, text="Not a face", command=lambda: finish(None, not_a_face=True)).pack(side="right")
         ttk.Button(buttons, text="Skip remaining", command=lambda: finish(None, True)).pack(side="left")
+        ttk.Button(buttons, text="Open full image", command=lambda: self._open_path(request.path)).pack(
+            side="left", padx=8
+        )
         dialog.protocol("WM_DELETE_WINDOW", lambda: finish(None))
         dialog._identity_photo = photo  # type: ignore[attr-defined]
         dialog.bind("<Return>", lambda _event: save())
