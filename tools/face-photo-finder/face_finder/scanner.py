@@ -34,6 +34,7 @@ class ScanProgress:
 class DetectedFace:
     embedding: np.ndarray
     preview: np.ndarray
+    bbox: tuple[int, int, int, int] | None = None
 
 
 class FaceEngine:
@@ -62,7 +63,8 @@ class FaceEngine:
             norm = float(np.linalg.norm(feature))
             if norm:
                 # The aligned crop gives the picker a consistent, close-up preview.
-                results.append(DetectedFace(feature / norm, aligned))
+                x, y, face_width, face_height = (int(round(value)) for value in face[:4])
+                results.append(DetectedFace(feature / norm, aligned, (x, y, face_width, face_height)))
         return results
 
     def embeddings(self, image_path: Path) -> list[np.ndarray]:

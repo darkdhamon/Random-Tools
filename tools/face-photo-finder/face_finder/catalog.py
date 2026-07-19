@@ -23,6 +23,7 @@ class CatalogFace:
     embedding: np.ndarray
     preview: np.ndarray | None
     intentionally_unknown: bool
+    bbox: tuple[int, int, int, int] | None
 
 
 @dataclass(frozen=True)
@@ -65,6 +66,10 @@ class FaceCatalog:
                 embedding BLOB NOT NULL,
                 preview BLOB,
                 intentionally_unknown INTEGER NOT NULL DEFAULT 0,
+                bbox_x INTEGER,
+                bbox_y INTEGER,
+                bbox_width INTEGER,
+                bbox_height INTEGER,
                 UNIQUE(image_id, face_index)
             );
             CREATE INDEX IF NOT EXISTS faces_identity_idx ON faces(identity_id);
@@ -77,6 +82,9 @@ class FaceCatalog:
             self.connection.execute(
                 "ALTER TABLE faces ADD COLUMN intentionally_unknown INTEGER NOT NULL DEFAULT 0"
             )
+        for column in ("bbox_x", "bbox_y", "bbox_width", "bbox_height"):
+            if column not in columns:
+                self.connection.execute(f"ALTER TABLE faces ADD COLUMN {column} INTEGER")
 
     def close(self) -> None:
         self.connection.close()
@@ -119,6 +127,11 @@ class FaceCatalog:
         ).fetchone()
         if not row or row[2] != stat.st_size or row[3] != stat.st_mtime_ns:
             return None
+        missing_geometry = self.connection.execute(
+            """SELECT 1 FROM faces WHERE image_id = ? AND bbox_x IS NULL LIMIT 1""", (row[0],)
+        ).fetchone()
+        if missing_geometry:
+            return None
         return CatalogImage(int(row[0]), Path(row[1]), int(row[2]), int(row[3]), int(row[4]), int(row[5]))
 
     def store_scan(
@@ -128,6 +141,7 @@ class FaceCatalog:
         identities: list[int | None],
         previews: list[np.ndarray] | None = None,
         intentionally_unknown: list[bool] | None = None,
+        boxes: list[tuple[int, int, int, int] | None] | None = None,
     ) -> CatalogImage:
         if len(embeddings) != len(identities):
             raise ValueError("Every face must have an identity assignment.")
@@ -137,6 +151,10 @@ class FaceCatalog:
             intentionally_unknown = [False] * len(embeddings)
         if len(intentionally_unknown) != len(embeddings):
             raise ValueError("Every face must have an unknown-person status.")
+        if boxes is None:
+            boxes = [(0, 0, 0, 0)] * len(embeddings)
+        if len(boxes) != len(embeddings):
+            raise ValueError("Every face must have a bounding-box value.")
         resolved = path.resolve()
         stat = resolved.stat()
         identified_count = sum(value is not None for value in identities)
@@ -157,7 +175,8 @@ class FaceCatalog:
             self.connection.executemany(
                 """INSERT INTO faces(
                        image_id, face_index, identity_id, embedding, preview, intentionally_unknown
-                   ) VALUES (?, ?, ?, ?, ?, ?)""",
+                       , bbox_x, bbox_y, bbox_width, bbox_height
+                   ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 [
                     (
                         image_id,
@@ -166,6 +185,7 @@ class FaceCatalog:
                         embedding.astype(np.float32).tobytes(),
                         previews[index].tobytes() if previews is not None else None,
                         int(intentionally_unknown[index]),
+                        *(boxes[index] if boxes[index] is not None else (None, None, None, None)),
                     )
                     for index, (embedding, identity_id) in enumerate(zip(embeddings, identities, strict=True))
                 ],
@@ -175,7 +195,8 @@ class FaceCatalog:
     def faces_for_image(self, image_id: int) -> list[CatalogFace]:
         rows = self.connection.execute(
             """SELECT faces.id, faces.identity_id, identities.name, faces.embedding, faces.preview,
-                      faces.intentionally_unknown
+                      faces.intentionally_unknown, faces.bbox_x, faces.bbox_y,
+                      faces.bbox_width, faces.bbox_height
                FROM faces LEFT JOIN identities ON identities.id = faces.identity_id
                WHERE faces.image_id = ? ORDER BY faces.face_index""",
             (image_id,),
@@ -185,6 +206,7 @@ class FaceCatalog:
                 int(row[0]), row[1], row[2], np.frombuffer(row[3], dtype=np.float32).copy(),
                 np.frombuffer(row[4], dtype=np.uint8).copy() if row[4] is not None else None,
                 bool(row[5]),
+                (int(row[6]), int(row[7]), int(row[8]), int(row[9])) if row[6] is not None else None,
             )
             for row in rows
         ]

@@ -25,6 +25,7 @@ from .scanner import (
     best_similarity,
     build_reference_embeddings,
     image_files,
+    read_image,
 )
 from .settings import AppSettings, load_settings, save_settings
 
@@ -38,10 +39,13 @@ class FaceSelectionRequest:
 
 
 class IdentityRequest:
-    def __init__(self, path: Path, preview: np.ndarray, names: list[str]) -> None:
+    def __init__(
+        self, path: Path, preview: np.ndarray, names: list[str], bbox: tuple[int, int, int, int] | None = None
+    ) -> None:
         self.path = path
         self.preview = preview
         self.names = names
+        self.bbox = bbox
         self.name: str | None = None
         self.skip_remaining = False
         self.not_a_face = False
@@ -364,7 +368,7 @@ class FaceFinderApp(tk.Tk):
                                 if preview is None:
                                     continue
                                 name, stop_asking, not_a_face, intentionally_unknown = self._request_identity(
-                                    path, preview, known_identities
+                                    path, preview, known_identities, face.bbox
                                 )
                                 skip_unknowns = skip_unknowns or stop_asking
                                 if not_a_face:
@@ -398,7 +402,7 @@ class FaceFinderApp(tk.Tk):
                             identity_id, _score = best_known_identity(face.embedding, known_identities, max(threshold, 0.50))
                             if identity_id is None and catalog_all and not skip_unknowns:
                                 name, stop_asking, not_a_face, intentionally_unknown = self._request_identity(
-                                    path, face.preview, known_identities
+                                    path, face.preview, known_identities, face.bbox
                                 )
                                 skip_unknowns = skip_unknowns or stop_asking
                                 if not_a_face:
@@ -416,7 +420,8 @@ class FaceFinderApp(tk.Tk):
                         detected = accepted_faces
                         previews = [cv2.imencode(".jpg", face.preview)[1] for face in detected]
                         stored = catalog.store_scan(
-                            path, [face.embedding for face in detected], assignments, previews, unknown_statuses
+                            path, [face.embedding for face in detected], assignments, previews, unknown_statuses,
+                            [face.bbox for face in detected],
                         )
                         candidate_embeddings = [face.embedding for face in detected]
                         score = best_similarity(references, candidate_embeddings) if references else -1.0
@@ -427,7 +432,8 @@ class FaceFinderApp(tk.Tk):
                                     unknown_statuses[face_index] = False
                             if assignments != [face.identity_id for face in catalog.faces_for_image(stored.image_id)]:
                                 catalog.store_scan(
-                                    path, [face.embedding for face in detected], assignments, previews, unknown_statuses
+                                    path, [face.embedding for face in detected], assignments, previews,
+                                    unknown_statuses, [face.bbox for face in detected],
                                 )
                         if detected and (catalog_all or score >= threshold):
                             refreshed = catalog.cached_image(path) or stored
@@ -461,10 +467,14 @@ class FaceFinderApp(tk.Tk):
         return request.selected
 
     def _request_identity(
-        self, path: Path, preview: np.ndarray, identities: list[object]
+        self,
+        path: Path,
+        preview: np.ndarray,
+        identities: list[object],
+        bbox: tuple[int, int, int, int] | None,
     ) -> tuple[str | None, bool, bool, bool]:
         names = [str(getattr(identity, "name")) for identity in identities]
-        request = IdentityRequest(path, preview, names)
+        request = IdentityRequest(path, preview, names, bbox)
         self.events.put(("identify_face", request))
         request.ready.wait()
         return request.name, request.skip_remaining, request.not_a_face, request.intentionally_unknown
@@ -665,7 +675,7 @@ class FaceFinderApp(tk.Tk):
             command=lambda: finish(None, intentionally_unknown=True),
         ).pack(side="right", padx=8)
         ttk.Button(buttons, text="Skip remaining", command=lambda: finish(None, True)).pack(side="left")
-        ttk.Button(buttons, text="Open full image", command=lambda: self._open_path(request.path)).pack(
+        ttk.Button(buttons, text="View context", command=lambda: self._show_context_image(request)).pack(
             side="left", padx=8
         )
         dialog.protocol("WM_DELETE_WINDOW", lambda: finish(None))
@@ -673,6 +683,70 @@ class FaceFinderApp(tk.Tk):
         dialog.bind("<Return>", lambda _event: save())
         dialog.update_idletasks()
         dialog.geometry(f"+{self.winfo_rootx() + 80}+{self.winfo_rooty() + 80}")
+
+    def _show_context_image(self, request: IdentityRequest) -> tk.Toplevel | None:
+        try:
+            source = read_image(request.path)
+        except Exception as exc:
+            messagebox.showerror("Unable to open image", str(exc), parent=self.identity_dialog or self)
+            return None
+
+        rgb = cv2.cvtColor(source, cv2.COLOR_BGR2RGB)
+        image = Image.fromarray(rgb)
+        max_width = min(1200, max(600, self.winfo_screenwidth() - 160))
+        max_height = min(820, max(450, self.winfo_screenheight() - 200))
+        image.thumbnail((max_width, max_height), Image.Resampling.LANCZOS)
+
+        if request.bbox:
+            source_height, source_width = source.shape[:2]
+            scale_x = image.width / source_width
+            scale_y = image.height / source_height
+            x, y, width, height = request.bbox
+            left = max(0, round(x * scale_x))
+            top = max(0, round(y * scale_y))
+            right = min(image.width - 1, round((x + width) * scale_x))
+            bottom = min(image.height - 1, round((y + height) * scale_y))
+            center_x = (left + right) // 2
+            center_y = (top + bottom) // 2
+            draw = ImageDraw.Draw(image)
+            color = "#00ffff"
+            shadow = "#001010"
+            for offset_color, line_width in ((shadow, 8), (color, 4)):
+                draw.rectangle((left, top, right, bottom), outline=offset_color, width=line_width)
+            radius = max(12, min(28, (right - left) // 8))
+            draw.ellipse(
+                (center_x - radius, center_y - radius, center_x + radius, center_y + radius),
+                outline=color,
+                width=4,
+            )
+            draw.line((center_x - radius * 2, center_y, center_x + radius * 2, center_y), fill=color, width=3)
+            draw.line((center_x, center_y - radius * 2, center_x, center_y + radius * 2), fill=color, width=3)
+            label = "Person to identify"
+            label_box = draw.textbbox((left, max(0, top - 24)), label)
+            draw.rectangle(label_box, fill="#001010")
+            draw.text((left, max(0, top - 24)), label, fill=color)
+
+        viewer = tk.Toplevel(self)
+        viewer.title(f"Context — {request.path.name}")
+        viewer.transient(self.identity_dialog or self)
+        frame = ttk.Frame(viewer, padding=10)
+        frame.pack(fill="both", expand=True)
+        photo = ImageTk.PhotoImage(image)
+        ttk.Label(frame, image=photo).pack()
+        ttk.Label(frame, text=str(request.path), wraplength=max_width).pack(anchor="w", pady=(8, 4))
+        def close_viewer() -> None:
+            viewer.grab_release()
+            viewer.destroy()
+            if self.identity_dialog and self.identity_dialog.winfo_exists():
+                self.identity_dialog.grab_set()
+
+        ttk.Button(frame, text="Close", command=close_viewer).pack(anchor="e")
+        viewer._context_photo = photo  # type: ignore[attr-defined]
+        viewer.protocol("WM_DELETE_WINDOW", close_viewer)
+        viewer.grab_set()
+        viewer.update_idletasks()
+        viewer.geometry(f"+{self.winfo_rootx() + 30}+{self.winfo_rooty() + 30}")
+        return viewer
 
     def cancel_scan(self) -> None:
         self.cancel_event.set()

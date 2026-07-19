@@ -17,13 +17,16 @@ class CatalogTests(unittest.TestCase):
             person_id = catalog.get_or_create_identity("Alex Example")
             first = np.array([1.0, 0.0], dtype=np.float32)
             second = np.array([0.0, 1.0], dtype=np.float32)
-            stored = catalog.store_scan(image, [first, second], [person_id, None])
+            stored = catalog.store_scan(
+                image, [first, second], [person_id, None], boxes=[(10, 20, 30, 40), (50, 60, 70, 80)]
+            )
             cached = catalog.cached_image(image)
             self.assertEqual(cached, stored)
             self.assertEqual(cached.face_count, 2)  # type: ignore[union-attr]
             self.assertEqual(cached.identified_count, 1)  # type: ignore[union-attr]
             faces = catalog.faces_for_image(stored.image_id)
             self.assertEqual(faces[0].identity_name, "Alex Example")
+            self.assertEqual(faces[0].bbox, (10, 20, 30, 40))
             self.assertIsNone(faces[1].identity_name)
             catalog.assign_face(faces[1].face_id, person_id)
             self.assertEqual(catalog.cached_image(image).identified_count, 2)  # type: ignore[union-attr]
