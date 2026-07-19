@@ -6,6 +6,7 @@ A private, local desktop tool that recursively scans a folder and finds photos l
 
 - scans the selected folder and every subfolder;
 - supports JPG, JPEG, PNG, WebP, BMP, TIFF, and TIF;
+- skips files whose filename contains `screenshot` (case-insensitive);
 - automatically scales high-resolution phone photos for reliable close-up face detection while recognizing against the original image;
 - uses multiple reference photos for better coverage;
 - shows a face picker when a reference photo contains multiple people, allowing one or several faces to be selected;

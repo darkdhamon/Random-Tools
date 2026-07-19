@@ -122,6 +122,8 @@ def image_files(folder: Path, excluded_roots: Iterable[Path] = ()) -> list[Path]
     for path in folder.rglob("*"):
         if not path.is_file() or path.suffix.lower() not in IMAGE_EXTENSIONS:
             continue
+        if "screenshot" in path.name.casefold():
+            continue
         resolved = path.resolve()
         if any(resolved == root or root in resolved.parents for root in excluded):
             continue

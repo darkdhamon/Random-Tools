@@ -78,6 +78,14 @@ class ScannerUtilitiesTests(unittest.TestCase):
             (output / "skip.jpg").touch()
             self.assertEqual([item.name for item in image_files(root, [output])], ["keep.jpg"])
 
+    def test_image_files_skips_screenshot_filenames_case_insensitively(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            (root / "family-photo.jpg").touch()
+            (root / "Screenshot_2026-08-01.png").touch()
+            (root / "phone-screenshot-copy.JPG").touch()
+            self.assertEqual([item.name for item in image_files(root)], ["family-photo.jpg"])
+
 
 if __name__ == "__main__":
     unittest.main()
