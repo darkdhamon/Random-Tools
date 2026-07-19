@@ -11,8 +11,19 @@ import threading
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
 
+import cv2
+from PIL import Image, ImageTk
+
 from .models import ensure_models
-from .scanner import FaceEngine, MatchResult, ScanProgress, build_reference_embeddings, scan_folder
+from .scanner import DetectedFace, FaceEngine, MatchResult, ScanProgress, build_reference_embeddings, scan_folder
+
+
+class FaceSelectionRequest:
+    def __init__(self, path: Path, faces: list[DetectedFace]) -> None:
+        self.path = path
+        self.faces = faces
+        self.selected: list[int] = []
+        self.ready = threading.Event()
 
 
 class FaceFinderApp(tk.Tk):
@@ -26,6 +37,8 @@ class FaceFinderApp(tk.Tk):
         self.events: queue.Queue[tuple[str, object]] = queue.Queue()
         self.cancel_event = threading.Event()
         self.worker: threading.Thread | None = None
+        self.face_dialog: tk.Toplevel | None = None
+        self.face_request: FaceSelectionRequest | None = None
         self.folder_var = tk.StringVar()
         self.threshold_var = tk.DoubleVar(value=0.45)
         self.status_var = tk.StringVar(value="Choose reference photos and a folder to scan.")
@@ -117,14 +130,23 @@ class FaceFinderApp(tk.Tk):
             detector, recognizer = ensure_models(model_dir, lambda value: self.events.put(("status", value)))
             engine = FaceEngine(detector, recognizer)
             self.events.put(("status", "Reading reference faces…"))
-            references = build_reference_embeddings(engine, self.references)
+            references = build_reference_embeddings(engine, self.references, self._request_face_selection)
             results = scan_folder(engine, folder, references, threshold, self._on_progress, self.cancel_event)
             self.events.put(("done", results))
         except Exception as exc:
-            self.events.put(("error", str(exc)))
+            if self.cancel_event.is_set():
+                self.events.put(("done", []))
+            else:
+                self.events.put(("error", str(exc)))
 
     def _on_progress(self, value: ScanProgress) -> None:
         self.events.put(("progress", value))
+
+    def _request_face_selection(self, path: Path, faces: list[DetectedFace]) -> list[int]:
+        request = FaceSelectionRequest(path, faces)
+        self.events.put(("select_faces", request))
+        request.ready.wait()
+        return request.selected
 
     def _drain_events(self) -> None:
         try:
@@ -140,6 +162,9 @@ class FaceFinderApp(tk.Tk):
                     self.status_var.set(f"Scanning {value.completed}/{value.total}: {value.path.name}")
                     if value.match:
                         self._add_match(value.match)
+                elif kind == "select_faces":
+                    assert isinstance(payload, FaceSelectionRequest)
+                    self._show_face_picker(payload)
                 elif kind == "done":
                     self.matches = list(payload)  # type: ignore[arg-type]
                     self._finish(f"Found {len(self.matches)} matching photo(s)." if not self.cancel_event.is_set() else f"Cancelled. Found {len(self.matches)} match(es).")
@@ -158,8 +183,64 @@ class FaceFinderApp(tk.Tk):
         self.scan_button.config(state="normal")
         self.cancel_button.config(state="disabled")
 
+    def _show_face_picker(self, request: FaceSelectionRequest) -> None:
+        dialog = tk.Toplevel(self)
+        self.face_dialog = dialog
+        self.face_request = request
+        dialog.title("Choose reference faces")
+        dialog.transient(self)
+        dialog.grab_set()
+        dialog.protocol("WM_DELETE_WINDOW", lambda: finish([]))
+
+        ttk.Label(
+            dialog,
+            text=f"{request.path.name} contains {len(request.faces)} faces. Select every person to search for.",
+            padding=(14, 14, 14, 6),
+        ).pack(anchor="w")
+        grid = ttk.Frame(dialog, padding=(14, 6))
+        grid.pack(fill="both", expand=True)
+        variables: list[tk.BooleanVar] = []
+        photos: list[ImageTk.PhotoImage] = []
+        for index, face in enumerate(request.faces):
+            rgb = cv2.cvtColor(face.preview, cv2.COLOR_BGR2RGB)
+            image = Image.fromarray(rgb)
+            image.thumbnail((150, 150), Image.Resampling.LANCZOS)
+            photo = ImageTk.PhotoImage(image)
+            photos.append(photo)
+            variable = tk.BooleanVar(value=False)
+            variables.append(variable)
+            card = ttk.Frame(grid, padding=6, relief="ridge")
+            card.grid(row=index // 4, column=index % 4, padx=5, pady=5, sticky="nsew")
+            label = ttk.Label(card, image=photo, cursor="hand2")
+            label.pack()
+            check = ttk.Checkbutton(card, text=f"Face {index + 1}", variable=variable)
+            check.pack(pady=(4, 0))
+            label.bind("<Button-1>", lambda _event, value=variable: value.set(not value.get()))
+
+        def finish(selected: list[int] | None = None) -> None:
+            request.selected = selected if selected is not None else [i for i, value in enumerate(variables) if value.get()]
+            request.ready.set()
+            self.face_dialog = None
+            self.face_request = None
+            dialog.grab_release()
+            dialog.destroy()
+
+        buttons = ttk.Frame(dialog, padding=14)
+        buttons.pack(fill="x")
+        ttk.Button(buttons, text="Cancel selection", command=lambda: finish([])).pack(side="right")
+        ttk.Button(buttons, text="Use selected faces", command=finish).pack(side="right", padx=8)
+        dialog._face_photos = photos  # type: ignore[attr-defined]
+        dialog.update_idletasks()
+        dialog.geometry(f"+{self.winfo_rootx() + 50}+{self.winfo_rooty() + 50}")
+
     def cancel_scan(self) -> None:
         self.cancel_event.set()
+        if self.face_request and self.face_dialog:
+            self.face_request.selected = []
+            self.face_request.ready.set()
+            self.face_dialog.destroy()
+            self.face_request = None
+            self.face_dialog = None
         self.status_var.set("Cancelling after the current photo…")
 
     def selected_paths(self) -> list[Path]:

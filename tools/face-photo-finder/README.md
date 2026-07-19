@@ -7,6 +7,7 @@ A private, local desktop tool that recursively scans a folder and finds photos l
 - scans the selected folder and every subfolder;
 - supports JPG, JPEG, PNG, WebP, BMP, TIFF, and TIF;
 - uses multiple reference photos for better coverage;
+- shows a face picker when a reference photo contains multiple people, allowing one or several faces to be selected;
 - shows every match with its similarity score;
 - opens matches, exports a CSV report, or copies selected/all matches;
 - never modifies source photos and does not upload images or face data.
@@ -28,7 +29,7 @@ On macOS/Linux, activate with `source .venv/bin/activate` instead.
 
 ## Use
 
-1. Select one or more clear reference photos. Each reference must contain exactly one face.
+1. Select one or more clear reference photos. If a photo contains multiple faces, choose one or several people from the thumbnail picker that appears when the scan starts.
 2. Select the folder containing the photo collection.
 3. Leave match strictness at `0.45` initially and start the scan.
 4. Review the ranked results. Double-click a row to open the original.
@@ -47,4 +48,3 @@ Face recognition is probabilistic and can perform differently across demographic
 ```powershell
 python -m unittest discover -s tests -v
 ```
-

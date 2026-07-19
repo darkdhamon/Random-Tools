@@ -27,6 +27,12 @@ class ScanProgress:
     error: str | None = None
 
 
+@dataclass(frozen=True)
+class DetectedFace:
+    embedding: np.ndarray
+    preview: np.ndarray
+
+
 class FaceEngine:
     """Thin wrapper around OpenCV YuNet detection and SFace embeddings."""
 
@@ -36,7 +42,7 @@ class FaceEngine:
         )
         self.recognizer = cv2.FaceRecognizerSF.create(str(recognizer_model), "")
 
-    def embeddings(self, image_path: Path) -> list[np.ndarray]:
+    def detect_faces(self, image_path: Path) -> list[DetectedFace]:
         image = read_image(image_path)
         height, width = image.shape[:2]
         self.detector.setInputSize((width, height))
@@ -44,14 +50,18 @@ class FaceEngine:
         if faces is None:
             return []
 
-        results: list[np.ndarray] = []
+        results: list[DetectedFace] = []
         for face in faces:
             aligned = self.recognizer.alignCrop(image, face)
             feature = self.recognizer.feature(aligned).flatten().astype(np.float32)
             norm = float(np.linalg.norm(feature))
             if norm:
-                results.append(feature / norm)
+                # The aligned crop gives the picker a consistent, close-up preview.
+                results.append(DetectedFace(feature / norm, aligned))
         return results
+
+    def embeddings(self, image_path: Path) -> list[np.ndarray]:
+        return [face.embedding for face in self.detect_faces(image_path)]
 
 
 def read_image(path: Path) -> np.ndarray:
@@ -76,21 +86,31 @@ def image_files(folder: Path, excluded_roots: Iterable[Path] = ()) -> list[Path]
     return sorted(files, key=lambda item: str(item).casefold())
 
 
-def build_reference_embeddings(engine: FaceEngine, reference_paths: Iterable[Path]) -> list[np.ndarray]:
+def build_reference_embeddings(
+    engine: FaceEngine,
+    reference_paths: Iterable[Path],
+    select_faces: Callable[[Path, list[DetectedFace]], Iterable[int]] | None = None,
+) -> list[np.ndarray]:
     embeddings: list[np.ndarray] = []
     failures: list[str] = []
     for path in reference_paths:
         try:
-            faces = engine.embeddings(path)
+            faces = engine.detect_faces(path)
         except Exception as exc:
             failures.append(f"{path.name}: {exc}")
             continue
         if len(faces) == 1:
-            embeddings.append(faces[0])
+            embeddings.append(faces[0].embedding)
         elif not faces:
             failures.append(f"{path.name}: no face found")
+        elif select_faces:
+            selected = list(select_faces(path, faces))
+            valid = [index for index in selected if 0 <= index < len(faces)]
+            embeddings.extend(faces[index].embedding for index in valid)
+            if not valid:
+                failures.append(f"{path.name}: no faces selected")
         else:
-            failures.append(f"{path.name}: contains {len(faces)} faces; use a photo with one face")
+            failures.append(f"{path.name}: contains {len(faces)} faces; no face selector was provided")
     if not embeddings:
         detail = "; ".join(failures) or "no reference images selected"
         raise ValueError(f"No usable reference faces. {detail}")
