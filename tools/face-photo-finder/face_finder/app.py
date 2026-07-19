@@ -48,12 +48,20 @@ class FaceSelectionRequest:
 
 class IdentityRequest:
     def __init__(
-        self, path: Path, preview: np.ndarray, names: list[str], bbox: tuple[int, int, int, int] | None = None
+        self,
+        path: Path,
+        preview: np.ndarray,
+        names: list[str],
+        bbox: tuple[int, int, int, int] | None = None,
+        sharpness: float | None = None,
+        profile_eligible: bool = True,
     ) -> None:
         self.path = path
         self.preview = preview
         self.names = names
         self.bbox = bbox
+        self.sharpness = sharpness
+        self.profile_eligible = profile_eligible
         self.name: str | None = None
         self.skip_remaining = False
         self.not_a_face = False
@@ -393,16 +401,18 @@ class FaceFinderApp(tk.Tk):
                                 if preview is None:
                                     continue
                                 name, stop_asking, not_a_face, intentionally_unknown = self._request_identity(
-                                    path, preview, known_identities, face.bbox
+                                    path, preview, known_identities, face.bbox, face.sharpness,
+                                    face.profile_eligible,
                                 )
                                 skip_unknowns = skip_unknowns or stop_asking
                                 if not_a_face:
                                     catalog.remove_face(face.face_id)
                                 elif intentionally_unknown:
                                     group_id = catalog.mark_intentionally_unknown(face.face_id)
-                                    unknown_groups = add_unknown_sample(
-                                        unknown_groups, group_id, face.embedding
-                                    )
+                                    if face.profile_eligible:
+                                        unknown_groups = add_unknown_sample(
+                                            unknown_groups, group_id, face.embedding
+                                        )
                                 elif name:
                                     identity_id = catalog.get_or_create_identity(name)
                                     catalog.assign_face(face.face_id, identity_id)
@@ -432,7 +442,7 @@ class FaceFinderApp(tk.Tk):
                             identity_id, _identity_score = best_known_identity(
                                 face.embedding, known_identities, learning_threshold
                             )
-                            if identity_id is not None:
+                            if identity_id is not None and face.profile_eligible:
                                 identity = next(
                                     item for item in known_identities if item.identity_id == identity_id
                                 )
@@ -446,7 +456,7 @@ class FaceFinderApp(tk.Tk):
                                     face.embedding, unknown_groups, learning_threshold
                                 )
                                 intentionally_unknown = unknown_group_id is not None
-                                if unknown_group_id is not None:
+                                if unknown_group_id is not None and face.profile_eligible:
                                     unknown_groups = add_unknown_sample(
                                         unknown_groups, unknown_group_id, face.embedding
                                     )
@@ -457,21 +467,24 @@ class FaceFinderApp(tk.Tk):
                                 and not skip_unknowns
                             ):
                                 name, stop_asking, not_a_face, intentionally_unknown = self._request_identity(
-                                    path, face.preview, known_identities, face.bbox
+                                    path, face.preview, known_identities, face.bbox, face.sharpness,
+                                    face.profile_eligible,
                                 )
                                 skip_unknowns = skip_unknowns or stop_asking
                                 if not_a_face:
                                     continue
                                 if name:
                                     identity_id = catalog.get_or_create_identity(name)
-                                    known_identities = add_known_sample(
-                                        known_identities, identity_id, name, face.embedding
-                                    )
+                                    if face.profile_eligible:
+                                        known_identities = add_known_sample(
+                                            known_identities, identity_id, name, face.embedding
+                                        )
                                 elif intentionally_unknown:
                                     unknown_group_id = catalog.create_unknown_group()
-                                    unknown_groups = add_unknown_sample(
-                                        unknown_groups, unknown_group_id, face.embedding
-                                    )
+                                    if face.profile_eligible:
+                                        unknown_groups = add_unknown_sample(
+                                            unknown_groups, unknown_group_id, face.embedding
+                                        )
                             accepted_faces.append(face)
                             assignments.append(identity_id)
                             unknown_statuses.append(intentionally_unknown and identity_id is None)
@@ -481,6 +494,8 @@ class FaceFinderApp(tk.Tk):
                         stored = catalog.store_scan(
                             path, [face.embedding for face in detected], assignments, previews, unknown_statuses,
                             [face.bbox for face in detected], unknown_group_ids,
+                            [face.sharpness for face in detected],
+                            [face.profile_eligible for face in detected],
                         )
                         candidate_embeddings = [face.embedding for face in detected]
                         score = best_similarity(references, candidate_embeddings) if references else -1.0
@@ -494,6 +509,8 @@ class FaceFinderApp(tk.Tk):
                                 catalog.store_scan(
                                     path, [face.embedding for face in detected], assignments, previews,
                                     unknown_statuses, [face.bbox for face in detected], unknown_group_ids,
+                                    [face.sharpness for face in detected],
+                                    [face.profile_eligible for face in detected],
                                 )
                         if detected and (catalog_all or score >= threshold):
                             refreshed = catalog.cached_image(path) or stored
@@ -532,9 +549,11 @@ class FaceFinderApp(tk.Tk):
         preview: np.ndarray,
         identities: list[object],
         bbox: tuple[int, int, int, int] | None,
+        sharpness: float | None,
+        profile_eligible: bool,
     ) -> tuple[str | None, bool, bool, bool]:
         names = [str(getattr(identity, "name")) for identity in identities]
-        request = IdentityRequest(path, preview, names, bbox)
+        request = IdentityRequest(path, preview, names, bbox, sharpness, profile_eligible)
         self.events.put(("identify_face", request))
         request.ready.wait()
         return request.name, request.skip_remaining, request.not_a_face, request.intentionally_unknown
@@ -690,6 +709,13 @@ class FaceFinderApp(tk.Tk):
         content = ttk.Frame(dialog, padding=16)
         content.pack(fill="both", expand=True)
         ttk.Label(content, text=f"Who is this person in {request.path.name}?").pack(anchor="w", pady=(0, 10))
+        if not request.profile_eligible:
+            ttk.Label(
+                content,
+                text="This face is blurry. It can be linked to an identity, but it will not train the biometric profile.",
+                foreground="#a05a00",
+                wraplength=440,
+            ).pack(anchor="w", pady=(0, 10))
         rgb = cv2.cvtColor(request.preview, cv2.COLOR_BGR2RGB)
         image = Image.fromarray(rgb)
         image.thumbnail((240, 240), Image.Resampling.LANCZOS)

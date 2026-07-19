@@ -10,6 +10,7 @@ import numpy as np
 
 IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp", ".bmp", ".tif", ".tiff"}
 DETECTION_MAX_EDGE = 1280
+MIN_PROFILE_SHARPNESS = 75.0
 
 
 @dataclass(frozen=True)
@@ -35,6 +36,8 @@ class DetectedFace:
     embedding: np.ndarray
     preview: np.ndarray
     bbox: tuple[int, int, int, int] | None = None
+    sharpness: float = 0.0
+    profile_eligible: bool = False
 
 
 class FaceEngine:
@@ -64,7 +67,16 @@ class FaceEngine:
             if norm:
                 # The aligned crop gives the picker a consistent, close-up preview.
                 x, y, face_width, face_height = (int(round(value)) for value in face[:4])
-                results.append(DetectedFace(feature / norm, aligned, (x, y, face_width, face_height)))
+                sharpness = face_sharpness(aligned)
+                results.append(
+                    DetectedFace(
+                        feature / norm,
+                        aligned,
+                        (x, y, face_width, face_height),
+                        sharpness,
+                        sharpness >= MIN_PROFILE_SHARPNESS,
+                    )
+                )
         return results
 
     def embeddings(self, image_path: Path) -> list[np.ndarray]:
@@ -87,6 +99,12 @@ def restore_face_coordinates(face: np.ndarray, scale: float) -> np.ndarray:
     if scale != 1.0:
         restored[:14] /= scale
     return restored
+
+
+def face_sharpness(aligned_face: np.ndarray) -> float:
+    """Estimate focus using Laplacian variance on the normalized aligned crop."""
+    gray = cv2.cvtColor(aligned_face, cv2.COLOR_BGR2GRAY)
+    return float(cv2.Laplacian(gray, cv2.CV_64F).var())
 
 
 def read_image(path: Path) -> np.ndarray:

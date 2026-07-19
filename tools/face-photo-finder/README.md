@@ -47,6 +47,8 @@ To build or update the identity catalog, clear the reference photos, leave **Kno
 
 High-confidence automatic matches expand the active profile immediately, improving recognition of later angles and lighting conditions in the same scan. Automatic profile learning uses a stricter threshold than result searching, discards near-duplicate samples, and caps active profiles at 64 varied samples to reduce accidental profile drift.
 
+Aligned face crops are checked for focus before profile learning. Blurry faces can still be assigned to named or anonymous identities and remain linked to their source photos, but their embeddings are excluded from active biometric profiles. The identity prompt labels these low-quality samples so the distinction is visible.
+
 A lower threshold finds more possible matches but creates more false positives. A higher threshold is stricter but may miss the person. Different ages, angles, lighting, glasses, masks, and small or blurry faces affect accuracy.
 
 ## Privacy, consent, and limitations

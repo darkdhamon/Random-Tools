@@ -6,6 +6,7 @@ from pathlib import Path
 import sqlite3
 
 import numpy as np
+import cv2
 
 PROFILE_MAX_SAMPLES = 64
 PROFILE_DUPLICATE_SIMILARITY = 0.92
@@ -34,6 +35,8 @@ class CatalogFace:
     intentionally_unknown: bool
     bbox: tuple[int, int, int, int] | None
     unknown_group_id: int | None
+    sharpness: float | None
+    profile_eligible: bool
 
 
 @dataclass(frozen=True)
@@ -85,6 +88,8 @@ class FaceCatalog:
                 bbox_width INTEGER,
                 bbox_height INTEGER,
                 unknown_group_id INTEGER REFERENCES unknown_groups(id) ON DELETE SET NULL,
+                sharpness REAL,
+                profile_eligible INTEGER NOT NULL DEFAULT 1,
                 UNIQUE(image_id, face_index)
             );
             CREATE INDEX IF NOT EXISTS faces_identity_idx ON faces(identity_id);
@@ -102,6 +107,25 @@ class FaceCatalog:
                 self.connection.execute(f"ALTER TABLE faces ADD COLUMN {column} INTEGER")
         if "unknown_group_id" not in columns:
             self.connection.execute("ALTER TABLE faces ADD COLUMN unknown_group_id INTEGER")
+        if "sharpness" not in columns:
+            self.connection.execute("ALTER TABLE faces ADD COLUMN sharpness REAL")
+        if "profile_eligible" not in columns:
+            self.connection.execute(
+                "ALTER TABLE faces ADD COLUMN profile_eligible INTEGER NOT NULL DEFAULT 1"
+            )
+            from .scanner import MIN_PROFILE_SHARPNESS, face_sharpness
+
+            for face_id, preview in self.connection.execute(
+                "SELECT id, preview FROM faces WHERE preview IS NOT NULL"
+            ).fetchall():
+                crop = cv2.imdecode(np.frombuffer(preview, dtype=np.uint8), cv2.IMREAD_COLOR)
+                if crop is not None:
+                    score = face_sharpness(crop)
+                    self.connection.execute(
+                        "UPDATE faces SET sharpness = ?, profile_eligible = ? WHERE id = ?",
+                        (score, int(score >= MIN_PROFILE_SHARPNESS), face_id),
+                    )
+            self.connection.commit()
         legacy_unknowns = self.connection.execute(
             "SELECT id FROM faces WHERE intentionally_unknown = 1 AND unknown_group_id IS NULL"
         ).fetchall()
@@ -122,6 +146,7 @@ class FaceCatalog:
         rows = self.connection.execute(
             """SELECT identities.id, identities.name, faces.embedding
                FROM identities LEFT JOIN faces ON faces.identity_id = identities.id
+                    AND faces.profile_eligible = 1
                ORDER BY identities.name, faces.id"""
         ).fetchall()
         grouped: dict[tuple[int, str], list[np.ndarray]] = {}
@@ -137,6 +162,7 @@ class FaceCatalog:
         rows = self.connection.execute(
             """SELECT unknown_groups.id, faces.embedding
                FROM unknown_groups LEFT JOIN faces ON faces.unknown_group_id = unknown_groups.id
+                    AND faces.profile_eligible = 1
                ORDER BY unknown_groups.id, faces.id"""
         ).fetchall()
         grouped: dict[int, list[np.ndarray]] = {}
@@ -196,6 +222,8 @@ class FaceCatalog:
         intentionally_unknown: list[bool] | None = None,
         boxes: list[tuple[int, int, int, int] | None] | None = None,
         unknown_group_ids: list[int | None] | None = None,
+        sharpness_scores: list[float] | None = None,
+        profile_eligible: list[bool] | None = None,
     ) -> CatalogImage:
         if len(embeddings) != len(identities):
             raise ValueError("Every face must have an identity assignment.")
@@ -213,6 +241,12 @@ class FaceCatalog:
             unknown_group_ids = [None] * len(embeddings)
         if len(unknown_group_ids) != len(embeddings):
             raise ValueError("Every face must have an anonymous identity-group value.")
+        if sharpness_scores is None:
+            sharpness_scores = [0.0] * len(embeddings)
+        if profile_eligible is None:
+            profile_eligible = [True] * len(embeddings)
+        if len(sharpness_scores) != len(embeddings) or len(profile_eligible) != len(embeddings):
+            raise ValueError("Every face must have biometric profile-quality values.")
         resolved = path.resolve()
         stat = resolved.stat()
         identified_count = sum(value is not None for value in identities)
@@ -234,7 +268,8 @@ class FaceCatalog:
                 """INSERT INTO faces(
                        image_id, face_index, identity_id, embedding, preview, intentionally_unknown
                        , bbox_x, bbox_y, bbox_width, bbox_height, unknown_group_id
-                   ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                       , sharpness, profile_eligible
+                   ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 [
                     (
                         image_id,
@@ -245,6 +280,8 @@ class FaceCatalog:
                         int(intentionally_unknown[index]),
                         *(boxes[index] if boxes[index] is not None else (None, None, None, None)),
                         unknown_group_ids[index],
+                        sharpness_scores[index],
+                        int(profile_eligible[index]),
                     )
                     for index, (embedding, identity_id) in enumerate(zip(embeddings, identities, strict=True))
                 ],
@@ -256,6 +293,7 @@ class FaceCatalog:
             """SELECT faces.id, faces.identity_id, identities.name, faces.embedding, faces.preview,
                       faces.intentionally_unknown, faces.bbox_x, faces.bbox_y,
                       faces.bbox_width, faces.bbox_height, faces.unknown_group_id
+                      , faces.sharpness, faces.profile_eligible
                FROM faces LEFT JOIN identities ON identities.id = faces.identity_id
                WHERE faces.image_id = ? ORDER BY faces.face_index""",
             (image_id,),
@@ -267,6 +305,8 @@ class FaceCatalog:
                 bool(row[5]),
                 (int(row[6]), int(row[7]), int(row[8]), int(row[9])) if row[6] is not None else None,
                 row[10],
+                row[11],
+                bool(row[12]),
             )
             for row in rows
         ]

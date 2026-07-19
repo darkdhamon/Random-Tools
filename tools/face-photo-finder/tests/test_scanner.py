@@ -3,6 +3,7 @@ import tempfile
 import unittest
 
 import numpy as np
+import cv2
 
 from face_finder.scanner import (
     DetectedFace,
@@ -11,10 +12,18 @@ from face_finder.scanner import (
     image_files,
     resize_for_detection,
     restore_face_coordinates,
+    face_sharpness,
 )
 
 
 class ScannerUtilitiesTests(unittest.TestCase):
+    def test_blur_score_separates_sharp_and_blurred_face_crops(self) -> None:
+        sharp = np.zeros((112, 112, 3), dtype=np.uint8)
+        sharp[::8, :] = 255
+        sharp[:, ::8] = 255
+        blurred = cv2.GaussianBlur(sharp, (21, 21), 0)
+        self.assertGreater(face_sharpness(sharp), face_sharpness(blurred))
+
     def test_large_image_is_resized_and_face_coordinates_are_restored(self) -> None:
         image = np.zeros((4000, 3000, 3), dtype=np.uint8)
         resized, scale = resize_for_detection(image, max_edge=1000)

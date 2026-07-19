@@ -14,6 +14,27 @@ from face_finder.catalog import (
 
 
 class CatalogTests(unittest.TestCase):
+    def test_blurry_assigned_face_is_not_used_as_profile_sample(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            image = root / "blurry.jpg"
+            image.touch()
+            catalog = FaceCatalog(root / "catalog.sqlite3")
+            person_id = catalog.get_or_create_identity("Blurry Person")
+            stored = catalog.store_scan(
+                image,
+                [np.array([1.0, 0.0], dtype=np.float32)],
+                [person_id],
+                sharpness_scores=[12.0],
+                profile_eligible=[False],
+            )
+            face = catalog.faces_for_image(stored.image_id)[0]
+            self.assertEqual(face.identity_name, "Blurry Person")
+            self.assertFalse(face.profile_eligible)
+            identity = next(item for item in catalog.identities() if item.identity_id == person_id)
+            self.assertEqual(identity.embeddings, ())
+            catalog.close()
+
     def test_profile_drops_near_duplicates_and_caps_growth(self) -> None:
         duplicate = np.array([1.0, 0.0], dtype=np.float32)
         samples = [duplicate, duplicate.copy()]
