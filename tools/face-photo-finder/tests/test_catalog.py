@@ -4,10 +4,27 @@ import unittest
 
 import numpy as np
 
-from face_finder.catalog import FaceCatalog, best_known_identity, best_unknown_group
+from face_finder.catalog import (
+    PROFILE_MAX_SAMPLES,
+    FaceCatalog,
+    best_known_identity,
+    best_unknown_group,
+    bounded_profile,
+)
 
 
 class CatalogTests(unittest.TestCase):
+    def test_profile_drops_near_duplicates_and_caps_growth(self) -> None:
+        duplicate = np.array([1.0, 0.0], dtype=np.float32)
+        samples = [duplicate, duplicate.copy()]
+        samples.extend(
+            np.array([np.cos(index), np.sin(index)], dtype=np.float32)
+            for index in np.linspace(0.1, 6.0, PROFILE_MAX_SAMPLES * 3)
+        )
+        profile = bounded_profile(samples)
+        self.assertLessEqual(len(profile), PROFILE_MAX_SAMPLES)
+        self.assertEqual(sum(np.array_equal(item, duplicate) for item in profile), 1)
+
     def test_scan_cache_identity_and_image_stats_round_trip(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

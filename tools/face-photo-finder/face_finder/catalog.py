@@ -7,6 +7,9 @@ import sqlite3
 
 import numpy as np
 
+PROFILE_MAX_SAMPLES = 64
+PROFILE_DUPLICATE_SIMILARITY = 0.92
+
 
 @dataclass(frozen=True)
 class KnownIdentity:
@@ -126,7 +129,9 @@ class FaceCatalog:
             grouped.setdefault((identity_id, name), [])
             if blob is not None:
                 grouped[(identity_id, name)].append(np.frombuffer(blob, dtype=np.float32).copy())
-        return [KnownIdentity(key[0], key[1], tuple(values)) for key, values in grouped.items()]
+        return [
+            KnownIdentity(key[0], key[1], bounded_profile(values)) for key, values in grouped.items()
+        ]
 
     def unknown_groups(self) -> list[UnknownGroup]:
         rows = self.connection.execute(
@@ -139,7 +144,9 @@ class FaceCatalog:
             grouped.setdefault(int(group_id), [])
             if blob is not None:
                 grouped[int(group_id)].append(np.frombuffer(blob, dtype=np.float32).copy())
-        return [UnknownGroup(group_id, tuple(values)) for group_id, values in grouped.items()]
+        return [
+            UnknownGroup(group_id, bounded_profile(values)) for group_id, values in grouped.items()
+        ]
 
     def create_unknown_group(self) -> int:
         cursor = self.connection.execute(
@@ -332,6 +339,18 @@ def best_unknown_group(
             if score > best_score:
                 best_id, best_score = group.group_id, score
     return (best_id if best_score >= threshold else None), best_score
+
+
+def bounded_profile(embeddings: list[np.ndarray] | tuple[np.ndarray, ...]) -> tuple[np.ndarray, ...]:
+    """Keep varied samples while dropping near-duplicates and limiting drift surface."""
+    selected: list[np.ndarray] = []
+    for embedding in embeddings:
+        if selected and max(float(np.dot(embedding, known)) for known in selected) >= PROFILE_DUPLICATE_SIMILARITY:
+            continue
+        selected.append(embedding)
+        if len(selected) >= PROFILE_MAX_SAMPLES:
+            break
+    return tuple(selected)
 
 
 def default_catalog_path() -> Path:

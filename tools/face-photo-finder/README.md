@@ -45,6 +45,8 @@ On macOS/Linux, activate with `source .venv/bin/activate` instead.
 
 To build or update the identity catalog, clear the reference photos, leave **Known person** blank, and start a scan. Every photo containing a face is included, and every detected face in a multi-person photo is checked independently. For an unfamiliar face, choose an existing identity, enter a new name, view the complete photo inside the app with a target reticle marking the current person, mark a false detection as **Not a face**, choose **I don't know this person** for a member of the general public, skip that face, or skip the remaining prompts for that scan. A normally skipped face is offered again on the next all-faces scan. An intentionally unknown person is placed in an anonymous biometric group, so matching appearances in later photos—and in future scans—do not prompt again. A later targeted reference can still identify that anonymous person. Names and anonymous groups learned early in a scan are used immediately on the remaining photos.
 
+High-confidence automatic matches expand the active profile immediately, improving recognition of later angles and lighting conditions in the same scan. Automatic profile learning uses a stricter threshold than result searching, discards near-duplicate samples, and caps active profiles at 64 varied samples to reduce accidental profile drift.
+
 A lower threshold finds more possible matches but creates more false positives. A higher threshold is stricter but may miss the person. Different ages, angles, lighting, glasses, masks, and small or blurry faces affect accuracy.
 
 ## Privacy, consent, and limitations

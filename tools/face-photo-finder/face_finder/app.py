@@ -21,6 +21,7 @@ from .catalog import (
     UnknownGroup,
     best_known_identity,
     best_unknown_group,
+    bounded_profile,
     default_catalog_path,
 )
 from .models import ensure_models
@@ -73,7 +74,7 @@ def add_known_sample(
             updated.append(identity)
     if not found:
         updated.append(KnownIdentity(identity_id, name, (embedding,)))
-    return updated
+    return [KnownIdentity(item.identity_id, item.name, bounded_profile(item.embeddings)) for item in updated]
 
 
 def add_unknown_sample(
@@ -83,7 +84,7 @@ def add_unknown_sample(
     found = False
     for group in groups:
         if group.group_id == group_id:
-            updated.append(UnknownGroup(group_id, group.embeddings + (embedding,)))
+            updated.append(UnknownGroup(group_id, bounded_profile(group.embeddings + (embedding,))))
             found = True
         else:
             updated.append(group)
@@ -427,14 +428,28 @@ class FaceFinderApp(tk.Tk):
                         unknown_statuses: list[bool] = []
                         unknown_group_ids: list[int | None] = []
                         for face in detected:
-                            identity_id, _score = best_known_identity(face.embedding, known_identities, max(threshold, 0.50))
+                            learning_threshold = max(threshold, 0.55)
+                            identity_id, _identity_score = best_known_identity(
+                                face.embedding, known_identities, learning_threshold
+                            )
+                            if identity_id is not None:
+                                identity = next(
+                                    item for item in known_identities if item.identity_id == identity_id
+                                )
+                                known_identities = add_known_sample(
+                                    known_identities, identity_id, identity.name, face.embedding
+                                )
                             unknown_group_id: int | None = None
                             intentionally_unknown = False
                             if identity_id is None:
                                 unknown_group_id, _unknown_score = best_unknown_group(
-                                    face.embedding, unknown_groups, max(threshold, 0.50)
+                                    face.embedding, unknown_groups, learning_threshold
                                 )
                                 intentionally_unknown = unknown_group_id is not None
+                                if unknown_group_id is not None:
+                                    unknown_groups = add_unknown_sample(
+                                        unknown_groups, unknown_group_id, face.embedding
+                                    )
                             if (
                                 identity_id is None
                                 and unknown_group_id is None
