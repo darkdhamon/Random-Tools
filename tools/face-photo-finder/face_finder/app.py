@@ -9,7 +9,7 @@ import subprocess
 import sys
 import threading
 import tkinter as tk
-from tkinter import filedialog, messagebox, ttk
+from tkinter import filedialog, messagebox, simpledialog, ttk
 
 import cv2
 import numpy as np
@@ -232,6 +232,8 @@ class FaceFinderApp(tk.Tk):
         ttk.Button(actions, text="Open selected", command=self.open_selected).pack(side="left")
         ttk.Button(actions, text="Export CSV…", command=self.export_csv).pack(side="left", padx=8)
         ttk.Button(actions, text="Copy matches…", command=self.copy_matches).pack(side="left")
+        self.reset_button = ttk.Button(actions, text="Reset face database…", command=self.reset_database)
+        self.reset_button.pack(side="left", padx=8)
         ttk.Label(actions, text="Verify matches before relying on them; face recognition can be wrong.").pack(side="right")
 
         outer.columnconfigure(0, weight=1)
@@ -347,6 +349,7 @@ class FaceFinderApp(tk.Tk):
         self.cancel_event.clear()
         self.scan_button.config(state="disabled")
         self.cancel_button.config(state="normal")
+        self.reset_button.config(state="disabled")
         self.progress["value"] = 0
         threshold = self.threshold_var.get()
         references = list(self.references)
@@ -647,6 +650,52 @@ class FaceFinderApp(tk.Tk):
         self.status_var.set(status)
         self.scan_button.config(state="normal")
         self.cancel_button.config(state="disabled")
+        self.reset_button.config(state="normal")
+
+    def reset_database(self) -> None:
+        confirmed = messagebox.askyesno(
+            "DANGER — Reset face database?",
+            "This permanently deletes all learned names, anonymous people, face embeddings, cached scans, "
+            "face previews, and scan statistics.\n\nYour original photos and saved folder/reference paths are not deleted. "
+            "This action cannot be undone.\n\nReset the database now?",
+            icon="warning",
+            parent=self,
+        )
+        if not confirmed:
+            return
+        typed_confirmation = simpledialog.askstring(
+            "DANGER — Permanent deletion",
+            "This is the final confirmation.\n\nType RESET exactly to permanently erase the face database:",
+            parent=self,
+        )
+        if typed_confirmation != "RESET":
+            self.status_var.set("Database reset cancelled; confirmation text did not match RESET.")
+            return
+        try:
+            catalog = FaceCatalog(default_catalog_path())
+            try:
+                catalog.reset()
+            finally:
+                catalog.close()
+        except Exception as exc:
+            messagebox.showerror("Reset failed", str(exc), parent=self)
+            return
+        self.known_person_var.set("")
+        self._refresh_known_people([])
+        self.matches.clear()
+        self.result_photos.clear()
+        self.gallery_photos.clear()
+        self.gallery_selected.clear()
+        self.tree.delete(*self.tree.get_children())
+        for child in self.gallery_frame.winfo_children():
+            child.destroy()
+        self.progress["value"] = 0
+        self.status_var.set("Face database reset. Source photos and preferences were not changed.")
+        messagebox.showinfo(
+            "Database reset",
+            "All biometric identities and cached scan data have been removed. Your source photos were not changed.",
+            parent=self,
+        )
 
     def _show_face_picker(self, request: FaceSelectionRequest) -> None:
         dialog = tk.Toplevel(self)

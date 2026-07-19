@@ -14,6 +14,22 @@ from face_finder.catalog import (
 
 
 class CatalogTests(unittest.TestCase):
+    def test_reset_removes_all_catalog_data_without_deleting_source_image(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            image = root / "source.jpg"
+            image.write_bytes(b"source image")
+            catalog = FaceCatalog(root / "catalog.sqlite3")
+            person_id = catalog.get_or_create_identity("Reset Person")
+            catalog.store_scan(image, [np.array([1.0, 0.0], dtype=np.float32)], [person_id])
+            catalog.create_unknown_group()
+            catalog.reset()
+            self.assertEqual(catalog.identities(), [])
+            self.assertEqual(catalog.unknown_groups(), [])
+            self.assertIsNone(catalog.cached_image(image))
+            self.assertTrue(image.exists())
+            catalog.close()
+
     def test_blurry_assigned_face_is_not_used_as_profile_sample(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

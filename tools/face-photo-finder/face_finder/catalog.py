@@ -142,6 +142,15 @@ class FaceCatalog:
     def close(self) -> None:
         self.connection.close()
 
+    def reset(self) -> None:
+        """Permanently clear all cataloged biometric and scan data."""
+        with self.connection:
+            self.connection.execute("DELETE FROM faces")
+            self.connection.execute("DELETE FROM images")
+            self.connection.execute("DELETE FROM identities")
+            self.connection.execute("DELETE FROM unknown_groups")
+        self.connection.execute("VACUUM")
+
     def identities(self) -> list[KnownIdentity]:
         rows = self.connection.execute(
             """SELECT identities.id, identities.name, faces.embedding
