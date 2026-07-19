@@ -51,7 +51,7 @@ To build or update the identity catalog, clear the reference photos, leave **Kno
 
 The context viewer marks every detected face: red for unprocessed faces, cyan for the person currently being identified, green with the saved name for identified people, and gray for intentionally unknown people. Detections marked **Not a face** are removed from later overlays.
 
-While an unfamiliar-face question is open, background detection continues for up to 60 upcoming photos. The prompt shows up to eight possible appearances of the active person discovered so far, and updates as more are detected. This queue is memory-bounded and does not bypass manual identity decisions.
+While an unfamiliar-face question is open, background detection continues for up to 60 upcoming photos. The prompt shows a scrollable set of possible appearances of the active person and updates as more are detected. Saving an identity applies it to every included possible match. Click any thumbnail to toggle exclusion; excluded thumbnails display a red X and remain available for separate review. The queue is memory-bounded and freezes when the answer is submitted so unseen late arrivals are never assigned silently.
 
 High-confidence automatic matches expand the active profile immediately, improving recognition of later angles and lighting conditions in the same scan. Automatic profile learning uses a stricter threshold than result searching, discards near-duplicate samples, and caps active profiles at 64 varied samples to reduce accidental profile drift.
 

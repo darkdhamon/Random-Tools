@@ -86,6 +86,34 @@ class ContextFace:
     label: str
 
 
+@dataclass
+class RelatedCandidate:
+    path: Path
+    embedding: np.ndarray
+    preview: np.ndarray
+    excluded: bool = False
+
+
+@dataclass(frozen=True)
+class ForcedIdentityMatch:
+    embedding: np.ndarray
+    identity_id: int
+    excluded: bool
+    as_art: bool
+
+
+def forced_identity_decision(
+    path: Path,
+    embedding: np.ndarray,
+    decisions: dict[Path, list[ForcedIdentityMatch]],
+) -> ForcedIdentityMatch | None:
+    candidates = decisions.get(path, [])
+    if not candidates:
+        return None
+    best = max(candidates, key=lambda item: float(np.dot(embedding, item.embedding)))
+    return best if float(np.dot(embedding, best.embedding)) >= 0.995 else None
+
+
 class IdentityRequest:
     def __init__(
         self,
@@ -113,14 +141,19 @@ class IdentityRequest:
         self.save_as_art = False
         self.target_embedding: np.ndarray | None = None
         self.ready = threading.Event()
-        self.related_faces: list[tuple[Path, np.ndarray]] = []
+        self.related_faces: list[RelatedCandidate] = []
         self.related_lock = threading.Lock()
+        self.accepting_related = True
 
-    def add_related_face(self, path: Path, preview: np.ndarray) -> bool:
+    def add_related_face(self, path: Path, embedding: np.ndarray, preview: np.ndarray) -> bool:
         with self.related_lock:
-            if len(self.related_faces) >= 12 or any(existing_path == path for existing_path, _ in self.related_faces):
+            if (
+                not self.accepting_related
+                or len(self.related_faces) >= 60
+                or any(candidate.path == path for candidate in self.related_faces)
+            ):
                 return False
-            self.related_faces.append((path, preview))
+            self.related_faces.append(RelatedCandidate(path, embedding.copy(), preview.copy()))
             return True
 
 
@@ -470,6 +503,7 @@ class FaceFinderApp(tk.Tk):
             )
             self.prefetcher.start()
             results: list[MatchResult] = []
+            forced_matches: dict[Path, list[ForcedIdentityMatch]] = {}
             skip_unknowns = False
             for index, path in enumerate(files, start=1):
                 if self.cancel_event.is_set():
@@ -511,7 +545,7 @@ class FaceFinderApp(tk.Tk):
                                         context_faces.append(
                                             ContextFace(context_face.bbox, "unprocessed", "Unprocessed")
                                         )
-                                name, stop_asking, not_a_face, intentionally_unknown, save_as_art = self._request_identity(
+                                name, stop_asking, not_a_face, intentionally_unknown, save_as_art, related = self._request_identity(
                                     path, preview, known_identities, face.bbox, face.sharpness,
                                     face.profile_eligible, context_faces, face.embedding,
                                 )
@@ -527,6 +561,12 @@ class FaceFinderApp(tk.Tk):
                                 elif name:
                                     identity_id = catalog.get_or_create_identity(name)
                                     catalog.assign_face(face.face_id, identity_id, as_art=save_as_art)
+                                    for candidate in related:
+                                        forced_matches.setdefault(candidate.path, []).append(
+                                            ForcedIdentityMatch(
+                                                candidate.embedding, identity_id, candidate.excluded, save_as_art
+                                            )
+                                        )
                                     known_identities = catalog.identities()
                                 if skip_unknowns:
                                     break
@@ -553,10 +593,18 @@ class FaceFinderApp(tk.Tk):
                         review_states: dict[int, tuple[str, str]] = {}
                         for detected_index, face in enumerate(detected):
                             learning_threshold = max(threshold, 0.55)
-                            identity_id, _identity_score = best_known_identity(
-                                face.embedding, known_identities, learning_threshold
-                            )
-                            if identity_id is not None and face.profile_eligible:
+                            save_as_art = False
+                            forced = forced_identity_decision(path, face.embedding, forced_matches)
+                            if forced is not None and not forced.excluded:
+                                identity_id = forced.identity_id
+                                save_as_art = forced.as_art
+                            else:
+                                identity_id, _identity_score = best_known_identity(
+                                    face.embedding, known_identities, learning_threshold
+                                )
+                                if forced is not None and forced.excluded and identity_id == forced.identity_id:
+                                    identity_id = None
+                            if identity_id is not None and face.profile_eligible and not save_as_art:
                                 identity = next(
                                     item for item in known_identities if item.identity_id == identity_id
                                 )
@@ -570,7 +618,6 @@ class FaceFinderApp(tk.Tk):
                                 review_states[detected_index] = ("identified", identity_name)
                             unknown_group_id: int | None = None
                             intentionally_unknown = False
-                            save_as_art = False
                             if identity_id is None:
                                 unknown_group_id, _unknown_score = best_unknown_group(
                                     face.embedding, unknown_groups, learning_threshold
@@ -588,7 +635,7 @@ class FaceFinderApp(tk.Tk):
                                 and catalog_all
                                 and not skip_unknowns
                             ):
-                                name, stop_asking, not_a_face, intentionally_unknown, save_as_art = self._request_identity(
+                                name, stop_asking, not_a_face, intentionally_unknown, save_as_art, related = self._request_identity(
                                     path, face.preview, known_identities, face.bbox, face.sharpness,
                                     face.profile_eligible,
                                     detection_context(detected, detected_index, review_states),
@@ -600,6 +647,12 @@ class FaceFinderApp(tk.Tk):
                                     continue
                                 if name:
                                     identity_id = catalog.get_or_create_identity(name)
+                                    for candidate in related:
+                                        forced_matches.setdefault(candidate.path, []).append(
+                                            ForcedIdentityMatch(
+                                                candidate.embedding, identity_id, candidate.excluded, save_as_art
+                                            )
+                                        )
                                     if face.profile_eligible and not save_as_art:
                                         known_identities = add_known_sample(
                                             known_identities, identity_id, name, face.embedding
@@ -689,28 +742,30 @@ class FaceFinderApp(tk.Tk):
         profile_eligible: bool,
         context_faces: list[ContextFace],
         target_embedding: np.ndarray,
-    ) -> tuple[str | None, bool, bool, bool, bool]:
+    ) -> tuple[str | None, bool, bool, bool, bool, list[RelatedCandidate]]:
         names = [str(getattr(identity, "name")) for identity in identities]
         request = IdentityRequest(
             path, preview, names, bbox, sharpness, profile_eligible, context_faces
         )
         request.target_embedding = target_embedding
-        request.add_related_face(path, preview)
         self.identity_request = request
         if self.prefetcher:
             for related_path, face in self.prefetcher.buffered_faces():
                 if float(np.dot(target_embedding, face.embedding)) >= 0.55:
-                    request.add_related_face(related_path, face.preview)
+                    request.add_related_face(related_path, face.embedding, face.preview)
         self.events.put(("identify_face", request))
         request.ready.wait()
         if self.identity_request is request:
             self.identity_request = None
+        with request.related_lock:
+            related = list(request.related_faces)
         return (
             request.name,
             request.skip_remaining,
             request.not_a_face,
             request.intentionally_unknown,
             request.save_as_art,
+            related,
         )
 
     def _on_prefetched_faces(self, path: Path, faces: list[DetectedFace]) -> None:
@@ -721,7 +776,10 @@ class FaceFinderApp(tk.Tk):
         if target is None:
             return
         for face in faces:
-            if float(np.dot(target, face.embedding)) >= 0.55 and request.add_related_face(path, face.preview):
+            if (
+                float(np.dot(target, face.embedding)) >= 0.55
+                and request.add_related_face(path, face.embedding, face.preview)
+            ):
                 self.events.put(("related_face", request))
 
     def _drain_events(self) -> None:
@@ -1081,8 +1139,21 @@ class FaceFinderApp(tk.Tk):
         photo = ImageTk.PhotoImage(image)
         ttk.Label(content, image=photo).pack()
         ttk.Label(content, text="Possible appearances detected so far:").pack(anchor="w", pady=(12, 3))
-        related_frame = ttk.Frame(content)
-        related_frame.pack(fill="x")
+        related_container = ttk.Frame(content)
+        related_container.pack(fill="x")
+        related_canvas = tk.Canvas(related_container, height=210, highlightthickness=0)
+        related_scrollbar = ttk.Scrollbar(related_container, orient="vertical", command=related_canvas.yview)
+        related_canvas.configure(yscrollcommand=related_scrollbar.set)
+        related_canvas.pack(side="left", fill="both", expand=True)
+        related_scrollbar.pack(side="right", fill="y")
+        related_frame = ttk.Frame(related_canvas)
+        related_window = related_canvas.create_window((0, 0), window=related_frame, anchor="nw")
+        related_frame.bind(
+            "<Configure>", lambda _event: related_canvas.configure(scrollregion=related_canvas.bbox("all"))
+        )
+        related_canvas.bind(
+            "<Configure>", lambda event: related_canvas.itemconfigure(related_window, width=event.width)
+        )
         ttk.Label(content, text="Choose an existing person or type a new name:").pack(anchor="w", pady=(12, 3))
         name_var = tk.StringVar()
         name_box = AutocompleteCombobox(content, request.names, textvariable=name_var, width=38)
@@ -1101,6 +1172,8 @@ class FaceFinderApp(tk.Tk):
             request.not_a_face = not_a_face
             request.intentionally_unknown = intentionally_unknown
             request.save_as_art = save_as_art
+            with request.related_lock:
+                request.accepting_related = False
             request.ready.set()
             self.identity_dialog = None
             self.identity_request = None
@@ -1150,17 +1223,28 @@ class FaceFinderApp(tk.Tk):
         photos: list[ImageTk.PhotoImage] = []
         with request.related_lock:
             related = list(request.related_faces)
-        for index, (path, preview) in enumerate(related[:8]):
-            rgb = cv2.cvtColor(preview, cv2.COLOR_BGR2RGB)
+        for index, candidate in enumerate(related):
+            rgb = cv2.cvtColor(candidate.preview, cv2.COLOR_BGR2RGB)
             image = Image.fromarray(rgb)
             image.thumbnail((92, 92), Image.Resampling.LANCZOS)
+            if candidate.excluded:
+                draw = ImageDraw.Draw(image)
+                draw.line((4, 4, image.width - 4, image.height - 4), fill="#ff2020", width=7)
+                draw.line((image.width - 4, 4, 4, image.height - 4), fill="#ff2020", width=7)
             photo = ImageTk.PhotoImage(image)
             photos.append(photo)
             card = ttk.Frame(frame, padding=(0, 0, 6, 0))
-            card.grid(row=index // 4, column=index % 4, sticky="n")
-            ttk.Label(card, image=photo).pack()
-            ttk.Label(card, text=path.name, width=14, anchor="center").pack()
+            card.grid(row=index // 6, column=index % 6, sticky="n")
+            preview_label = ttk.Label(card, image=photo, cursor="hand2")
+            preview_label.pack()
+            preview_label.bind("<Button-1>", lambda _event, item=candidate: self._toggle_related_face(request, item))
+            ttk.Label(card, text=candidate.path.name, width=14, anchor="center").pack()
         dialog._related_photos = photos  # type: ignore[attr-defined]
+
+    def _toggle_related_face(self, request: IdentityRequest, candidate: RelatedCandidate) -> None:
+        with request.related_lock:
+            candidate.excluded = not candidate.excluded
+        self._refresh_related_faces(request)
 
     def _show_context_image(self, request: IdentityRequest) -> tk.Toplevel | None:
         try:
