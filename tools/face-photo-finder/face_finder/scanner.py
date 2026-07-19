@@ -9,6 +9,7 @@ import cv2
 import numpy as np
 
 IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp", ".bmp", ".tif", ".tiff"}
+DETECTION_MAX_EDGE = 1280
 
 
 @dataclass(frozen=True)
@@ -44,14 +45,16 @@ class FaceEngine:
 
     def detect_faces(self, image_path: Path) -> list[DetectedFace]:
         image = read_image(image_path)
-        height, width = image.shape[:2]
+        detection_image, scale = resize_for_detection(image)
+        height, width = detection_image.shape[:2]
         self.detector.setInputSize((width, height))
-        _, faces = self.detector.detect(image)
+        _, faces = self.detector.detect(detection_image)
         if faces is None:
             return []
 
         results: list[DetectedFace] = []
         for face in faces:
+            face = restore_face_coordinates(face, scale)
             aligned = self.recognizer.alignCrop(image, face)
             feature = self.recognizer.feature(aligned).flatten().astype(np.float32)
             norm = float(np.linalg.norm(feature))
@@ -62,6 +65,24 @@ class FaceEngine:
 
     def embeddings(self, image_path: Path) -> list[np.ndarray]:
         return [face.embedding for face in self.detect_faces(image_path)]
+
+
+def resize_for_detection(image: np.ndarray, max_edge: int = DETECTION_MAX_EDGE) -> tuple[np.ndarray, float]:
+    """Shrink large photos so close-up faces stay within YuNet's detection range."""
+    height, width = image.shape[:2]
+    scale = min(1.0, max_edge / max(height, width))
+    if scale == 1.0:
+        return image, scale
+    resized = cv2.resize(image, None, fx=scale, fy=scale, interpolation=cv2.INTER_AREA)
+    return resized, scale
+
+
+def restore_face_coordinates(face: np.ndarray, scale: float) -> np.ndarray:
+    """Map a YuNet box and its five landmarks back to the source resolution."""
+    restored = face.copy()
+    if scale != 1.0:
+        restored[:14] /= scale
+    return restored
 
 
 def read_image(path: Path) -> np.ndarray:

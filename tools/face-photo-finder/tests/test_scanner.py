@@ -4,10 +4,27 @@ import unittest
 
 import numpy as np
 
-from face_finder.scanner import DetectedFace, best_similarity, build_reference_embeddings, image_files
+from face_finder.scanner import (
+    DetectedFace,
+    best_similarity,
+    build_reference_embeddings,
+    image_files,
+    resize_for_detection,
+    restore_face_coordinates,
+)
 
 
 class ScannerUtilitiesTests(unittest.TestCase):
+    def test_large_image_is_resized_and_face_coordinates_are_restored(self) -> None:
+        image = np.zeros((4000, 3000, 3), dtype=np.uint8)
+        resized, scale = resize_for_detection(image, max_edge=1000)
+        self.assertEqual(resized.shape, (1000, 750, 3))
+        self.assertEqual(scale, 0.25)
+        face = np.array([10.0] * 14 + [0.9], dtype=np.float32)
+        restored = restore_face_coordinates(face, scale)
+        np.testing.assert_array_equal(restored[:14], np.array([40.0] * 14))
+        self.assertAlmostEqual(float(restored[14]), 0.9, places=5)
+
     def test_reference_picker_can_select_multiple_faces(self) -> None:
         faces = [
             DetectedFace(np.array([1.0, 0.0]), np.zeros((2, 2, 3), dtype=np.uint8)),
