@@ -50,6 +50,15 @@ class CatalogImage:
     identified_count: int
 
 
+@dataclass(frozen=True)
+class IdentityAssignment:
+    face_id: int
+    image_path: Path
+    preview: np.ndarray | None
+    is_art: bool
+    profile_eligible: bool
+
+
 class FaceCatalog:
     def __init__(self, path: Path) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -207,6 +216,46 @@ class FaceCatalog:
         )
         self.connection.commit()
         return int(cursor.lastrowid)
+
+    def identity_assignments(self, identity_id: int) -> list[IdentityAssignment]:
+        rows = self.connection.execute(
+            """SELECT faces.id, images.path, faces.preview, faces.is_art, faces.profile_eligible
+               FROM faces JOIN images ON images.id = faces.image_id
+               WHERE faces.identity_id = ? ORDER BY images.path, faces.face_index""",
+            (identity_id,),
+        ).fetchall()
+        return [
+            IdentityAssignment(
+                int(row[0]),
+                Path(row[1]),
+                np.frombuffer(row[2], dtype=np.uint8).copy() if row[2] is not None else None,
+                bool(row[3]),
+                bool(row[4]),
+            )
+            for row in rows
+        ]
+
+    def reassign_faces(self, face_ids: list[int], target_identity_id: int) -> int:
+        unique_ids = sorted(set(face_ids))
+        if not unique_ids:
+            return 0
+        placeholders = ",".join("?" for _ in unique_ids)
+        with self.connection:
+            cursor = self.connection.execute(
+                f"""UPDATE faces SET identity_id = ?, intentionally_unknown = 0,
+                    unknown_group_id = NULL WHERE id IN ({placeholders})""",
+                (target_identity_id, *unique_ids),
+            )
+        return int(cursor.rowcount)
+
+    def remove_identity_if_unused(self, identity_id: int) -> bool:
+        with self.connection:
+            cursor = self.connection.execute(
+                """DELETE FROM identities WHERE id = ?
+                   AND NOT EXISTS (SELECT 1 FROM faces WHERE identity_id = identities.id)""",
+                (identity_id,),
+            )
+        return cursor.rowcount > 0
 
     def cached_image(self, path: Path) -> CatalogImage | None:
         try:

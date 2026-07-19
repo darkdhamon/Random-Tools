@@ -307,6 +307,8 @@ class FaceFinderApp(tk.Tk):
         ttk.Button(actions, text="Copy matches…", command=self.copy_matches).pack(side="left")
         self.reset_button = ttk.Button(actions, text="Reset face database…", command=self.reset_database)
         self.reset_button.pack(side="left", padx=8)
+        self.manage_button = ttk.Button(actions, text="Manage identities…", command=self.manage_identities)
+        self.manage_button.pack(side="left")
         ttk.Label(actions, text="Verify matches before relying on them; face recognition can be wrong.").pack(side="right")
 
         outer.columnconfigure(0, weight=1)
@@ -423,6 +425,7 @@ class FaceFinderApp(tk.Tk):
         self.scan_button.config(state="disabled")
         self.cancel_button.config(state="normal")
         self.reset_button.config(state="disabled")
+        self.manage_button.config(state="disabled")
         self.progress["value"] = 0
         threshold = self.threshold_var.get()
         references = list(self.references)
@@ -814,6 +817,7 @@ class FaceFinderApp(tk.Tk):
         self.scan_button.config(state="normal")
         self.cancel_button.config(state="disabled")
         self.reset_button.config(state="normal")
+        self.manage_button.config(state="normal")
 
     def reset_database(self) -> None:
         confirmed = messagebox.askyesno(
@@ -859,6 +863,149 @@ class FaceFinderApp(tk.Tk):
             "All biometric identities and cached scan data have been removed. Your source photos were not changed.",
             parent=self,
         )
+
+    def manage_identities(self) -> None:
+        catalog = FaceCatalog(default_catalog_path())
+        identities = catalog.identities()
+        if not identities:
+            catalog.close()
+            messagebox.showinfo("No identities", "The face database does not contain any named identities yet.")
+            return
+
+        dialog = tk.Toplevel(self)
+        dialog.title("Manage identity assignments")
+        dialog.geometry("980x650")
+        dialog.transient(self)
+        dialog.grab_set()
+        outer = ttk.Frame(dialog, padding=14)
+        outer.pack(fill="both", expand=True)
+
+        source_var = tk.StringVar()
+        target_var = tk.StringVar()
+        ttk.Label(outer, text="Profile containing incorrect assignments:").grid(row=0, column=0, sticky="w")
+        source_combo = ttk.Combobox(outer, textvariable=source_var, state="readonly", width=34)
+        source_combo.grid(row=1, column=0, sticky="w", pady=(3, 10))
+        ttk.Label(outer, text="Reassign selected entries to:").grid(row=0, column=1, sticky="w", padx=(12, 0))
+        target_combo = AutocompleteCombobox(outer, [], textvariable=target_var, width=34)
+        target_combo.grid(row=1, column=1, sticky="ew", padx=(12, 0), pady=(3, 10))
+
+        style = ttk.Style(dialog)
+        style.configure("IdentityManager.Treeview", rowheight=84)
+        tree = ttk.Treeview(
+            outer,
+            columns=("path", "type", "profile"),
+            show="tree headings",
+            selectmode="extended",
+            style="IdentityManager.Treeview",
+        )
+        tree.heading("#0", text="Face")
+        tree.heading("path", text="Source photo")
+        tree.heading("type", text="Type")
+        tree.heading("profile", text="Profile sample")
+        tree.column("#0", width=100, stretch=False)
+        tree.column("path", width=650)
+        tree.column("type", width=70, anchor="center", stretch=False)
+        tree.column("profile", width=100, anchor="center", stretch=False)
+        tree.grid(row=2, column=0, columnspan=2, sticky="nsew")
+        scrollbar = ttk.Scrollbar(outer, orient="vertical", command=tree.yview)
+        scrollbar.grid(row=2, column=2, sticky="ns")
+        tree.configure(yscrollcommand=scrollbar.set)
+        photos: dict[str, ImageTk.PhotoImage] = {}
+        identity_by_name: dict[str, KnownIdentity] = {}
+
+        def refresh_identity_lists(preferred_source: str = "") -> None:
+            nonlocal identities, identity_by_name
+            identities = catalog.identities()
+            identity_by_name = {item.name: item for item in identities}
+            names = list(identity_by_name)
+            source_combo["values"] = names
+            target_combo.options = names
+            target_combo["values"] = names
+            if preferred_source in identity_by_name:
+                source_var.set(preferred_source)
+            elif names:
+                source_var.set(names[0])
+            else:
+                source_var.set("")
+            load_source()
+
+        def load_source(_event: object | None = None) -> None:
+            tree.delete(*tree.get_children())
+            photos.clear()
+            identity = identity_by_name.get(source_var.get())
+            if not identity:
+                return
+            for assignment in catalog.identity_assignments(identity.identity_id):
+                item_id = str(assignment.face_id)
+                if assignment.preview is not None:
+                    crop = cv2.imdecode(assignment.preview, cv2.IMREAD_COLOR)
+                    if crop is not None:
+                        rgb = cv2.cvtColor(crop, cv2.COLOR_BGR2RGB)
+                        image = Image.fromarray(rgb)
+                        image.thumbnail((90, 76), Image.Resampling.LANCZOS)
+                        photos[item_id] = ImageTk.PhotoImage(image)
+                tree.insert(
+                    "",
+                    "end",
+                    iid=item_id,
+                    image=photos.get(item_id, ""),
+                    text=assignment.image_path.name,
+                    values=(
+                        str(assignment.image_path),
+                        "Artwork" if assignment.is_art else "Photo",
+                        "Yes" if assignment.profile_eligible else "No",
+                    ),
+                )
+
+        def reassign(use_all: bool) -> None:
+            source = identity_by_name.get(source_var.get())
+            target_name = " ".join(target_var.get().split())
+            if not source or not target_name:
+                messagebox.showwarning("Profiles required", "Choose a source profile and enter a target name.", parent=dialog)
+                return
+            if source.name.casefold() == target_name.casefold():
+                messagebox.showwarning("Same profile", "Choose a different target profile.", parent=dialog)
+                return
+            items = list(tree.get_children()) if use_all else list(tree.selection())
+            if not items:
+                messagebox.showinfo("Nothing selected", "Select one or more face/photo entries first.", parent=dialog)
+                return
+            if not messagebox.askyesno(
+                "Confirm reassignment",
+                f"Reassign {len(items)} face/photo assignment(s) from {source.name} to {target_name}?",
+                parent=dialog,
+            ):
+                return
+            target_id = catalog.get_or_create_identity(target_name)
+            changed = catalog.reassign_faces([int(item) for item in items], target_id)
+            removed = catalog.remove_identity_if_unused(source.identity_id)
+            self._refresh_known_people([item.name for item in catalog.identities()])
+            target_var.set(target_name)
+            refresh_identity_lists(target_name if removed else source.name)
+            self.status_var.set(f"Reassigned {changed} face/photo assignment(s) to {target_name}.")
+
+        buttons = ttk.Frame(outer)
+        buttons.grid(row=3, column=0, columnspan=2, sticky="ew", pady=(10, 0))
+        ttk.Button(buttons, text="Reassign selected", command=lambda: reassign(False)).pack(side="right")
+        ttk.Button(buttons, text="Reassign all / merge profile", command=lambda: reassign(True)).pack(
+            side="right", padx=8
+        )
+
+        def close_dialog() -> None:
+            catalog.close()
+            dialog.grab_release()
+            dialog.destroy()
+
+        ttk.Button(buttons, text="Close", command=close_dialog).pack(side="left")
+        source_combo.bind("<<ComboboxSelected>>", load_source)
+        tree.bind(
+            "<Double-1>",
+            lambda _event: self._open_path(Path(tree.item(tree.focus(), "values")[0])) if tree.focus() else None,
+        )
+        dialog.protocol("WM_DELETE_WINDOW", close_dialog)
+        outer.columnconfigure(1, weight=1)
+        outer.rowconfigure(2, weight=1)
+        refresh_identity_lists()
 
     def _show_face_picker(self, request: FaceSelectionRequest) -> None:
         dialog = tk.Toplevel(self)

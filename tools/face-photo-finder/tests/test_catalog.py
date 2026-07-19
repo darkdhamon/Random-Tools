@@ -14,6 +14,33 @@ from face_finder.catalog import (
 
 
 class CatalogTests(unittest.TestCase):
+    def test_face_assignments_can_be_moved_and_empty_duplicate_removed(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            image = root / "duplicate-profile.jpg"
+            image.touch()
+            catalog = FaceCatalog(root / "catalog.sqlite3")
+            duplicate_id = catalog.get_or_create_identity("Alex Smit")
+            correct_id = catalog.get_or_create_identity("Alex Smith")
+            stored = catalog.store_scan(
+                image,
+                [np.array([1.0, 0.0], dtype=np.float32)],
+                [duplicate_id],
+                profile_eligible=[False],
+                is_art=[True],
+            )
+            assignment = catalog.identity_assignments(duplicate_id)[0]
+            self.assertEqual(assignment.image_path, image)
+            self.assertTrue(assignment.is_art)
+            self.assertEqual(catalog.reassign_faces([assignment.face_id], correct_id), 1)
+            self.assertTrue(catalog.remove_identity_if_unused(duplicate_id))
+            moved = catalog.faces_for_image(stored.image_id)[0]
+            self.assertEqual(moved.identity_name, "Alex Smith")
+            self.assertTrue(moved.is_art)
+            self.assertFalse(moved.profile_eligible)
+            self.assertNotIn("Alex Smit", [item.name for item in catalog.identities()])
+            catalog.close()
+
     def test_art_face_is_linked_to_identity_but_excluded_from_profile(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
