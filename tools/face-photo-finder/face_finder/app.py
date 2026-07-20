@@ -522,6 +522,13 @@ class FaceFinderApp(tk.Tk):
                 self.events.put(("status", "Cataloging every photo that contains a face…"))
 
             files = image_files(folder)
+            reconciliation = catalog.reconcile_files(files)
+            if reconciliation.relocated or reconciliation.newly_missing:
+                self.events.put((
+                    "status",
+                    f"Catalog paths updated: {reconciliation.relocated} relocated, "
+                    f"{reconciliation.newly_missing} newly missing.",
+                ))
             uncached_paths = [path for path in files if catalog.cached_image(path) is None]
             self.prefetcher = DetectionPrefetcher(
                 uncached_paths,
@@ -539,10 +546,10 @@ class FaceFinderApp(tk.Tk):
                 error: str | None = None
                 match: MatchResult | None = None
                 try:
-                    capture_year = image_capture_year(path)
+                    cached = catalog.cached_image(path)
+                    capture_year = cached.capture_year if cached else image_capture_year(path)
                     if selected_identity:
                         references = list(identity_embeddings_for_year(selected_identity, capture_year))
-                    cached = catalog.cached_image(path)
                     if cached:
                         catalog_faces = catalog.faces_for_image(cached.image_id)
                         handled_face_ids: set[int] = set()
@@ -1066,6 +1073,7 @@ class FaceFinderApp(tk.Tk):
 
     def manage_identities(self) -> None:
         catalog = FaceCatalog(default_catalog_path())
+        catalog.refresh_missing_status()
         identities = catalog.identities()
         if not identities:
             catalog.close()
@@ -1098,7 +1106,7 @@ class FaceFinderApp(tk.Tk):
         style.configure("IdentityManager.Treeview", rowheight=84)
         tree = ttk.Treeview(
             outer,
-            columns=("path", "year", "age", "visual_age", "type", "profile"),
+            columns=("path", "year", "age", "visual_age", "status", "type", "profile"),
             show="tree headings",
             selectmode="extended",
             style="IdentityManager.Treeview",
@@ -1108,13 +1116,15 @@ class FaceFinderApp(tk.Tk):
         tree.heading("year", text="Year")
         tree.heading("age", text="Age")
         tree.heading("visual_age", text="Visual age*")
+        tree.heading("status", text="File status")
         tree.heading("type", text="Type")
         tree.heading("profile", text="Profile sample")
         tree.column("#0", width=100, stretch=False)
-        tree.column("path", width=420)
+        tree.column("path", width=340)
         tree.column("year", width=60, anchor="center", stretch=False)
         tree.column("age", width=60, anchor="center", stretch=False)
         tree.column("visual_age", width=85, anchor="center", stretch=False)
+        tree.column("status", width=75, anchor="center", stretch=False)
         tree.column("type", width=70, anchor="center", stretch=False)
         tree.column("profile", width=100, anchor="center", stretch=False)
         tree.grid(row=2, column=0, columnspan=3, sticky="nsew")
@@ -1173,6 +1183,7 @@ class FaceFinderApp(tk.Tk):
                         if assignment.capture_year and identity.birth_year else "—",
                         f"≈{assignment.estimated_age:.0f}"
                         if assignment.estimated_age is not None else "—",
+                        "Missing" if assignment.missing_since else "Found",
                         "Artwork" if assignment.is_art else "Photo",
                         "Yes" if assignment.profile_eligible else "No",
                     ),
@@ -1324,6 +1335,22 @@ class FaceFinderApp(tk.Tk):
         age_button = ttk.Button(metadata_buttons, text="Estimate selected ages", command=estimate_selected_ages)
         age_button.pack(side="left", padx=(8, 0))
         dialog.after(100, poll_age_results)
+
+        def remove_missing_entries() -> None:
+            if not messagebox.askyesno(
+                "Remove missing catalog entries?",
+                "Remove every catalog entry whose source file is still missing?\n\n"
+                "This removes its face assignments and photo-specific metadata. It does not delete any files.",
+                parent=dialog,
+            ):
+                return
+            removed = catalog.prune_missing_images()
+            refresh_identity_lists(source_var.get())
+            self.status_var.set(f"Removed {removed} missing photo record(s) from the catalog.")
+
+        ttk.Button(metadata_buttons, text="Remove missing entries…", command=remove_missing_entries).pack(
+            side="left", padx=(8, 0)
+        )
 
         def close_dialog() -> None:
             catalog.close()

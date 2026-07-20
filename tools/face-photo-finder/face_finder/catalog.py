@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
+import hashlib
 import re
 import sqlite3
 
@@ -65,6 +66,13 @@ class IdentityAssignment:
     capture_year: int | None = None
     estimated_age: float | None = None
     capture_year_overridden: bool = False
+    missing_since: str | None = None
+
+
+@dataclass(frozen=True)
+class ReconcileResult:
+    relocated: int = 0
+    newly_missing: int = 0
 
 
 class FaceCatalog:
@@ -93,7 +101,9 @@ class FaceCatalog:
                 identified_count INTEGER NOT NULL,
                 scanned_at TEXT NOT NULL,
                 capture_year INTEGER,
-                capture_year_override INTEGER
+                capture_year_override INTEGER,
+                content_hash TEXT,
+                missing_since TEXT
             );
             CREATE TABLE IF NOT EXISTS unknown_groups (
                 id INTEGER PRIMARY KEY,
@@ -130,6 +140,10 @@ class FaceCatalog:
             self.connection.execute("ALTER TABLE images ADD COLUMN capture_year INTEGER")
         if "capture_year_override" not in image_columns:
             self.connection.execute("ALTER TABLE images ADD COLUMN capture_year_override INTEGER")
+        if "content_hash" not in image_columns:
+            self.connection.execute("ALTER TABLE images ADD COLUMN content_hash TEXT")
+        if "missing_since" not in image_columns:
+            self.connection.execute("ALTER TABLE images ADD COLUMN missing_since TEXT")
         if "preview" not in columns:
             self.connection.execute("ALTER TABLE faces ADD COLUMN preview BLOB")
         if "intentionally_unknown" not in columns:
@@ -261,7 +275,7 @@ class FaceCatalog:
         rows = self.connection.execute(
             """SELECT faces.id, images.path, faces.preview, faces.is_art, faces.profile_eligible,
                       COALESCE(images.capture_year_override, images.capture_year), faces.estimated_age,
-                      images.capture_year_override IS NOT NULL
+                      images.capture_year_override IS NOT NULL, images.missing_since
                FROM faces JOIN images ON images.id = faces.image_id
                WHERE faces.identity_id = ? ORDER BY images.path, faces.face_index""",
             (identity_id,),
@@ -276,9 +290,94 @@ class FaceCatalog:
                 row[5],
                 row[6],
                 bool(row[7]),
+                row[8],
             )
             for row in rows
         ]
+
+    def reconcile_files(self, paths: list[Path]) -> ReconcileResult:
+        """Relink moved files conservatively and mark truly absent catalog paths missing."""
+        candidates: dict[int, list[Path]] = {}
+        for path in paths:
+            try:
+                resolved = path.resolve()
+                candidates.setdefault(resolved.stat().st_size, []).append(resolved)
+            except OSError:
+                continue
+        rows = self.connection.execute(
+            "SELECT id, path, size, content_hash, missing_since FROM images"
+        ).fetchall()
+        catalog_paths = {Path(row[1]) for row in rows}
+        hash_cache: dict[Path, str] = {}
+
+        def candidate_hash(path: Path) -> str:
+            if path not in hash_cache:
+                hash_cache[path] = file_content_hash(path)
+            return hash_cache[path]
+
+        relocated = 0
+        newly_missing = 0
+        now = datetime.now(timezone.utc).isoformat()
+        with self.connection:
+            for image_id, stored_path, size, stored_hash, missing_since in rows:
+                old_path = Path(stored_path)
+                if old_path.exists():
+                    if missing_since is not None:
+                        self.connection.execute(
+                            "UPDATE images SET missing_since = NULL WHERE id = ?", (image_id,)
+                        )
+                    continue
+                possible = [path for path in candidates.get(int(size), []) if path not in catalog_paths]
+                match: Path | None = None
+                if stored_hash:
+                    matching: list[Path] = []
+                    for path in possible:
+                        digest = candidate_hash(path)
+                        if digest == stored_hash:
+                            matching.append(path)
+                    if len(matching) == 1:
+                        match = matching[0]
+                else:
+                    # Legacy rows predate fingerprints. Filename plus exact byte size is
+                    # intentionally conservative; ambiguous candidates remain missing.
+                    same_name = [path for path in possible if path.name.casefold() == old_path.name.casefold()]
+                    if len(same_name) == 1:
+                        match = same_name[0]
+                if match is not None:
+                    stat = match.stat()
+                    digest = candidate_hash(match)
+                    self.connection.execute(
+                        """UPDATE images SET path = ?, size = ?, modified_ns = ?, content_hash = ?,
+                                  missing_since = NULL WHERE id = ?""",
+                        (str(match), stat.st_size, stat.st_mtime_ns, digest, image_id),
+                    )
+                    catalog_paths.add(match)
+                    relocated += 1
+                elif missing_since is None:
+                    self.connection.execute(
+                        "UPDATE images SET missing_since = ? WHERE id = ?", (now, image_id)
+                    )
+                    newly_missing += 1
+        return ReconcileResult(relocated, newly_missing)
+
+    def refresh_missing_status(self) -> int:
+        """Refresh missing markers without attempting relocation discovery."""
+        return self.reconcile_files([]).newly_missing
+
+    def prune_missing_images(self) -> int:
+        """Delete catalog rows whose source paths are still absent."""
+        rows = self.connection.execute(
+            "SELECT id, path FROM images WHERE missing_since IS NOT NULL"
+        ).fetchall()
+        image_ids = [int(image_id) for image_id, path in rows if not Path(path).exists()]
+        if not image_ids:
+            return 0
+        placeholders = ",".join("?" for _ in image_ids)
+        with self.connection:
+            cursor = self.connection.execute(
+                f"DELETE FROM images WHERE id IN ({placeholders})", image_ids
+            )
+        return int(cursor.rowcount)
 
     def set_face_estimated_age(self, face_id: int, estimated_age: float | None) -> None:
         if estimated_age is not None and not 0 <= estimated_age <= 100:
@@ -407,14 +506,16 @@ class FaceCatalog:
         identified_count = sum(value is not None for value in identities)
         with self.connection:
             self.connection.execute(
-                """INSERT INTO images(path, size, modified_ns, face_count, identified_count, scanned_at, capture_year)
-                   VALUES (?, ?, ?, ?, ?, ?, ?)
+                """INSERT INTO images(path, size, modified_ns, face_count, identified_count, scanned_at,
+                                      capture_year, content_hash, missing_since)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL)
                    ON CONFLICT(path) DO UPDATE SET size=excluded.size, modified_ns=excluded.modified_ns,
                    face_count=excluded.face_count, identified_count=excluded.identified_count,
-                   scanned_at=excluded.scanned_at, capture_year=excluded.capture_year""",
+                   scanned_at=excluded.scanned_at, capture_year=excluded.capture_year,
+                   content_hash=excluded.content_hash, missing_since=NULL""",
                 (
                     str(resolved), stat.st_size, stat.st_mtime_ns, len(embeddings), identified_count,
-                    datetime.now(timezone.utc).isoformat(), capture_year,
+                    datetime.now(timezone.utc).isoformat(), capture_year, file_content_hash(resolved),
                 ),
             )
             image_id = int(self.connection.execute("SELECT id FROM images WHERE path = ?", (str(resolved),)).fetchone()[0])
@@ -632,6 +733,15 @@ def image_capture_year(path: Path) -> int | None:
         return datetime.fromtimestamp(path.stat().st_mtime).year
     except OSError:
         return None
+
+
+def file_content_hash(path: Path) -> str:
+    """Return a stable SHA-256 fingerprint without loading a large photo wholly into memory."""
+    digest = hashlib.sha256()
+    with path.open("rb") as source:
+        while chunk := source.read(1024 * 1024):
+            digest.update(chunk)
+    return digest.hexdigest()
 
 
 def default_catalog_path() -> Path:

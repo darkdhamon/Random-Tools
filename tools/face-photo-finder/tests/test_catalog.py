@@ -66,6 +66,45 @@ class CatalogTests(unittest.TestCase):
             self.assertEqual(catalog.cached_image(image).capture_year, 2006)  # type: ignore[union-attr]
             catalog.close()
 
+    def test_reconcile_preserves_identity_when_file_moves(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            original = root / "old" / "portrait.jpg"
+            relocated = root / "new" / "portrait.jpg"
+            original.parent.mkdir()
+            original.write_bytes(b"same-photo-content")
+            catalog = FaceCatalog(root / "catalog.sqlite3")
+            identity_id = catalog.get_or_create_identity("Moved Person")
+            stored = catalog.store_scan(
+                original, [np.array([1.0, 0.0], dtype=np.float32)], [identity_id]
+            )
+            relocated.parent.mkdir()
+            original.replace(relocated)
+            result = catalog.reconcile_files([relocated])
+            self.assertEqual(result.relocated, 1)
+            self.assertEqual(result.newly_missing, 0)
+            self.assertEqual(catalog.cached_image(relocated).image_id, stored.image_id)  # type: ignore[union-attr]
+            assignment = catalog.identity_assignments(identity_id)[0]
+            self.assertEqual(assignment.image_path, relocated.resolve())
+            self.assertIsNone(assignment.missing_since)
+            catalog.close()
+
+    def test_deleted_file_is_marked_missing_and_can_be_pruned(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            image = root / "deleted.jpg"
+            image.write_bytes(b"deleted-photo-content")
+            catalog = FaceCatalog(root / "catalog.sqlite3")
+            identity_id = catalog.get_or_create_identity("Deleted Person")
+            catalog.store_scan(image, [np.array([1.0, 0.0], dtype=np.float32)], [identity_id])
+            image.unlink()
+            result = catalog.reconcile_files([])
+            self.assertEqual(result.newly_missing, 1)
+            self.assertIsNotNone(catalog.identity_assignments(identity_id)[0].missing_since)
+            self.assertEqual(catalog.prune_missing_images(), 1)
+            self.assertEqual(catalog.identity_assignments(identity_id), [])
+            catalog.close()
+
     def test_closest_identity_matches_are_ranked_with_percent_ready_scores(self) -> None:
         identities = [
             KnownIdentity(1, "Second", (np.array([0.7, 0.3], dtype=np.float32),)),

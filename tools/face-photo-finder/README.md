@@ -25,6 +25,8 @@ A private, local desktop tool that recursively scans a folder and finds photos l
 - includes **Manage identities** for reviewing face/photo assignments, moving selected entries, or merging an entire duplicate profile into an existing or newly named profile;
 - estimates the apparent age of selected cataloged faces locally and stores the estimate for review;
 - allows persistent capture-year overrides when EXIF is missing and a download timestamp gives the wrong year;
+- fingerprints cataloged files so scans can relink moved photos without losing face assignments or metadata;
+- marks deleted or otherwise unavailable source files as missing and provides a confirmed catalog-cleanup action;
 - opens matches, exports a CSV report, or copies selected/all matches;
 - never modifies source photos and does not upload images or face data.
 
@@ -62,6 +64,8 @@ High-confidence automatic matches expand the active profile immediately, improvi
 Profiles are also organized by the photo's capture year. The app reads the EXIF date taken when available, then checks the filename for a four-digit year, and finally falls back to the file modification year. Matching uses samples from the same year first, or the nearest represented year when that year has no samples. The 64-sample profile is balanced across years so heavily photographed recent periods do not displace older appearances. In **Manage identities**, save a person's birth year to record the corresponding age for each photo year; birth year is descriptive metadata and does not weaken matching when it is unknown.
 
 Downloaded files can have a misleading modification year. In **Manage identities**, select the affected face/photo rows and use **Set selected photo year** to save a permanent correction. **Estimate selected ages** downloads the Apache-licensed ONNX Model Zoo age classifier on first use, runs it locally, and shows the midpoint of a broad visual-age band. If the identity has a saved birth year, the app can suggest capture-year overrides, but it always asks before applying them. A `*` beside a year identifies a manual or confirmed override. Visual age is not exact and should be reviewed, especially for children and teenagers.
+
+Each newly cataloged image receives a SHA-256 content fingerprint. At the beginning of a scan, the app compares missing catalog paths with files in the selected folder and relinks an unambiguous match in place, preserving identities, age estimates, artwork flags, and year overrides. Older catalog rows without a fingerprint use an exact filename-and-size match for their first relocation. Files that remain absent are marked **Missing** in **Manage identities**. **Remove missing entries** permanently removes those database records after confirmation without touching files. To discover a relocation, scan a folder that contains the file's new location.
 
 Aligned face crops are checked for focus before profile learning. Blurry faces can still be assigned to named or anonymous identities and remain linked to their source photos, but their embeddings are excluded from active biometric profiles. The identity prompt labels these low-quality samples so the distinction is visible.
 
