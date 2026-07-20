@@ -521,6 +521,48 @@ class CatalogTests(unittest.TestCase):
             self.assertEqual(catalog.locations_for_image(image_id), [])
             catalog.close()
 
+    def test_removing_gps_location_uses_null_and_suppresses_embedded_coordinates(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            image = root / "gps.jpg"; image.write_bytes(b"photo")
+            catalog = FaceCatalog(root / "catalog.sqlite3")
+            image_id = catalog.store_scan(image, [], []).image_id
+            with catalog.connection:
+                catalog.connection.execute(
+                    "UPDATE images SET gps_latitude=44.2,gps_longitude=-93.81 WHERE id=?",
+                    (image_id,),
+                )
+            location_id = catalog.create_location(
+                "GPS area", "custom", 44.2, -93.81, 1000
+            )
+            self.assertEqual(
+                {item["id"] for item in catalog.locations_for_image(image_id)}, {location_id}
+            )
+
+            catalog.update_gallery_metadata(
+                image_id, "", "", "", 0, None,
+                latitude=None, longitude=None, remove_location=True,
+            )
+            photo = catalog.gallery_photo(image_id)
+            self.assertIsNone(photo["latitude"])
+            self.assertIsNone(photo["longitude"])
+            self.assertEqual(catalog.locations_for_image(image_id), [])
+            stored = catalog.connection.execute(
+                """SELECT images.gps_latitude,images.gps_longitude,metadata.latitude,
+                          metadata.longitude,metadata.location_removed
+                   FROM images JOIN image_metadata metadata ON metadata.image_id=images.id
+                   WHERE images.id=?""", (image_id,)
+            ).fetchone()
+            self.assertEqual(stored, (44.2, -93.81, None, None, 1))
+
+            catalog.update_gallery_metadata(image_id, "Changed", "", "", 0, None)
+            self.assertIsNone(catalog.gallery_photo(image_id)["latitude"])
+            catalog.update_gallery_metadata(
+                image_id, "Changed", "", "", 0, None, latitude=45.0, longitude=-94.0
+            )
+            self.assertEqual(catalog.gallery_photo(image_id)["latitude"], 45.0)
+            catalog.close()
+
     def test_imported_boundaries_are_indexed_and_hidden_until_they_have_photos(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

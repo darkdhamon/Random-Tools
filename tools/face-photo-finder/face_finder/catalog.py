@@ -200,7 +200,8 @@ class FaceCatalog:
                 media_kind_override TEXT,
                 location_name TEXT NOT NULL DEFAULT '',
                 latitude REAL,
-                longitude REAL
+                longitude REAL,
+                location_removed INTEGER NOT NULL DEFAULT 0
             );
             CREATE TABLE IF NOT EXISTS albums (
                 id INTEGER PRIMARY KEY,
@@ -409,6 +410,13 @@ class FaceCatalog:
             self.connection.execute("ALTER TABLE faces ADD COLUMN art_score REAL")
         if "estimated_age" not in columns:
             self.connection.execute("ALTER TABLE faces ADD COLUMN estimated_age REAL")
+        metadata_columns = {
+            row[1] for row in self.connection.execute("PRAGMA table_info(image_metadata)")
+        }
+        if "location_removed" not in metadata_columns:
+            self.connection.execute(
+                "ALTER TABLE image_metadata ADD COLUMN location_removed INTEGER NOT NULL DEFAULT 0"
+            )
         for location_id, latitude, longitude, radius, geometry in self.connection.execute(
             """SELECT locations.id, latitude, longitude, radius_meters, geometry_json
                FROM locations LEFT JOIN location_bounds bounds ON bounds.location_id=locations.id
@@ -535,8 +543,8 @@ class FaceCatalog:
                        COALESCE(metadata.nsfw_override, images.nsfw_score >= 0.45, 0),
                        COALESCE(metadata.media_kind_override, images.media_kind, 'photo'),
                        metadata.media_kind_override, COALESCE(metadata.location_name, ''),
-                       COALESCE(metadata.latitude, images.gps_latitude),
-                       COALESCE(metadata.longitude, images.gps_longitude), images.nsfw_details,
+                       CASE WHEN COALESCE(metadata.location_removed,0)=1 THEN NULL ELSE COALESCE(metadata.latitude, images.gps_latitude) END,
+                       CASE WHEN COALESCE(metadata.location_removed,0)=1 THEN NULL ELSE COALESCE(metadata.longitude, images.gps_longitude) END, images.nsfw_details,
                        images.nsfw_vit_score, images.nsfw_review_required,
                        images.capture_year_override, {effective_date}
                 FROM images LEFT JOIN image_metadata metadata ON metadata.image_id = images.id
@@ -572,8 +580,8 @@ class FaceCatalog:
                       COALESCE(metadata.nsfw_override, images.nsfw_score >= 0.45, 0),
                       COALESCE(metadata.media_kind_override, images.media_kind, 'photo'),
                       metadata.media_kind_override, COALESCE(metadata.location_name, ''),
-                      COALESCE(metadata.latitude, images.gps_latitude),
-                      COALESCE(metadata.longitude, images.gps_longitude), images.nsfw_details,
+                      CASE WHEN COALESCE(metadata.location_removed,0)=1 THEN NULL ELSE COALESCE(metadata.latitude, images.gps_latitude) END,
+                      CASE WHEN COALESCE(metadata.location_removed,0)=1 THEN NULL ELSE COALESCE(metadata.longitude, images.gps_longitude) END, images.nsfw_details,
                       images.nsfw_vit_score, images.nsfw_review_required,
                       images.capture_year_override,
                       CASE WHEN images.capture_year_override IS NULL
@@ -1009,10 +1017,11 @@ class FaceCatalog:
         center_lat, center_lon, radius, boundary, geometry = row
         matches = []
         coordinates = self.connection.execute(
-            """SELECT images.id, COALESCE(metadata.latitude,images.gps_latitude),
-                      COALESCE(metadata.longitude,images.gps_longitude)
+            """SELECT images.id, CASE WHEN COALESCE(metadata.location_removed,0)=1 THEN NULL ELSE COALESCE(metadata.latitude,images.gps_latitude) END,
+                      CASE WHEN COALESCE(metadata.location_removed,0)=1 THEN NULL ELSE COALESCE(metadata.longitude,images.gps_longitude) END
                FROM images LEFT JOIN image_metadata metadata ON metadata.image_id=images.id
                WHERE images.missing_since IS NULL
+                 AND COALESCE(metadata.location_removed,0)=0
                  AND COALESCE(metadata.latitude,images.gps_latitude) IS NOT NULL
                  AND COALESCE(metadata.longitude,images.gps_longitude) IS NOT NULL"""
         )
@@ -1044,8 +1053,8 @@ class FaceCatalog:
 
     def rebuild_boundary_match_cache(self) -> None:
         coordinates = self.connection.execute(
-            """SELECT images.id, COALESCE(metadata.latitude,images.gps_latitude),
-                      COALESCE(metadata.longitude,images.gps_longitude)
+            """SELECT images.id, CASE WHEN COALESCE(metadata.location_removed,0)=1 THEN NULL ELSE COALESCE(metadata.latitude,images.gps_latitude) END,
+                      CASE WHEN COALESCE(metadata.location_removed,0)=1 THEN NULL ELSE COALESCE(metadata.longitude,images.gps_longitude) END
                FROM images LEFT JOIN image_metadata metadata ON metadata.image_id=images.id
                WHERE images.missing_since IS NULL"""
         ).fetchall()
@@ -1208,8 +1217,8 @@ class FaceCatalog:
 
     def locations_for_image(self, image_id: int) -> list[dict[str, object]]:
         coordinate = self.connection.execute(
-            """SELECT COALESCE(metadata.latitude, images.gps_latitude),
-                      COALESCE(metadata.longitude, images.gps_longitude)
+            """SELECT CASE WHEN COALESCE(metadata.location_removed,0)=1 THEN NULL ELSE COALESCE(metadata.latitude, images.gps_latitude) END,
+                      CASE WHEN COALESCE(metadata.location_removed,0)=1 THEN NULL ELSE COALESCE(metadata.longitude, images.gps_longitude) END
                FROM images LEFT JOIN image_metadata metadata ON metadata.image_id = images.id
                WHERE images.id = ?""",
             (image_id,),
@@ -1353,10 +1362,11 @@ class FaceCatalog:
         return [
             {"id": int(row[0]), "latitude": float(row[1]), "longitude": float(row[2])}
             for row in self.connection.execute(
-                """SELECT images.id, COALESCE(metadata.latitude, images.gps_latitude),
-                          COALESCE(metadata.longitude, images.gps_longitude)
+                """SELECT images.id, CASE WHEN COALESCE(metadata.location_removed,0)=1 THEN NULL ELSE COALESCE(metadata.latitude, images.gps_latitude) END,
+                          CASE WHEN COALESCE(metadata.location_removed,0)=1 THEN NULL ELSE COALESCE(metadata.longitude, images.gps_longitude) END
                    FROM images LEFT JOIN image_metadata metadata ON metadata.image_id=images.id
                    WHERE images.missing_since IS NULL
+                     AND COALESCE(metadata.location_removed,0)=0
                      AND COALESCE(metadata.latitude, images.gps_latitude) IS NOT NULL
                      AND COALESCE(metadata.longitude, images.gps_longitude) IS NOT NULL
                    ORDER BY images.id DESC"""
@@ -1559,6 +1569,7 @@ class FaceCatalog:
         capture_year: int | None, nsfw_override: int | None = None,
         media_kind_override: str | None = None,
         location_name: str = "", latitude: float | None = None, longitude: float | None = None,
+        remove_location: bool = False,
     ) -> None:
         if rating not in range(6):
             raise ValueError("Rating must be between 0 and 5.")
@@ -1573,8 +1584,8 @@ class FaceCatalog:
         if longitude is not None and not -180 <= longitude <= 180:
             raise ValueError("Longitude must be between -180 and 180.")
         previous_coordinates = self.connection.execute(
-            """SELECT COALESCE(metadata.latitude,images.gps_latitude),
-                      COALESCE(metadata.longitude,images.gps_longitude)
+            """SELECT CASE WHEN COALESCE(metadata.location_removed,0)=1 THEN NULL ELSE COALESCE(metadata.latitude,images.gps_latitude) END,
+                      CASE WHEN COALESCE(metadata.location_removed,0)=1 THEN NULL ELSE COALESCE(metadata.longitude,images.gps_longitude) END
                FROM images LEFT JOIN image_metadata metadata ON metadata.image_id=images.id
                WHERE images.id=?""", (image_id,)
         ).fetchone()
@@ -1591,16 +1602,21 @@ class FaceCatalog:
                  media_kind_override),
             )
             self.connection.execute(
-                """UPDATE image_metadata SET location_name = ?, latitude = ?, longitude = ?
+                """UPDATE image_metadata SET location_name = ?, latitude = ?, longitude = ?,
+                          location_removed = CASE
+                              WHEN ? THEN 1
+                              WHEN ? THEN 0
+                              ELSE location_removed END
                    WHERE image_id = ?""",
-                (location_name.strip(), latitude, longitude, image_id),
+                (location_name.strip(), latitude, longitude, int(remove_location),
+                 int(latitude is not None and longitude is not None), image_id),
             )
             self.connection.execute(
                 "UPDATE images SET capture_year_override = ? WHERE id = ?", (capture_year, image_id)
             )
         current_coordinates = self.connection.execute(
-            """SELECT COALESCE(metadata.latitude,images.gps_latitude),
-                      COALESCE(metadata.longitude,images.gps_longitude)
+            """SELECT CASE WHEN COALESCE(metadata.location_removed,0)=1 THEN NULL ELSE COALESCE(metadata.latitude,images.gps_latitude) END,
+                      CASE WHEN COALESCE(metadata.location_removed,0)=1 THEN NULL ELSE COALESCE(metadata.longitude,images.gps_longitude) END
                FROM images LEFT JOIN image_metadata metadata ON metadata.image_id=images.id
                WHERE images.id=?""", (image_id,)
         ).fetchone()
@@ -1702,7 +1718,14 @@ class FaceCatalog:
                 "UPDATE images SET gps_latitude = ?, gps_longitude = ?, gps_scanned_at = ? WHERE id = ?",
                 (latitude, longitude, datetime.now(timezone.utc).isoformat(), image_id),
             )
-        self._refresh_image_boundary_matches(image_id, latitude, longitude)
+        removed_row = self.connection.execute(
+            "SELECT COALESCE(location_removed,0) FROM image_metadata WHERE image_id=?",
+            (image_id,),
+        ).fetchone()
+        removed = bool(removed_row[0]) if removed_row else False
+        self._refresh_image_boundary_matches(
+            image_id, None if removed else latitude, None if removed else longitude
+        )
         return coordinates
 
     def identities(self) -> list[KnownIdentity]:

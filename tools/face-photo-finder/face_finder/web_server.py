@@ -931,7 +931,11 @@ function renderPhotoLocations() {
   let box=document.getElementById('photoLocations');
   if(!box){box=document.createElement('section');box.id='photoLocations';box.className='photo-locations';photoAlbums.insertAdjacentElement('afterend',box)}
   const manual=new Set(current.manual_location_ids||[]), matched=current.locations||[];
-  box.innerHTML='<strong>Locations</strong><div class="muted">Matched: '+(matched.length?matched.map(item=>esc(item.path)+(item.inherited?' (inherited)':item.manual?' (manual)':'')).join(', '):'None')+'</div><div class="photo-location-options">'+(managedLocations.length?managedLocations.map(item=>`<label><input type="checkbox" value="${item.id}" ${manual.has(item.id)?'checked':''} onchange="savePhotoLocations()">${esc(item.path)}</label>`).join(''):'<span class="muted">No saved locations.</span>')+'</div><button onclick="newGeofenceFromPhoto()">New geofence here…</button>';
+  box.innerHTML='<strong>Locations</strong><div class="muted">Matched: '+(matched.length?matched.map(item=>esc(item.path)+(item.inherited?' (inherited)':item.manual?' (manual)':'')).join(', '):'None')+'</div><div class="photo-location-options">'+(managedLocations.length?managedLocations.map(item=>`<label><input type="checkbox" value="${item.id}" ${manual.has(item.id)?'checked':''} onchange="savePhotoLocations()">${esc(item.path)}</label>`).join(''):'<span class="muted">No saved locations.</span>')+'</div><button onclick="newGeofenceFromPhoto()">New geofence here…</button>'+(current.latitude!=null&&current.longitude!=null?'<button onclick="removePhotoGpsLocation()">Remove GPS location</button>':'');
+}
+async function removePhotoGpsLocation(){
+  if(!current)return;clearTimeout(saveTimer);const imageId=current.id;latitude.value='';longitude.value='';updateMap();saveState.textContent='Removing GPS location…';
+  try{await post('/api/photo',{id:imageId,title:title.value,description:description.value,tags:tags.value,rating:+rating.value,capture_year:captureYear.value?+captureYear.value:null,location_name:locationName.value,latitude:null,longitude:null,remove_location:true,nsfw_override:nsfwOverride.value===''?null:+nsfwOverride.value,media_kind_override:mediaKindOverride.value||null});await openPhoto(imageId);saveState.textContent='GPS location removed'}catch(error){saveState.textContent='Remove location failed: '+error.message}
 }
 async function savePhotoLocations() {
   const ids=[...document.querySelectorAll('#photoLocations input:checked')].map(input=>+input.value);
@@ -1190,7 +1194,7 @@ class GalleryHandler(BaseHTTPRequestHandler):
                         int(body.get("rating", 0)), body.get("capture_year"),
                         body.get("nsfw_override"), body.get("media_kind_override"),
                         str(body.get("location_name", "")), body.get("latitude"),
-                        body.get("longitude"),
+                        body.get("longitude"), bool(body.get("remove_location", False)),
                     )
                 finally: catalog.close()
                 self._json({"ok": True})
