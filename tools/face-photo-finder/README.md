@@ -38,6 +38,7 @@ A private, local desktop tool that recursively scans a folder and finds photos l
 - numbers unidentified faces consistently between the photo and assignment list; clicking a reticle focuses its picker, while focusing a picker highlights its reticle in cyan;
 - expands the photo editor across the full viewport, reserving a fixed-width metadata sidebar while giving the image all remaining screen space;
 - allows non-biometric manual person tags to target a clicked location in the photo and displays those saved targets with labeled gold reticles;
+- detects cats and dogs locally with the Apache-licensed OpenCV NanoDet model, saves editable purple pet reticles, and supports manually named/targeted pets of any species;
 - extracts EXIF GPS coordinates, supports editable place names and coordinates, and shows an offline map preview with an explicit OpenStreetMap link;
 - searches by a previously learned person from the **Known person** list without requiring another reference photo;
 - autocompletes identity names case-insensitively while still allowing new names;

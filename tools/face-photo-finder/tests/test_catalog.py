@@ -477,6 +477,25 @@ class CatalogTests(unittest.TestCase):
             self.assertEqual(catalog.gallery_photo(stored.image_id)["face_tags"], [])  # type: ignore[index]
             catalog.close()
 
+    def test_pet_tags_support_automatic_and_manual_targets(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary); image = root / "pets.jpg"; image.write_bytes(b"image")
+            catalog = FaceCatalog(root / "catalog.sqlite3"); stored = catalog.store_scan(image, [], [])
+            automatic = catalog.add_pet_tag(stored.image_id, "Dog 1", "Dog", (0.1, 0.2, 0.3, 0.4), 0.91, True)
+            manual = catalog.add_pet_tag(stored.image_id, "Onyx", "Dog", (0.5, 0.5, 0.1, 0.1))
+            pets = catalog.gallery_photo(stored.image_id)["pet_tags"]  # type: ignore[index]
+            self.assertEqual([pet["name"] for pet in pets], ["Dog 1", "Onyx"])
+            self.assertTrue(pets[0]["automatic"])
+            catalog.update_pet_tag(manual, "Onyx Brown", (0.6, 0.6, 0.1, 0.1))
+            catalog.clear_automatic_pet_tags(stored.image_id)
+            pets = catalog.gallery_photo(stored.image_id)["pet_tags"]  # type: ignore[index]
+            self.assertEqual(pets[0]["name"], "Onyx Brown")
+            catalog.remove_pet_tag(manual)
+            self.assertEqual(catalog.gallery_photo(stored.image_id)["pet_tags"], [])  # type: ignore[index]
+            with self.assertRaises(ValueError):
+                catalog.add_pet_tag(stored.image_id, "Bad", "Dog", (0.9, 0.9, 0.2, 0.2))
+            catalog.close()
+
     def test_modified_image_is_not_returned_as_cached(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

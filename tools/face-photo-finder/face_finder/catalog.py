@@ -166,6 +166,13 @@ class FaceCatalog:
             );
             CREATE INDEX IF NOT EXISTS photo_identity_tags_identity_idx
                 ON photo_identity_tags(identity_id);
+            CREATE TABLE IF NOT EXISTS pet_tags (
+                id INTEGER PRIMARY KEY, image_id INTEGER NOT NULL REFERENCES images(id) ON DELETE CASCADE,
+                name TEXT NOT NULL, species TEXT NOT NULL, confidence REAL,
+                bbox_x REAL NOT NULL, bbox_y REAL NOT NULL,
+                bbox_width REAL NOT NULL, bbox_height REAL NOT NULL,
+                automatic INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL
+            );
             CREATE TABLE IF NOT EXISTS image_metadata (
                 image_id INTEGER PRIMARY KEY REFERENCES images(id) ON DELETE CASCADE,
                 title TEXT NOT NULL DEFAULT '',
@@ -464,6 +471,15 @@ class FaceCatalog:
                    WHERE tags.image_id = ? ORDER BY identities.name COLLATE NOCASE""",
                 (image_id,),
             ).fetchall()
+        ]
+        photo["pet_tags"] = [
+            {"id": int(tag[0]), "name": tag[1], "species": tag[2], "confidence": tag[3],
+             "bbox": [float(value) for value in tag[4:8]], "automatic": bool(tag[8])}
+            for tag in self.connection.execute(
+                """SELECT id, name, species, confidence, bbox_x, bbox_y,
+                          bbox_width, bbox_height, automatic
+                   FROM pet_tags WHERE image_id = ? ORDER BY id""", (image_id,)
+            )
         ]
         return photo
 
@@ -1519,6 +1535,63 @@ class FaceCatalog:
             self.connection.execute(
                 "DELETE FROM photo_identity_tags WHERE image_id = ? AND identity_id = ?",
                 (image_id, identity_id),
+            )
+
+    def add_pet_tag(
+        self, image_id: int, name: str, species: str,
+        bbox: tuple[float, float, float, float], confidence: float | None = None,
+        automatic: bool = False,
+    ) -> int:
+        clean_name, clean_species = " ".join(name.split()), " ".join(species.split())
+        if not clean_name or not clean_species:
+            raise ValueError("Pet name and species are required.")
+        x, y, width, height = bbox
+        if not all(0.0 <= value <= 1.0 for value in bbox) or x + width > 1.001 or y + height > 1.001:
+            raise ValueError("Pet target must be within the image.")
+        if self.connection.execute(
+            "SELECT 1 FROM images WHERE id = ? AND missing_since IS NULL", (image_id,)
+        ).fetchone() is None:
+            raise ValueError("Photo was not found.")
+        with self.connection:
+            cursor = self.connection.execute(
+                """INSERT INTO pet_tags(image_id, name, species, confidence, bbox_x, bbox_y,
+                           bbox_width, bbox_height, automatic, created_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (image_id, clean_name, clean_species, confidence, x, y, width, height,
+                 int(automatic), datetime.now(timezone.utc).isoformat()),
+            )
+        return int(cursor.lastrowid)
+
+    def update_pet_tag(
+        self, tag_id: int, name: str | None = None,
+        bbox: tuple[float, float, float, float] | None = None,
+    ) -> None:
+        clean_name = " ".join(name.split()) if name is not None else None
+        if name is not None and not clean_name:
+            raise ValueError("Pet name is required.")
+        if bbox is not None:
+            x, y, width, height = bbox
+            if not all(0.0 <= value <= 1.0 for value in bbox) or x + width > 1.001 or y + height > 1.001:
+                raise ValueError("Pet target must be within the image.")
+        with self.connection:
+            cursor = self.connection.execute(
+                """UPDATE pet_tags SET name = COALESCE(?, name),
+                          bbox_x = COALESCE(?, bbox_x), bbox_y = COALESCE(?, bbox_y),
+                          bbox_width = COALESCE(?, bbox_width), bbox_height = COALESCE(?, bbox_height)
+                   WHERE id = ?""",
+                (clean_name, *(bbox or (None, None, None, None)), tag_id),
+            )
+        if cursor.rowcount == 0:
+            raise ValueError("Pet tag was not found.")
+
+    def remove_pet_tag(self, tag_id: int) -> None:
+        with self.connection:
+            self.connection.execute("DELETE FROM pet_tags WHERE id = ?", (tag_id,))
+
+    def clear_automatic_pet_tags(self, image_id: int) -> None:
+        with self.connection:
+            self.connection.execute(
+                "DELETE FROM pet_tags WHERE image_id = ? AND automatic = 1", (image_id,)
             )
 
     def mark_intentionally_unknown(self, face_id: int) -> int:

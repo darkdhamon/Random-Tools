@@ -503,13 +503,13 @@ async function executeBulkAction() {
 
 PAGE = PAGE.replace(
     "</style>",
-    r'''.face-entry,.person-tag{display:grid;grid-template-columns:1fr auto;gap:7px;align-items:center}.face-assignment{grid-column:1/2;display:flex;gap:7px}.face-assignment input{margin:0!important;min-width:0;flex:1}.face-assignment button{white-space:nowrap}.face-entry .remove-face{grid-column:2;background:#70242a;border-color:#bd5058}.person-tag-actions{grid-column:2;display:flex;gap:6px}.person-tag-actions .remove-tag{background:#70242a;border-color:#bd5058}.add-person-tag{display:flex;gap:7px;margin-top:9px}.add-person-tag select{margin:0!important;flex:1}.viewer.manual-targeting img{cursor:crosshair}.viewer.manual-targeting .face-reticle{pointer-events:none}.empty-faces{padding:8px 0;color:#aaa}</style>''',
+    r'''.face-entry,.person-tag,.pet-tag{display:grid;grid-template-columns:1fr auto;gap:7px;align-items:center}.face-assignment{grid-column:1/2;display:flex;gap:7px}.face-assignment input{margin:0!important;min-width:0;flex:1}.face-assignment button{white-space:nowrap}.face-entry .remove-face{grid-column:2;background:#70242a;border-color:#bd5058}.person-tag-actions,.pet-tag-actions{grid-column:2;display:flex;gap:6px}.person-tag-actions .remove-tag,.pet-tag-actions .remove-tag{background:#70242a;border-color:#bd5058}.add-person-tag,.add-pet-tag{display:flex;gap:7px;margin-top:9px;flex-wrap:wrap}.add-person-tag select{margin:0!important;flex:1}.add-pet-tag input{margin:0!important;flex:1;min-width:100px}.viewer.manual-targeting img{cursor:crosshair}.viewer.manual-targeting .face-reticle{pointer-events:none}.empty-faces{padding:8px 0;color:#aaa}</style>''',
 ).replace(
     "</body>",
     r'''<script>
 const openPhotoWithFaceTags = openPhoto;
-let pendingManualTagIdentityId = null;
-openPhoto = async function(id) { pendingManualTagIdentityId = null; full.parentElement.classList.remove('manual-targeting'); await openPhotoWithFaceTags(id); renderFaceTagControls(); };
+let pendingManualTagIdentityId = null, pendingPetTarget = null;
+openPhoto = async function(id) { pendingManualTagIdentityId = null; pendingPetTarget = null; full.parentElement.classList.remove('manual-targeting'); await openPhotoWithFaceTags(id); renderFaceTagControls(); };
 function assignmentBaseLabel(suggestion) { return `${suggestion.name} (#${suggestion.id})`; }
 function assignmentMatchLabel(suggestion) { return `${suggestion.same_day?'Same day · ':''}${suggestion.match_score==null?'No biometric profile':`${(suggestion.match_score*100).toFixed(1)}% match`}`; }
 function htmlAttribute(value) { return esc(value).replaceAll('"','&quot;'); }
@@ -535,10 +535,13 @@ function renderFaceTagControls() {
   const detected = current.faces || [];
   const tags = current.face_tags || [];
   faces.innerHTML = detected.length ? detected.map(face => `<div id="faceEntry${face.id}" class="face-entry"><span>${esc(faceDisplayName(face))}${face.art?' · artwork':''}${face.estimated_age!=null?' · age '+face.estimated_age:''}</span>${renderFaceAssignment(face)}<button class="remove-face" onclick="removeDetectedFace(${face.id})">Not a face / remove</button></div>`).join('') : '<div class="empty-faces">No faces detected.</div>';
-  faces.insertAdjacentHTML('beforeend', `<button id="showFaceTagsButton" class="show-tags-button" onclick="toggleFaceTags()" ${detected.some(face=>face.bbox)||tags.some(tag=>tag.target_x!=null)?'':'disabled'}>${faceTagsVisible?'Hide tags':'Show tags'}</button>`);
+  faces.insertAdjacentHTML('beforeend', `<button id="showFaceTagsButton" class="show-tags-button" onclick="toggleFaceTags()" ${detected.some(face=>face.bbox)||tags.some(tag=>tag.target_x!=null)||(current.pet_tags||[]).length?'':'disabled'}>${faceTagsVisible?'Hide tags':'Show tags'}</button>`);
   let tagBox = document.getElementById('personTags');
   if (!tagBox) { tagBox = document.createElement('div'); tagBox.id = 'personTags'; faces.insertAdjacentElement('afterend', tagBox); }
   tagBox.innerHTML = '<h3>Manual person tags</h3>' + (tags.length ? tags.map(tag => `<div id="manualTag${tag.identity_id}" class="person-tag"><span>${esc(tag.name)} <span class="muted">(non-biometric${tag.target_x==null?'':', targeted'})</span></span><div class="person-tag-actions"><button onclick="startManualPersonTarget(${tag.identity_id})">${tag.target_x==null?'Target':'Retarget'}</button><button class="remove-tag" onclick="removePersonTag(${tag.identity_id})">Remove tag</button></div></div>`).join('') : '<div class="empty-faces">No manual person tags.</div>') + `<div class="add-person-tag"><select id="newPersonTag"><option value="">Choose a person…</option>${identities.map(person=>`<option value="${person.id}">${esc(person.name)}</option>`).join('')}</select><button onclick="addPersonTag()">Add tag</button><button onclick="targetNewPersonTag()">Target on photo</button></div>`;
+  let petBox = document.getElementById('petTags'); if (!petBox) { petBox=document.createElement('div'); petBox.id='petTags'; tagBox.insertAdjacentElement('afterend',petBox); }
+  const pets = current.pet_tags || [];
+  petBox.innerHTML = '<h3>Pets</h3><button onclick="detectPets()">Auto-detect cats and dogs</button>' + (pets.length ? pets.map(pet=>`<div class="pet-tag"><input value="${htmlAttribute(pet.name)}" aria-label="Pet name" onchange="renamePet(${pet.id},this.value)"><span class="muted">${esc(pet.species)}${pet.confidence==null?'':` · ${(pet.confidence*100).toFixed(1)}%`}${pet.automatic?' · automatic':''}</span><div class="pet-tag-actions"><button onclick="startPetRetarget(${pet.id})">Retarget</button><button class="remove-tag" onclick="removePet(${pet.id})">Remove</button></div></div>`).join('') : '<div class="empty-faces">No pets tagged.</div>') + '<div class="add-pet-tag"><input id="newPetName" placeholder="Pet name"><select id="newPetSpecies"><option>Dog</option><option>Cat</option><option>Other pet</option></select><button onclick="startNewPetTarget()">Target on photo</button></div>';
 }
 async function removeDetectedFace(faceId) {
   if (!confirm('Mark this detection as not a face and remove its person assignment?')) return;
@@ -568,7 +571,13 @@ full.addEventListener('click', async event => {
   await openPhoto(imageId); faceTagsVisible = true; renderFaceTagControls(); renderFaceReticles();
   saveState.textContent = 'Targeted manual person tag saved (not used for biometric matching)';
 });
-document.addEventListener('keydown',event=>{if(event.key==='Escape'&&pendingManualTagIdentityId)cancelManualPersonTarget();});
+document.addEventListener('keydown',event=>{if(event.key==='Escape'&&pendingManualTagIdentityId)cancelManualPersonTarget();if(event.key==='Escape'&&pendingPetTarget){pendingPetTarget=null;full.parentElement.classList.remove('manual-targeting');saveState.textContent='Pet targeting cancelled';}});
+function startNewPetTarget() { const name=newPetName.value.trim(); if (!name) { saveState.textContent='Enter a pet name first.'; return; } pendingPetTarget={name,species:newPetSpecies.value}; full.parentElement.classList.add('manual-targeting'); saveState.textContent=`Click ${name}'s location in the photo.`; }
+function startPetRetarget(id) { const pet=(current.pet_tags||[]).find(item=>item.id===id); if (!pet) return; pendingPetTarget={id,name:pet.name,species:pet.species}; full.parentElement.classList.add('manual-targeting'); saveState.textContent=`Click ${pet.name}'s location in the photo.`; }
+full.addEventListener('click',async event=>{ if (!pendingPetTarget) return; const bounds=full.getBoundingClientRect(); const x=Math.max(0,Math.min(.88,(event.clientX-bounds.left)/bounds.width-.06)), y=Math.max(0,Math.min(.88,(event.clientY-bounds.top)/bounds.height-.06)); const target=pendingPetTarget,imageId=current.id; pendingPetTarget=null; full.parentElement.classList.remove('manual-targeting'); if(target.id) await post('/api/pet-tag',{action:'update',id:target.id,bbox:[x,y,.12,.12]}); else await post('/api/pet-tag',{image_id:imageId,name:target.name,species:target.species,bbox:[x,y,.12,.12]}); await openPhoto(imageId); faceTagsVisible=true; renderFaceReticles(); saveState.textContent='Pet tag saved'; });
+async function detectPets() { saveState.textContent='Detecting cats and dogs locally…'; const result=await post('/api/detect-pets',{image_id:current.id}); await openPhoto(current.id); faceTagsVisible=true; renderFaceReticles(); saveState.textContent=`Detected ${result.count} pet${result.count===1?'':'s'}`; }
+async function renamePet(id,value) { await post('/api/pet-tag',{action:'update',id,name:value}); saveState.textContent='Pet name saved'; }
+async function removePet(id) { await post('/api/pet-tag',{action:'remove',id}); await openPhoto(current.id); saveState.textContent='Pet tag removed'; }
 async function removePersonTag(identityId) {
   await post('/api/photo-identity-tag', {image_id:current.id,identity_id:identityId,action:'remove'}); await openPhoto(current.id);
   saveState.textContent = 'Person tag removed';
@@ -603,7 +612,7 @@ PAGE = PAGE.replace(
     '<div class=viewer><img id=full><div id=faceReticleLayer class=face-reticle-layer></div>',
 ).replace(
     "</style>",
-    r'''.viewer{position:relative}.face-reticle-layer{position:absolute;inset:0;pointer-events:none;display:none}.face-reticle{position:absolute;border:3px solid var(--reticle-color);box-sizing:border-box;filter:drop-shadow(0 1px 2px #000);pointer-events:auto;cursor:pointer}.face-reticle:before,.face-reticle:after{content:'';position:absolute;background:var(--reticle-color)}.face-reticle:before{width:18px;height:2px;left:50%;top:50%;transform:translate(-50%,-50%)}.face-reticle:after{width:2px;height:18px;left:50%;top:50%;transform:translate(-50%,-50%)}.face-reticle.recognized{--reticle-color:#35e287}.face-reticle.unknown{--reticle-color:#a4aeb2}.face-reticle.unprocessed{--reticle-color:#ff4f5f}.face-reticle.active{--reticle-color:#21d9ee}.face-reticle.manual-tag{--reticle-color:#ffd65a;pointer-events:none}.face-reticle-label{position:absolute;left:-3px;top:-27px;max-width:220px;padding:3px 6px;background:var(--reticle-color);color:#07110d;border-radius:4px;font-weight:700;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.show-tags-button{margin:8px 0;width:100%}</style>''',
+    r'''.viewer{position:relative}.face-reticle-layer{position:absolute;inset:0;pointer-events:none;display:none}.face-reticle{position:absolute;border:3px solid var(--reticle-color);box-sizing:border-box;filter:drop-shadow(0 1px 2px #000);pointer-events:auto;cursor:pointer}.face-reticle:before,.face-reticle:after{content:'';position:absolute;background:var(--reticle-color)}.face-reticle:before{width:18px;height:2px;left:50%;top:50%;transform:translate(-50%,-50%)}.face-reticle:after{width:2px;height:18px;left:50%;top:50%;transform:translate(-50%,-50%)}.face-reticle.recognized{--reticle-color:#35e287}.face-reticle.unknown{--reticle-color:#a4aeb2}.face-reticle.unprocessed{--reticle-color:#ff4f5f}.face-reticle.active{--reticle-color:#21d9ee}.face-reticle.manual-tag{--reticle-color:#ffd65a;pointer-events:none}.face-reticle.pet{--reticle-color:#b978ff;pointer-events:none}.face-reticle-label{position:absolute;left:-3px;top:-27px;max-width:220px;padding:3px 6px;background:var(--reticle-color);color:#07110d;border-radius:4px;font-weight:700;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.show-tags-button{margin:8px 0;width:100%}</style>''',
 ).replace(
     "</body>",
     r'''<script>
@@ -652,6 +661,12 @@ function renderFaceReticles() {
     reticle.style.width = '44px'; reticle.style.height = '44px';
     const label = document.createElement('span'); label.className = 'face-reticle-label'; label.textContent = `${tag.name} · manual tag`;
     reticle.append(label); faceReticleLayer.append(reticle);
+  }
+  for (const pet of (current.pet_tags || [])) {
+    const [x,y,width,height]=pet.bbox, reticle=document.createElement('div'); reticle.className='face-reticle pet';
+    reticle.style.left=`${imageRect.left-viewerRect.left+x*imageRect.width}px`; reticle.style.top=`${imageRect.top-viewerRect.top+y*imageRect.height}px`;
+    reticle.style.width=`${Math.max(24,width*imageRect.width)}px`; reticle.style.height=`${Math.max(24,height*imageRect.height)}px`;
+    const label=document.createElement('span'); label.className='face-reticle-label'; label.textContent=`${pet.name} · ${pet.species}`; reticle.append(label); faceReticleLayer.append(reticle);
   }
 }
 full.addEventListener('load', renderFaceReticles);
@@ -816,6 +831,38 @@ class GalleryHandler(BaseHTTPRequestHandler):
                         )
                 finally: catalog.close()
                 self._json({"ok": True})
+            elif self.path == "/api/pet-tag":
+                catalog = self._catalog()
+                tag_id = None
+                try:
+                    action = str(body.get("action", "add"))
+                    if action == "remove": catalog.remove_pet_tag(int(body["id"]))
+                    elif action == "update":
+                        bbox = tuple(float(value) for value in body["bbox"]) if body.get("bbox") else None
+                        catalog.update_pet_tag(int(body["id"]), body.get("name"), bbox)  # type: ignore[arg-type]
+                    else:
+                        tag_id = catalog.add_pet_tag(
+                            int(body["image_id"]), str(body.get("name", "Pet")),
+                            str(body.get("species", "Pet")),
+                            tuple(float(value) for value in body["bbox"]),  # type: ignore[arg-type]
+                        )
+                finally: catalog.close()
+                self._json({"ok": True, "id": tag_id})
+            elif self.path == "/api/detect-pets":
+                from .pet_detector import PetDetector
+                catalog = self._catalog()
+                try:
+                    image_id = int(body["image_id"]); path = catalog.image_path(image_id)
+                    if path is None: raise ValueError("Photo was not found.")
+                    detections = PetDetector(APP_ROOT / "models").detect(path)
+                    catalog.clear_automatic_pet_tags(image_id)
+                    for index, detection in enumerate(detections, 1):
+                        catalog.add_pet_tag(
+                            image_id, f"{detection.species} {index}", detection.species,
+                            detection.bbox, detection.confidence, True,
+                        )
+                finally: catalog.close()
+                self._json({"ok": True, "count": len(detections)})
             elif self.path == "/api/identity":
                 catalog = self._catalog()
                 try:
