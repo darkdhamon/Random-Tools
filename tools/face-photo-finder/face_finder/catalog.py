@@ -923,6 +923,61 @@ class FaceCatalog:
         self._photo_ids_by_location_cache = None
         return location_id
 
+    def update_location(
+        self, location_id: int, name: str, location_type: str, latitude: float,
+        longitude: float, radius_meters: float, parent_id: int | None = None,
+        boundary_type: str = "radius", geometry: object = None,
+    ) -> None:
+        existing = self.connection.execute(
+            "SELECT boundary_type, is_imported FROM locations WHERE id = ?", (location_id,)
+        ).fetchone()
+        if existing is None:
+            raise ValueError("The selected location no longer exists.")
+        if bool(existing[1]) or existing[0] == "legal":
+            raise ValueError("Legal and imported boundaries are read-only.")
+        if boundary_type not in {"radius", "drawn"}:
+            raise ValueError("Custom boundaries must use a radius or drawn boundary.")
+        normalized = " ".join(name.strip().split())
+        if not normalized:
+            raise ValueError("A location name is required.")
+        if location_type not in {"general", "custom"}:
+            raise ValueError("Location type must be general or custom.")
+        if not -90 <= latitude <= 90 or not -180 <= longitude <= 180:
+            raise ValueError("Location coordinates are out of range.")
+        if not 1 <= radius_meters <= 20_000_000:
+            raise ValueError("Geofence radius must be between 1 meter and 20,000 kilometers.")
+        if parent_id == location_id:
+            raise ValueError("A location cannot be its own parent.")
+        if parent_id is not None and self.connection.execute(
+            "SELECT 1 FROM locations WHERE id = ?", (parent_id,)
+        ).fetchone() is None:
+            raise ValueError("The selected parent location no longer exists.")
+        ancestor = parent_id
+        visited: set[int] = set()
+        while ancestor is not None and ancestor not in visited:
+            if ancestor == location_id:
+                raise ValueError("A location cannot be nested beneath one of its children.")
+            visited.add(ancestor)
+            row = self.connection.execute(
+                "SELECT parent_id FROM locations WHERE id = ?", (ancestor,)
+            ).fetchone()
+            ancestor = int(row[0]) if row and row[0] is not None else None
+        geometry_json = None
+        if boundary_type == "drawn":
+            geometry_json = self._normalize_boundary_geometry(geometry)
+        with self.connection:
+            self.connection.execute(
+                """UPDATE locations SET name=?, location_type=?, parent_id=?, latitude=?,
+                          longitude=?, radius_meters=?, boundary_type=?, geometry_json=?
+                   WHERE id=?""",
+                (normalized, location_type, parent_id, latitude, longitude, radius_meters,
+                 boundary_type, geometry_json, location_id),
+            )
+            self._set_location_bounds(
+                location_id, latitude, longitude, radius_meters, geometry_json
+            )
+        self._photo_ids_by_location_cache = None
+
     def upsert_imported_location(
         self, external_key: str, name: str, admin_level: str, geometry: object,
         source_name: str, parent_id: int | None = None,

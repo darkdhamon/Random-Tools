@@ -419,6 +419,21 @@ class CatalogTests(unittest.TestCase):
             self.assertEqual(legal_summary["boundary_type"], "legal")
             self.assertTrue(legal_summary["read_only"])
             self.assertEqual(legal_summary["photo_count"], 1)
+
+            catalog.update_location(
+                home, "New Home", "custom", 44.20, -93.81, 250, city
+            )
+            updated = next(item for item in catalog.location_summaries() if item["id"] == home)
+            self.assertEqual(updated["name"], "New Home")
+            self.assertEqual(updated["radius_meters"], 250)
+            self.assertFalse(updated["read_only"])
+            with self.assertRaisesRegex(ValueError, "read-only"):
+                catalog.update_location(
+                    legal, "Changed", "general", 0, 0, 1, country, "drawn",
+                    {"type": "Polygon", "coordinates": [[
+                        [-1, -1], [1, -1], [1, 1], [-1, -1],
+                    ]]},
+                )
             catalog.close()
 
     def test_imported_boundaries_are_indexed_and_hidden_until_they_have_photos(self) -> None:

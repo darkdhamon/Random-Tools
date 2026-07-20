@@ -804,6 +804,12 @@ PAGE = PAGE.replace(
     '<div id=modal class=modal>',
     r'''<section id=locationView class=location-view><div class=location-toolbar><h1>Locations</h1><button onclick=loadLocationGroups()>Refresh</button></div><div class=geofence-form><h2>Create a geofence</h2><label>Name<input id=geofenceName placeholder="Home, Madison Lake, Minnesota…"></label><label>Type<select id=geofenceType><option value=custom>Custom location</option><option value=general>General location</option></select></label><label>Parent location<select id=geofenceParent><option value="">No parent</option></select></label><label>Boundary<select id=geofenceBoundary onchange=updateBoundaryEditor()><option value=radius>Radius from a point</option><option value=drawn>Draw boundary on map</option><option value=legal>Import legal boundary (GeoJSON)</option></select></label><label>Latitude / map center<input id=geofenceLatitude type=number min=-90 max=90 step=any oninput=renderBoundaryMap()></label><label>Longitude / map center<input id=geofenceLongitude type=number min=-180 max=180 step=any oninput=renderBoundaryMap()></label><label id=geofenceRadiusLabel>Radius (kilometers)<input id=geofenceRadius type=number min=.001 max=20000 step=any value=1></label><div id=boundaryEditor class=boundary-editor><div class=boundary-map-controls><label>Map span (km)<input id=geofenceMapSpan type=number min=.1 max=2000 value=10 oninput=renderBoundaryMap()></label><button onclick=undoBoundaryPoint()>Undo point</button><button onclick=clearBoundaryPoints()>Clear drawing</button></div><svg id=geofenceMap viewBox="0 0 800 360" role=img aria-label="Local geofence drawing map" onclick=addBoundaryPoint(event)></svg><p id=boundaryHelp class=muted></p><label id=legalBoundaryLabel>Legal boundary GeoJSON<textarea id=legalBoundaryGeojson rows=5 placeholder='Paste a GeoJSON Polygon, MultiPolygon, or Feature' oninput=previewLegalBoundary()></textarea></label></div><button onclick=createGeofence()>Create geofence</button><div id=locationStatus class=identity-status></div></div><div id=locationGroups class=location-groups></div></section><div id=modal class=modal>''',
 ).replace(
+    '<div class=geofence-form><h2>Create a geofence</h2>',
+    '<div class=geofence-form><h2 id=geofenceFormTitle>Create a geofence</h2>',
+).replace(
+    '<button onclick=createGeofence()>Create geofence</button>',
+    '<button id=saveGeofenceButton onclick=createGeofence()>Create geofence</button><button id=cancelGeofenceEditButton style="display:none" onclick=cancelGeofenceEdit()>Cancel edit</button>',
+).replace(
     "album_id:albumFilter.value,limit:100,offset",
     "album_id:albumFilter.value,location_id:locationFilter,suggested_album_date:suggestionDateFilter,limit:100,offset",
 ).replace(
@@ -812,7 +818,7 @@ PAGE = PAGE.replace(
 ).replace(
     "</body>",
     r'''<script>
-let managedLocations=[], locationFilter='', drawnBoundaryPoints=[];
+let managedLocations=[], locationFilter='', drawnBoundaryPoints=[], editingLocationId=null;
 const timelineLocationScope=document.createElement('section');timelineLocationScope.className='timeline-location-scope';timelineHeader.insertAdjacentElement('afterend',timelineLocationScope);
 function updateTimelineLocationScope(){const location=managedLocations.find(item=>String(item.id)===locationFilter);timelineLocationScope.style.display=locationFilter?'flex':'none';timelineLocationScope.innerHTML=locationFilter?`<strong>Location: ${esc(location?.path||'Selected location')}</strong><button onclick="clearLocationTimelineFilter()">Show all locations</button>`:''}
 function clearLocationTimelineFilter(){locationFilter='';filterGeneration++;updateTimelineLocationScope();load(true)}
@@ -854,8 +860,8 @@ async function loadLocationGroups() {
   locationStatus.textContent='Loading locations…';
   try {
     managedLocations=await api('/api/locations');
-    geofenceParent.innerHTML='<option value="">No parent</option>'+managedLocations.map(item=>`<option value="${item.id}">${esc(item.path)}</option>`).join('');
-    locationGroups.innerHTML=managedLocations.length?managedLocations.map(item=>`<article class="location-card"><h2>${esc(item.name)}${item.read_only?' <span class="boundary-lock" title="Legal boundaries cannot be edited">🔒</span>':''}</h2><div class="muted">${esc(item.path)} · ${item.admin_level||item.type} · ${item.boundary_type==='radius'?(item.radius_meters/1000).toLocaleString()+' km radius':item.boundary_type+' boundary'}${item.read_only?' · read-only':''} · ${item.photo_count} photos</div><div class="location-previews">${item.preview_photo_ids.map(id=>`<img loading="lazy" src="/media?id=${id}&thumb=1" alt="">`).join('')}</div><button onclick="viewLocationTimeline(${item.id})">View photos</button></article>`).join(''):'<p>No locations yet. Create a broad general location or a custom geofence above.</p>';
+    geofenceParent.innerHTML='<option value="">No parent</option>'+managedLocations.filter(item=>item.id!==editingLocationId).map(item=>`<option value="${item.id}">${esc(item.path)}</option>`).join('');
+    locationGroups.innerHTML=managedLocations.length?managedLocations.map(item=>`<article class="location-card"><h2>${esc(item.name)}${item.read_only?' <span class="boundary-lock" title="Legal boundaries cannot be edited">🔒</span>':''}</h2><div class="muted">${esc(item.path)} · ${item.admin_level||item.type} · ${item.boundary_type==='radius'?(item.radius_meters/1000).toLocaleString()+' km radius':item.boundary_type+' boundary'}${item.read_only?' · read-only':''} · ${item.photo_count} photos</div><div class="location-previews">${item.preview_photo_ids.map(id=>`<img loading="lazy" src="/media?id=${id}&thumb=1" alt="">`).join('')}</div><button onclick="viewLocationTimeline(${item.id})">View photos</button>${item.read_only?'':`<button onclick="editGeofence(${item.id})">Edit boundary</button>`}</article>`).join(''):'<p>No locations yet. Create a broad general location or a custom geofence above.</p>';
     locationStatus.textContent=`${managedLocations.length} locations`;
   } catch(error) { locationStatus.textContent='Load failed: '+error.message; }
 }
@@ -864,9 +870,21 @@ async function createGeofence() {
     const boundaryType=geofenceBoundary.value;let geometry=null;
     if(boundaryType==='drawn'){if(drawnBoundaryPoints.length<3)throw Error('Draw at least three boundary points.');geometry={type:'Polygon',coordinates:[[...drawnBoundaryPoints,drawnBoundaryPoints[0]]]}}
     if(boundaryType==='legal')geometry=legalBoundaryGeometry();
-    await post('/api/locations',{name:geofenceName.value,location_type:geofenceType.value,parent_id:geofenceParent.value||null,latitude:+geofenceLatitude.value,longitude:+geofenceLongitude.value,radius_meters:boundaryType==='radius'?+geofenceRadius.value*1000:1,boundary_type:boundaryType,geometry});
-    geofenceName.value='';drawnBoundaryPoints=[];legalBoundaryGeojson.value='';await loadLocationGroups();updateBoundaryEditor();locationStatus.textContent='Geofence created';
-  } catch(error) { locationStatus.textContent='Create failed: '+error.message; }
+    const wasEditing=editingLocationId!==null;
+    await post('/api/locations',{id:editingLocationId,name:geofenceName.value,location_type:geofenceType.value,parent_id:geofenceParent.value||null,latitude:+geofenceLatitude.value,longitude:+geofenceLongitude.value,radius_meters:boundaryType==='radius'?+geofenceRadius.value*1000:1,boundary_type:boundaryType,geometry});
+    cancelGeofenceEdit();await loadLocationGroups();locationStatus.textContent=wasEditing?'Boundary changes saved':'Geofence created';
+  } catch(error) { locationStatus.textContent=(editingLocationId===null?'Create':'Save')+' failed: '+error.message; }
+}
+function editGeofence(id) {
+  const item=managedLocations.find(location=>location.id===id);if(!item||item.read_only)return;
+  editingLocationId=id;geofenceName.value=item.name;geofenceType.value=item.type;geofenceBoundary.value=item.boundary_type;
+  geofenceLatitude.value=item.latitude;geofenceLongitude.value=item.longitude;geofenceRadius.value=item.radius_meters/1000;
+  drawnBoundaryPoints=item.boundary_type==='drawn'&&item.geometry?.coordinates?.[0]?[...item.geometry.coordinates[0].slice(0,-1)]:[];
+  geofenceParent.innerHTML='<option value="">No parent</option>'+managedLocations.filter(location=>location.id!==id).map(location=>`<option value="${location.id}">${esc(location.path)}</option>`).join('');
+  geofenceParent.value=item.parent_id||'';geofenceFormTitle.textContent='Edit custom boundary';saveGeofenceButton.textContent='Save changes';cancelGeofenceEditButton.style.display='inline-block';updateBoundaryEditor();geofenceName.focus();
+}
+function cancelGeofenceEdit() {
+  editingLocationId=null;geofenceName.value='';drawnBoundaryPoints=[];legalBoundaryGeojson.value='';geofenceFormTitle.textContent='Create a geofence';saveGeofenceButton.textContent='Create geofence';cancelGeofenceEditButton.style.display='none';updateBoundaryEditor();
 }
 function viewLocationTimeline(id) { locationFilter=String(id); filterGeneration++; person.value=''; albumFilter.value=''; updateTimelineLocationScope(); showAppTab('timeline',true); load(true); }
 function renderPhotoLocations() {
@@ -1122,12 +1140,17 @@ class GalleryHandler(BaseHTTPRequestHandler):
                 catalog = self._catalog()
                 try:
                     parent = body.get("parent_id")
-                    location_id = catalog.create_location(
+                    arguments = (
                         str(body.get("name", "")), str(body.get("location_type", "custom")),
                         float(body["latitude"]), float(body["longitude"]),
                         float(body["radius_meters"]), int(parent) if parent not in (None, "") else None,
                         str(body.get("boundary_type", "radius")), body.get("geometry"),
                     )
+                    if body.get("id") not in (None, ""):
+                        location_id = int(body["id"])
+                        catalog.update_location(location_id, *arguments)
+                    else:
+                        location_id = catalog.create_location(*arguments)
                 finally: catalog.close()
                 self._json({"ok": True, "id": location_id})
             elif self.path == "/api/photo-locations":
