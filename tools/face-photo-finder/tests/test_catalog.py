@@ -343,7 +343,7 @@ class CatalogTests(unittest.TestCase):
             stored = catalog.store_scan(image, [], [])
             catalog.update_gallery_metadata(
                 stored.image_id, "Summer trip", "At the lake", "family, vacation", 5, 2018, 1,
-                "document",
+                "document", "Lake Michigan", 43.0, -87.0,
             )
             photo = catalog.gallery_photo(stored.image_id)
             self.assertIsNotNone(photo)
@@ -352,6 +352,9 @@ class CatalogTests(unittest.TestCase):
             self.assertEqual(photo["rating"], 5)  # type: ignore[index]
             self.assertTrue(photo["is_nsfw"])  # type: ignore[index]
             self.assertEqual(photo["media_kind"], "document")  # type: ignore[index]
+            self.assertEqual(photo["location_name"], "Lake Michigan")  # type: ignore[index]
+            self.assertEqual(photo["latitude"], 43.0)  # type: ignore[index]
+            self.assertEqual(photo["longitude"], -87.0)  # type: ignore[index]
             self.assertEqual([item["id"] for item in catalog.gallery_photos(search="vacation")], [stored.image_id])
             self.assertEqual([item["id"] for item in catalog.gallery_photos(year=2018)], [stored.image_id])
             self.assertEqual([item["id"] for item in catalog.gallery_photos(nsfw_filter="nsfw")], [stored.image_id])

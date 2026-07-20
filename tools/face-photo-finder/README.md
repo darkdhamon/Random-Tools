@@ -23,6 +23,7 @@ A private, local desktop tool that recursively scans a folder and finds photos l
 - classifies explicit nudity locally with NudeNet and lets the web gallery hide, search, or manually correct NSFW results;
 - detects screenshots and document/receipt-style images locally, with independent hide filters, type searches, and manual corrections;
 - presents the web gallery as a chronological year timeline and automatically saves metadata edits after typing pauses;
+- extracts EXIF GPS coordinates, supports editable place names and coordinates, and shows an offline map preview with an explicit OpenStreetMap link;
 - searches by a previously learned person from the **Known person** list without requiring another reference photo;
 - autocompletes identity names case-insensitively while still allowing new names;
 - shows up to three closest named-profile buttons with match percentages when automatic recognition is uncertain;

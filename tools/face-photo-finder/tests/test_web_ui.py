@@ -9,6 +9,9 @@ class WebGalleryUiTests(unittest.TestCase):
         self.assertIn('className=\'year-group\'', PAGE)
         self.assertIn('setTimeout(save,immediate?0:700)', PAGE)
         self.assertIn('Saved automatically', PAGE)
+        self.assertIn('id=map class=map', PAGE)
+        self.assertIn('Open in OpenStreetMap', PAGE)
+        self.assertIn("'locationName','latitude','longitude'", PAGE)
         self.assertNotIn('>Save metadata</button>', PAGE)
 
 

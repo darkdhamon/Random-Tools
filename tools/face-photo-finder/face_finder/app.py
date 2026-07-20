@@ -586,6 +586,8 @@ class FaceFinderApp(tk.Tk):
                     media_kind = stored_media_kind or classify_media_kind(path)
                     if cached and stored_media_kind is None:
                         catalog.set_media_kind(cached.image_id, media_kind)
+                    if cached:
+                        catalog.ensure_image_location(cached.image_id, path)
                     nsfw_score = catalog.nsfw_score_for_path(path)
                     if nsfw_score is None:
                         try:
@@ -911,6 +913,7 @@ class FaceFinderApp(tk.Tk):
                         if nsfw_score is not None:
                             catalog.set_nsfw_score(stored.image_id, nsfw_score)
                         catalog.set_media_kind(stored.image_id, media_kind)
+                        catalog.ensure_image_location(stored.image_id, path)
                         candidate_embeddings = [face.embedding for face in detected]
                         score = best_similarity(references, candidate_embeddings) if references else -1.0
                         if target_identity_id is not None and score >= threshold:

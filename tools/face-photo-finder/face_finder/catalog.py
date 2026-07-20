@@ -9,10 +9,30 @@ import sqlite3
 
 import numpy as np
 import cv2
-from PIL import Image
+from PIL import Image, ExifTags
 
 PROFILE_MAX_SAMPLES = 64
 PROFILE_DUPLICATE_SIMILARITY = 0.92
+
+
+def image_gps_coordinates(path: Path) -> tuple[float, float] | None:
+    """Read decimal GPS coordinates from EXIF without modifying the image."""
+    try:
+        with Image.open(path) as image:
+            gps = image.getexif().get_ifd(ExifTags.IFD.GPSInfo)
+        latitude_values, latitude_ref = gps.get(2), gps.get(1)
+        longitude_values, longitude_ref = gps.get(4), gps.get(3)
+        if not latitude_values or not longitude_values:
+            return None
+
+        def decimal(values: object, reference: object) -> float:
+            parts = [float(value) for value in values]  # type: ignore[union-attr]
+            result = parts[0] + parts[1] / 60 + parts[2] / 3600
+            return -result if str(reference).upper() in ("S", "W") else result
+
+        return decimal(latitude_values, latitude_ref), decimal(longitude_values, longitude_ref)
+    except (OSError, KeyError, TypeError, ValueError, ZeroDivisionError):
+        return None
 
 
 @dataclass(frozen=True)
@@ -136,7 +156,10 @@ class FaceCatalog:
                 tags TEXT NOT NULL DEFAULT '',
                 rating INTEGER NOT NULL DEFAULT 0 CHECK(rating BETWEEN 0 AND 5),
                 nsfw_override INTEGER,
-                media_kind_override TEXT
+                media_kind_override TEXT,
+                location_name TEXT NOT NULL DEFAULT '',
+                latitude REAL,
+                longitude REAL
             );
             """
         )
@@ -159,11 +182,23 @@ class FaceCatalog:
             self.connection.execute("ALTER TABLE images ADD COLUMN nsfw_scanned_at TEXT")
         if "media_kind" not in image_columns:
             self.connection.execute("ALTER TABLE images ADD COLUMN media_kind TEXT")
+        if "gps_latitude" not in image_columns:
+            self.connection.execute("ALTER TABLE images ADD COLUMN gps_latitude REAL")
+        if "gps_longitude" not in image_columns:
+            self.connection.execute("ALTER TABLE images ADD COLUMN gps_longitude REAL")
+        if "gps_scanned_at" not in image_columns:
+            self.connection.execute("ALTER TABLE images ADD COLUMN gps_scanned_at TEXT")
         metadata_columns = {row[1] for row in self.connection.execute("PRAGMA table_info(image_metadata)")}
         if "nsfw_override" not in metadata_columns:
             self.connection.execute("ALTER TABLE image_metadata ADD COLUMN nsfw_override INTEGER")
         if "media_kind_override" not in metadata_columns:
             self.connection.execute("ALTER TABLE image_metadata ADD COLUMN media_kind_override TEXT")
+        if "location_name" not in metadata_columns:
+            self.connection.execute("ALTER TABLE image_metadata ADD COLUMN location_name TEXT NOT NULL DEFAULT ''")
+        if "latitude" not in metadata_columns:
+            self.connection.execute("ALTER TABLE image_metadata ADD COLUMN latitude REAL")
+        if "longitude" not in metadata_columns:
+            self.connection.execute("ALTER TABLE image_metadata ADD COLUMN longitude REAL")
         if "preview" not in columns:
             self.connection.execute("ALTER TABLE faces ADD COLUMN preview BLOB")
         if "intentionally_unknown" not in columns:
@@ -262,7 +297,9 @@ class FaceCatalog:
                        images.nsfw_score, metadata.nsfw_override,
                        COALESCE(metadata.nsfw_override, images.nsfw_score >= 0.45, 0),
                        COALESCE(metadata.media_kind_override, images.media_kind, 'photo'),
-                       metadata.media_kind_override
+                       metadata.media_kind_override, COALESCE(metadata.location_name, ''),
+                       COALESCE(metadata.latitude, images.gps_latitude),
+                       COALESCE(metadata.longitude, images.gps_longitude)
                 FROM images LEFT JOIN image_metadata metadata ON metadata.image_id = images.id
                 WHERE {' AND '.join(clauses)}
                 ORDER BY COALESCE(images.capture_year_override, images.capture_year) DESC, images.path
@@ -276,6 +313,7 @@ class FaceCatalog:
                 "title": row[5], "description": row[6], "tags": row[7], "rating": int(row[8]),
                 "nsfw_score": row[9], "nsfw_override": row[10], "is_nsfw": bool(row[11]),
                 "media_kind": row[12], "media_kind_override": row[13],
+                "location_name": row[14], "latitude": row[15], "longitude": row[16],
             }
             for row in rows
         ]
@@ -289,7 +327,9 @@ class FaceCatalog:
                       images.nsfw_score, metadata.nsfw_override,
                       COALESCE(metadata.nsfw_override, images.nsfw_score >= 0.45, 0),
                       COALESCE(metadata.media_kind_override, images.media_kind, 'photo'),
-                      metadata.media_kind_override
+                      metadata.media_kind_override, COALESCE(metadata.location_name, ''),
+                      COALESCE(metadata.latitude, images.gps_latitude),
+                      COALESCE(metadata.longitude, images.gps_longitude)
                FROM images LEFT JOIN image_metadata metadata ON metadata.image_id = images.id
                WHERE images.id = ? AND images.missing_since IS NULL""",
             (image_id,),
@@ -302,6 +342,7 @@ class FaceCatalog:
             "title": row[4], "description": row[5], "tags": row[6], "rating": int(row[7]),
             "nsfw_score": row[8], "nsfw_override": row[9], "is_nsfw": bool(row[10]),
             "media_kind": row[11], "media_kind_override": row[12],
+            "location_name": row[13], "latitude": row[14], "longitude": row[15],
         }
         faces = self.connection.execute(
             """SELECT faces.id, identities.name, faces.intentionally_unknown, faces.is_art,
@@ -328,6 +369,7 @@ class FaceCatalog:
         self, image_id: int, title: str, description: str, tags: str, rating: int,
         capture_year: int | None, nsfw_override: int | None = None,
         media_kind_override: str | None = None,
+        location_name: str = "", latitude: float | None = None, longitude: float | None = None,
     ) -> None:
         if rating not in range(6):
             raise ValueError("Rating must be between 0 and 5.")
@@ -337,6 +379,10 @@ class FaceCatalog:
             raise ValueError("NSFW override must be automatic, safe, or NSFW.")
         if media_kind_override not in (None, "photo", "screenshot", "document"):
             raise ValueError("Content type must be automatic, photo, screenshot, or document.")
+        if latitude is not None and not -90 <= latitude <= 90:
+            raise ValueError("Latitude must be between -90 and 90.")
+        if longitude is not None and not -180 <= longitude <= 180:
+            raise ValueError("Longitude must be between -180 and 180.")
         with self.connection:
             self.connection.execute(
                 """INSERT INTO image_metadata(image_id, title, description, tags, rating, nsfw_override,
@@ -348,6 +394,11 @@ class FaceCatalog:
                        media_kind_override=excluded.media_kind_override""",
                 (image_id, title.strip(), description.strip(), tags.strip(), rating, nsfw_override,
                  media_kind_override),
+            )
+            self.connection.execute(
+                """UPDATE image_metadata SET location_name = ?, latitude = ?, longitude = ?
+                   WHERE image_id = ?""",
+                (location_name.strip(), latitude, longitude, image_id),
             )
             self.connection.execute(
                 "UPDATE images SET capture_year_override = ? WHERE id = ?", (capture_year, image_id)
@@ -379,6 +430,23 @@ class FaceCatalog:
             raise ValueError("Invalid content type.")
         with self.connection:
             self.connection.execute("UPDATE images SET media_kind = ? WHERE id = ?", (media_kind, image_id))
+
+    def ensure_image_location(self, image_id: int, path: Path) -> tuple[float, float] | None:
+        row = self.connection.execute(
+            "SELECT gps_latitude, gps_longitude, gps_scanned_at FROM images WHERE id = ?", (image_id,)
+        ).fetchone()
+        if row is None:
+            return None
+        if row[2] is not None:
+            return (float(row[0]), float(row[1])) if row[0] is not None and row[1] is not None else None
+        coordinates = image_gps_coordinates(path)
+        latitude, longitude = coordinates if coordinates else (None, None)
+        with self.connection:
+            self.connection.execute(
+                "UPDATE images SET gps_latitude = ?, gps_longitude = ?, gps_scanned_at = ? WHERE id = ?",
+                (latitude, longitude, datetime.now(timezone.utc).isoformat(), image_id),
+            )
+        return coordinates
 
     def identities(self) -> list[KnownIdentity]:
         rows = self.connection.execute(
