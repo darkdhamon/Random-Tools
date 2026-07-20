@@ -114,6 +114,9 @@ class FaceCatalog:
         self.connection.execute("PRAGMA busy_timeout = 10000")
         self._prepared_location_geometries: dict[int, object] = {}
         self._photo_ids_by_location_cache: dict[int, list[int]] | None = None
+        needs_custom_location_backfill = self.connection.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='photo_custom_location_matches'"
+        ).fetchone() is None
         self.connection.executescript(
             """
             CREATE TABLE IF NOT EXISTS identities (
@@ -248,6 +251,11 @@ class FaceCatalog:
                 latitude REAL NOT NULL, longitude REAL NOT NULL
             );
             CREATE TABLE IF NOT EXISTS photo_imported_location_matches (
+                image_id INTEGER NOT NULL REFERENCES images(id) ON DELETE CASCADE,
+                location_id INTEGER NOT NULL REFERENCES locations(id) ON DELETE CASCADE,
+                PRIMARY KEY(image_id, location_id)
+            );
+            CREATE TABLE IF NOT EXISTS photo_custom_location_matches (
                 image_id INTEGER NOT NULL REFERENCES images(id) ON DELETE CASCADE,
                 location_id INTEGER NOT NULL REFERENCES locations(id) ON DELETE CASCADE,
                 PRIMARY KEY(image_id, location_id)
@@ -401,14 +409,14 @@ class FaceCatalog:
             self.connection.execute("ALTER TABLE faces ADD COLUMN art_score REAL")
         if "estimated_age" not in columns:
             self.connection.execute("ALTER TABLE faces ADD COLUMN estimated_age REAL")
-        bounded_ids = {int(row[0]) for row in self.connection.execute("SELECT location_id FROM location_bounds")}
         for location_id, latitude, longitude, radius, geometry in self.connection.execute(
-            "SELECT id, latitude, longitude, radius_meters, geometry_json FROM locations"
+            """SELECT locations.id, latitude, longitude, radius_meters, geometry_json
+               FROM locations LEFT JOIN location_bounds bounds ON bounds.location_id=locations.id
+               WHERE bounds.location_id IS NULL"""
         ).fetchall():
-            if int(location_id) not in bounded_ids:
-                self._set_location_bounds(
-                    int(location_id), float(latitude), float(longitude), float(radius), geometry
-                )
+            self._set_location_bounds(
+                int(location_id), float(latitude), float(longitude), float(radius), geometry
+            )
         legacy_unknowns = self.connection.execute(
             "SELECT id FROM faces WHERE intentionally_unknown = 1 AND unknown_group_id IS NULL"
         ).fetchall()
@@ -421,6 +429,8 @@ class FaceCatalog:
                 self.connection.execute(
                     "UPDATE faces SET unknown_group_id = ? WHERE id = ?", (cursor.lastrowid, face_id)
                 )
+        if needs_custom_location_backfill:
+            self.rebuild_custom_location_match_cache()
 
     def close(self) -> None:
         self.connection.close()
@@ -938,6 +948,113 @@ class FaceCatalog:
                 parent = parents.get(parent)
         return matched
 
+    def _refresh_image_boundary_matches(
+        self, image_id: int, latitude: float | None, longitude: float | None
+    ) -> None:
+        """Recompute cached legal and custom memberships after coordinates change."""
+        legal_matches: list[int] = []
+        custom_matches: list[int] = []
+        if latitude is not None and longitude is not None:
+            rows = self._location_rows(latitude, longitude)
+            candidate_ids = tuple(row[0] for row in rows)
+            legal_ids: set[int] = set()
+            if candidate_ids:
+                placeholders = ",".join("?" for _ in candidate_ids)
+                legal_ids = {int(row[0]) for row in self.connection.execute(
+                    f"""SELECT id FROM locations WHERE id IN ({placeholders})
+                          AND (is_imported=1 OR boundary_type='legal')""",
+                    candidate_ids,
+                )}
+            for location_id, _name, _kind, _parent, lat, lon, radius, boundary, geometry in rows:
+                matches = (
+                    self._distance_meters(latitude, longitude, lat, lon) <= radius
+                    if boundary == "radius" or not geometry
+                    else self._location_geometry_contains(
+                        location_id, latitude, longitude, geometry
+                    )
+                )
+                if matches:
+                    (legal_matches if location_id in legal_ids else custom_matches).append(location_id)
+        with self.connection:
+            self.connection.execute(
+                "DELETE FROM photo_imported_location_matches WHERE image_id=?", (image_id,)
+            )
+            self.connection.execute(
+                "DELETE FROM photo_custom_location_matches WHERE image_id=?", (image_id,)
+            )
+            self.connection.executemany(
+                "INSERT INTO photo_imported_location_matches VALUES (?, ?)",
+                [(image_id, location_id) for location_id in legal_matches],
+            )
+            self.connection.executemany(
+                "INSERT INTO photo_custom_location_matches VALUES (?, ?)",
+                [(image_id, location_id) for location_id in custom_matches],
+            )
+            self.connection.execute("DELETE FROM photo_boundary_scans WHERE image_id=?", (image_id,))
+            if latitude is not None and longitude is not None:
+                self.connection.execute(
+                    "INSERT INTO photo_boundary_scans(image_id,latitude,longitude) VALUES (?, ?, ?)",
+                    (image_id, latitude, longitude),
+                )
+        self._photo_ids_by_location_cache = None
+
+    def _refresh_custom_location_matches(self, location_id: int) -> None:
+        row = self.connection.execute(
+            """SELECT latitude,longitude,radius_meters,boundary_type,geometry_json
+               FROM locations WHERE id=? AND is_imported=0 AND boundary_type!='legal'""",
+            (location_id,),
+        ).fetchone()
+        if row is None:
+            return
+        center_lat, center_lon, radius, boundary, geometry = row
+        matches = []
+        coordinates = self.connection.execute(
+            """SELECT images.id, COALESCE(metadata.latitude,images.gps_latitude),
+                      COALESCE(metadata.longitude,images.gps_longitude)
+               FROM images LEFT JOIN image_metadata metadata ON metadata.image_id=images.id
+               WHERE images.missing_since IS NULL
+                 AND COALESCE(metadata.latitude,images.gps_latitude) IS NOT NULL
+                 AND COALESCE(metadata.longitude,images.gps_longitude) IS NOT NULL"""
+        )
+        for image_id, latitude, longitude in coordinates:
+            inside = (
+                self._distance_meters(float(latitude), float(longitude), float(center_lat), float(center_lon))
+                <= float(radius)
+                if boundary == "radius" or not geometry
+                else self._location_geometry_contains(
+                    location_id, float(latitude), float(longitude), geometry
+                )
+            )
+            if inside:
+                matches.append((int(image_id), location_id))
+        with self.connection:
+            self.connection.execute(
+                "DELETE FROM photo_custom_location_matches WHERE location_id=?", (location_id,)
+            )
+            self.connection.executemany(
+                "INSERT INTO photo_custom_location_matches VALUES (?, ?)", matches
+            )
+        self._photo_ids_by_location_cache = None
+
+    def rebuild_custom_location_match_cache(self) -> None:
+        for (location_id,) in self.connection.execute(
+            "SELECT id FROM locations WHERE is_imported=0 AND boundary_type!='legal'"
+        ).fetchall():
+            self._refresh_custom_location_matches(int(location_id))
+
+    def rebuild_boundary_match_cache(self) -> None:
+        coordinates = self.connection.execute(
+            """SELECT images.id, COALESCE(metadata.latitude,images.gps_latitude),
+                      COALESCE(metadata.longitude,images.gps_longitude)
+               FROM images LEFT JOIN image_metadata metadata ON metadata.image_id=images.id
+               WHERE images.missing_since IS NULL"""
+        ).fetchall()
+        for image_id, latitude, longitude in coordinates:
+            self._refresh_image_boundary_matches(
+                int(image_id), float(latitude) if latitude is not None else None,
+                float(longitude) if longitude is not None else None,
+            )
+
     def create_location(
         self, name: str, location_type: str, latitude: float, longitude: float,
         radius_meters: float, parent_id: int | None = None,
@@ -974,6 +1091,7 @@ class FaceCatalog:
             location_id = int(cursor.lastrowid)
             self._set_location_bounds(location_id, latitude, longitude, radius_meters, geometry_json)
         self._photo_ids_by_location_cache = None
+        self._refresh_custom_location_matches(location_id)
         return location_id
 
     def update_location(
@@ -1029,7 +1147,9 @@ class FaceCatalog:
             self._set_location_bounds(
                 location_id, latitude, longitude, radius_meters, geometry_json
             )
+        self._prepared_location_geometries.pop(location_id, None)
         self._photo_ids_by_location_cache = None
+        self._refresh_custom_location_matches(location_id)
 
     def upsert_imported_location(
         self, external_key: str, name: str, admin_level: str, geometry: object,
@@ -1101,70 +1221,22 @@ class FaceCatalog:
         }
         latitude = float(coordinate[0]) if coordinate and coordinate[0] is not None else None
         longitude = float(coordinate[1]) if coordinate and coordinate[1] is not None else None
-        rows = self._location_rows(latitude, longitude)
-        automatic: set[int] = set()
-        rows_to_test = rows
         scan = self.connection.execute(
             "SELECT latitude, longitude FROM photo_boundary_scans WHERE image_id = ?", (image_id,)
         ).fetchone()
         cached = bool(scan and latitude is not None and longitude is not None
                       and float(scan[0]) == latitude and float(scan[1]) == longitude)
-        if cached:
-            automatic = {int(row[0]) for row in self.connection.execute(
-                "SELECT location_id FROM photo_imported_location_matches WHERE image_id = ?", (image_id,)
-            )}
-            candidate_ids = tuple(row[0] for row in rows)
-            imported_candidates = set()
-            if candidate_ids:
-                placeholders = ",".join("?" for _ in candidate_ids)
-                imported_candidates = {int(row[0]) for row in self.connection.execute(
-                    f"SELECT id FROM locations WHERE is_imported=1 AND id IN ({placeholders})", candidate_ids
-                )}
-            rows_to_test = [row for row in rows if row[0] not in imported_candidates]
-            missing_cached = automatic - {row[0] for row in rows}
-            if missing_cached:
-                rows.extend(self._location_rows(location_ids=tuple(missing_cached)))
-        existing = {row[0] for row in rows}
-        if manual - existing:
-            placeholders = ",".join("?" for _ in manual - existing)
-            rows.extend([
-                (int(row[0]), row[1], row[2], int(row[3]) if row[3] is not None else None,
-                 float(row[4]), float(row[5]), float(row[6]), row[7], row[8])
-                for row in self.connection.execute(
-                    f"""SELECT id,name,location_type,parent_id,latitude,longitude,radius_meters,
-                               boundary_type,geometry_json FROM locations WHERE id IN ({placeholders})""",
-                    tuple(manual - existing),
-                )
-            ])
-        direct = set(manual)
-        if latitude is not None and longitude is not None:
-            for location_id, _name, _kind, _parent, lat, lon, radius, boundary, geometry in rows_to_test:
-                matches = (
-                    self._distance_meters(latitude, longitude, lat, lon) <= radius
-                    if boundary == "radius" or not geometry
-                    else self._location_geometry_contains(location_id, latitude, longitude, geometry)
-                )
-                if matches: automatic.add(location_id)
-            if not cached:
-                imported_matches = []
-                if automatic:
-                    placeholders = ",".join("?" for _ in automatic)
-                    imported_matches = [int(row[0]) for row in self.connection.execute(
-                        f"SELECT id FROM locations WHERE is_imported=1 AND id IN ({placeholders})",
-                        tuple(automatic),
-                    )]
-                with self.connection:
-                    self.connection.execute("DELETE FROM photo_imported_location_matches WHERE image_id=?", (image_id,))
-                    self.connection.executemany(
-                        "INSERT INTO photo_imported_location_matches VALUES (?, ?)",
-                        [(image_id, location_id) for location_id in imported_matches],
-                    )
-                    self.connection.execute(
-                        """INSERT INTO photo_boundary_scans VALUES (?, ?, ?)
-                           ON CONFLICT(image_id) DO UPDATE SET latitude=excluded.latitude,
-                               longitude=excluded.longitude""", (image_id, latitude, longitude),
-                    )
-            direct.update(automatic)
+        if not cached and (latitude is not None or scan is not None):
+            self._refresh_image_boundary_matches(image_id, latitude, longitude)
+        automatic = {
+            int(row[0]) for table in (
+                "photo_imported_location_matches", "photo_custom_location_matches"
+            ) for row in self.connection.execute(
+                f"SELECT location_id FROM {table} WHERE image_id = ?", (image_id,)
+            )
+        }
+        direct = manual | automatic
+        rows = self._location_rows(location_ids=tuple(direct)) if direct else []
         by_id = {row[0]: row for row in rows}
         pending = {row[3] for row in rows if row[0] in direct and row[3] is not None}
         while pending:
@@ -1207,19 +1279,6 @@ class FaceCatalog:
         return set(self._photo_ids_by_location_cache.get(location_id, []))  # type: ignore[union-attr]
 
     def location_summaries(self) -> list[dict[str, object]]:
-        coordinates = self.connection.execute(
-            """SELECT images.id, COALESCE(metadata.latitude, images.gps_latitude),
-                      COALESCE(metadata.longitude, images.gps_longitude)
-               FROM images LEFT JOIN image_metadata metadata ON metadata.image_id=images.id
-               WHERE images.missing_since IS NULL ORDER BY images.id DESC"""
-        ).fetchall()
-        for image_id, latitude, longitude in coordinates:
-            if latitude is None or longitude is None: continue
-            scan = self.connection.execute(
-                "SELECT latitude,longitude FROM photo_boundary_scans WHERE image_id=?", (image_id,)
-            ).fetchone()
-            if not scan or float(scan[0]) != float(latitude) or float(scan[1]) != float(longitude):
-                self.locations_for_image(int(image_id))
         parents = {int(row[0]): int(row[1]) if row[1] is not None else None
                    for row in self.connection.execute("SELECT id,parent_id FROM locations")}
         direct_by_image: dict[int, set[int]] = {}
@@ -1228,20 +1287,13 @@ class FaceCatalog:
         ):
             direct_by_image.setdefault(int(image_id), set()).add(int(location_id))
         for image_id, location_id in self.connection.execute(
+            "SELECT image_id,location_id FROM photo_custom_location_matches"
+        ):
+            direct_by_image.setdefault(int(image_id), set()).add(int(location_id))
+        for image_id, location_id in self.connection.execute(
             "SELECT image_id,location_id FROM photo_location_assignments"
         ):
             direct_by_image.setdefault(int(image_id), set()).add(int(location_id))
-        custom_rows = self.connection.execute(
-            """SELECT id,latitude,longitude,radius_meters,boundary_type,geometry_json
-               FROM locations WHERE is_imported=0"""
-        ).fetchall()
-        for image_id, latitude, longitude in coordinates:
-            if latitude is None or longitude is None: continue
-            for location_id, center_lat, center_lon, radius, boundary, geometry in custom_rows:
-                matches = (self._distance_meters(float(latitude), float(longitude), float(center_lat), float(center_lon)) <= float(radius)
-                           if boundary == "radius" or not geometry else
-                           self._location_geometry_contains(int(location_id), float(latitude), float(longitude), geometry))
-                if matches: direct_by_image.setdefault(int(image_id), set()).add(int(location_id))
         photo_ids_by_location: dict[int, list[int]] = {}
         for image_id, direct_ids in direct_by_image.items():
             for location_id in self._with_location_ancestors(direct_ids, parents):
@@ -1520,6 +1572,12 @@ class FaceCatalog:
             raise ValueError("Latitude must be between -90 and 90.")
         if longitude is not None and not -180 <= longitude <= 180:
             raise ValueError("Longitude must be between -180 and 180.")
+        previous_coordinates = self.connection.execute(
+            """SELECT COALESCE(metadata.latitude,images.gps_latitude),
+                      COALESCE(metadata.longitude,images.gps_longitude)
+               FROM images LEFT JOIN image_metadata metadata ON metadata.image_id=images.id
+               WHERE images.id=?""", (image_id,)
+        ).fetchone()
         with self.connection:
             self.connection.execute(
                 """INSERT INTO image_metadata(image_id, title, description, tags, rating, nsfw_override,
@@ -1539,6 +1597,18 @@ class FaceCatalog:
             )
             self.connection.execute(
                 "UPDATE images SET capture_year_override = ? WHERE id = ?", (capture_year, image_id)
+            )
+        current_coordinates = self.connection.execute(
+            """SELECT COALESCE(metadata.latitude,images.gps_latitude),
+                      COALESCE(metadata.longitude,images.gps_longitude)
+               FROM images LEFT JOIN image_metadata metadata ON metadata.image_id=images.id
+               WHERE images.id=?""", (image_id,)
+        ).fetchone()
+        if current_coordinates != previous_coordinates:
+            self._refresh_image_boundary_matches(
+                image_id,
+                float(current_coordinates[0]) if current_coordinates and current_coordinates[0] is not None else None,
+                float(current_coordinates[1]) if current_coordinates and current_coordinates[1] is not None else None,
             )
 
     def set_nsfw_overrides(self, image_ids: list[int], value: int | None) -> int:
@@ -1632,6 +1702,7 @@ class FaceCatalog:
                 "UPDATE images SET gps_latitude = ?, gps_longitude = ?, gps_scanned_at = ? WHERE id = ?",
                 (latitude, longitude, datetime.now(timezone.utc).isoformat(), image_id),
             )
+        self._refresh_image_boundary_matches(image_id, latitude, longitude)
         return coordinates
 
     def identities(self) -> list[KnownIdentity]:
@@ -2336,7 +2407,8 @@ class FaceCatalog:
                    face_count=excluded.face_count, identified_count=excluded.identified_count,
                    scanned_at=excluded.scanned_at, capture_year=excluded.capture_year,
                    capture_date=excluded.capture_date,
-                   content_hash=excluded.content_hash, missing_since=NULL""",
+                   content_hash=excluded.content_hash, missing_since=NULL,
+                   gps_latitude=NULL, gps_longitude=NULL, gps_scanned_at=NULL""",
                 (
                     str(resolved), stat.st_size, stat.st_mtime_ns, len(embeddings), identified_count,
                     datetime.now(timezone.utc).isoformat(), capture_year, capture_date or "",

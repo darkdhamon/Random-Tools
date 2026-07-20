@@ -169,6 +169,7 @@ def main() -> None:
         if "us" in args.countries: counts["United States"] = _import_us(catalog, args.cache)
         if "ca" in args.countries: counts["Canada"] = _import_canada(catalog)
         if "mx" in args.countries: counts["Mexico"] = _import_mexico(catalog)
+        catalog.rebuild_boundary_match_cache()
     finally:
         catalog.close()
     print(json.dumps(counts, indent=2))

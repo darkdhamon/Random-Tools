@@ -1,6 +1,7 @@
 from pathlib import Path
 import tempfile
 import unittest
+from unittest.mock import patch
 import zipfile
 
 import numpy as np
@@ -470,6 +471,54 @@ class CatalogTests(unittest.TestCase):
                         [-1, -1], [1, -1], [1, 1], [-1, -1],
                     ]]},
                 )
+            catalog.close()
+
+    def test_boundary_matches_refresh_only_on_location_events(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            image = root / "located.jpg"; image.write_bytes(b"photo")
+            catalog = FaceCatalog(root / "catalog.sqlite3")
+            image_id = catalog.store_scan(image, [], []).image_id
+            polygon = {"type": "Polygon", "coordinates": [[
+                [-93.82, 44.19], [-93.80, 44.19], [-93.80, 44.21],
+                [-93.82, 44.21], [-93.82, 44.19],
+            ]]}
+            custom_id = catalog.create_location(
+                "Custom area", "custom", 44.2, -93.81, 1, None, "drawn", polygon
+            )
+            legal_id = catalog.create_location(
+                "Legal area", "general", 44.2, -93.81, 1, None, "legal", polygon
+            )
+            catalog.update_gallery_metadata(
+                image_id, "", "", "", 0, None, latitude=44.2, longitude=-93.81
+            )
+            self.assertEqual(
+                {item["id"] for item in catalog.locations_for_image(image_id)},
+                {custom_id, legal_id},
+            )
+
+            with patch.object(
+                catalog, "_location_geometry_contains",
+                side_effect=AssertionError("cached reads must not repeat geometry matching"),
+            ):
+                catalog.locations_for_image(image_id)
+                catalog.location_summaries()
+
+            distant = {"type": "Polygon", "coordinates": [[
+                [-94.2, 44.5], [-94.1, 44.5], [-94.1, 44.6],
+                [-94.2, 44.6], [-94.2, 44.5],
+            ]]}
+            catalog.update_location(
+                custom_id, "Custom area", "custom", 44.55, -94.15, 1,
+                None, "drawn", distant,
+            )
+            self.assertEqual(
+                {item["id"] for item in catalog.locations_for_image(image_id)}, {legal_id}
+            )
+            catalog.update_gallery_metadata(
+                image_id, "", "", "", 0, None, latitude=45.0, longitude=-95.0
+            )
+            self.assertEqual(catalog.locations_for_image(image_id), [])
             catalog.close()
 
     def test_imported_boundaries_are_indexed_and_hidden_until_they_have_photos(self) -> None:
