@@ -89,6 +89,8 @@ For drawings, paintings, statues, and other artwork, use **Save identity as art*
 
 A lower threshold finds more possible matches but creates more false positives. A higher threshold is stricter but may miss the person. Different ages, angles, lighting, glasses, masks, and small or blurry faces affect accuracy.
 
+Clear assigned faces form the primary biometric profile. Blurry assigned faces remain linked to the identity and are checked as a last-resort matching tier only when the clear profile cannot meet the match threshold; artwork is never used for biometric matching.
+
 ## Privacy, consent, and limitations
 
 Face embeddings are biometric data. Use this tool only on photos you are authorized to process and follow applicable consent, privacy, and retention requirements. Processing stays on the computer, but the first run downloads the MIT-licensed YuNet and SFace models from the official OpenCV Zoo.

@@ -45,6 +45,8 @@ class KnownIdentity:
     embeddings: tuple[np.ndarray, ...]
     sample_years: tuple[int | None, ...] = ()
     birth_year: int | None = None
+    fallback_embeddings: tuple[np.ndarray, ...] = ()
+    fallback_sample_years: tuple[int | None, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -671,24 +673,28 @@ class FaceCatalog:
     def identities(self) -> list[KnownIdentity]:
         rows = self.connection.execute(
             """SELECT identities.id, identities.name, identities.birth_year,
-                      faces.embedding, COALESCE(images.capture_year_override, images.capture_year)
+                      faces.embedding, COALESCE(images.capture_year_override, images.capture_year),
+                      faces.profile_eligible
                FROM identities LEFT JOIN faces ON faces.identity_id = identities.id
-                    AND faces.profile_eligible = 1
+                    AND faces.is_art = 0
                LEFT JOIN images ON images.id = faces.image_id
                ORDER BY identities.name, faces.id"""
         ).fetchall()
-        grouped: dict[tuple[int, str, int | None], list[tuple[np.ndarray, int | None]]] = {}
-        for identity_id, name, birth_year, blob, capture_year in rows:
-            grouped.setdefault((identity_id, name, birth_year), [])
+        grouped: dict[tuple[int, str, int | None], dict[bool, list[tuple[np.ndarray, int | None]]]] = {}
+        for identity_id, name, birth_year, blob, capture_year, profile_eligible in rows:
+            grouped.setdefault((identity_id, name, birth_year), {True: [], False: []})
             if blob is not None:
-                grouped[(identity_id, name, birth_year)].append(
+                grouped[(identity_id, name, birth_year)][bool(profile_eligible)].append(
                     (np.frombuffer(blob, dtype=np.float32).copy(), capture_year)
                 )
         identities: list[KnownIdentity] = []
         for key, values in grouped.items():
-            samples = bounded_profile_samples(values)
+            samples = bounded_profile_samples(values[True])
+            fallback = bounded_profile_samples(values[False])
             identities.append(KnownIdentity(key[0], key[1], tuple(v[0] for v in samples),
-                                            tuple(v[1] for v in samples), key[2]))
+                                            tuple(v[1] for v in samples), key[2],
+                                            tuple(v[0] for v in fallback),
+                                            tuple(v[1] for v in fallback)))
         return identities
 
     def set_identity_birth_year(self, identity_id: int, birth_year: int | None) -> None:
@@ -1255,6 +1261,19 @@ def best_known_identity(
             score = float(np.dot(embedding, known))
             if score > best_score:
                 best_id, best_score = identity.identity_id, score
+    if best_score >= threshold:
+        return best_id, best_score
+    # Low-quality assigned samples are deliberately isolated from the primary profile.
+    # They are considered only when no clear sample can produce an acceptable match.
+    fallback_id: int | None = None
+    fallback_score = -1.0
+    for identity in identities:
+        for known in fallback_identity_embeddings_for_year(identity, capture_year):
+            score = float(np.dot(embedding, known))
+            if score > fallback_score:
+                fallback_id, fallback_score = identity.identity_id, score
+    if fallback_score > best_score:
+        best_id, best_score = fallback_id, fallback_score
     return (best_id if best_score >= threshold else None), best_score
 
 
@@ -1334,6 +1353,16 @@ def identity_embeddings_for_year(identity: KnownIdentity, capture_year: int | No
     nearest_distance = min(abs(int(year) - capture_year) for _embedding, year in dated)
     nearest = tuple(embedding for embedding, year in dated if abs(int(year) - capture_year) == nearest_distance)
     return nearest or identity.embeddings
+
+
+def fallback_identity_embeddings_for_year(
+    identity: KnownIdentity, capture_year: int | None
+) -> tuple[np.ndarray, ...]:
+    fallback = KnownIdentity(
+        identity.identity_id, identity.name, identity.fallback_embeddings,
+        identity.fallback_sample_years, identity.birth_year,
+    )
+    return identity_embeddings_for_year(fallback, capture_year)
 
 
 def image_capture_year(path: Path) -> int | None:

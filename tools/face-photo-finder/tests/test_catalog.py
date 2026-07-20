@@ -14,6 +14,7 @@ from face_finder.catalog import (
     bounded_profile,
     closest_identity_matches,
     identity_embeddings_for_year,
+    fallback_identity_embeddings_for_year,
     image_capture_year,
     image_capture_date,
 )
@@ -26,6 +27,23 @@ class CatalogTests(unittest.TestCase):
         identity = KnownIdentity(1, "Age Range", (old, recent), (2004, 2025), 1985)
         self.assertEqual(identity_embeddings_for_year(identity, 2004), (old,))
         self.assertEqual(identity_embeddings_for_year(identity, 2023), (recent,))
+
+    def test_blurry_samples_are_used_only_after_clear_samples_fail(self) -> None:
+        clear = np.array([1.0, 0.0], dtype=np.float32)
+        blurry = np.array([0.0, 1.0], dtype=np.float32)
+        clear_winner = KnownIdentity(1, "Clear winner", (clear,))
+        fallback_winner = KnownIdentity(2, "Fallback winner", (), (), None, (blurry,), (2020,))
+
+        identity_id, _score = best_known_identity(
+            np.array([0.8, 0.95], dtype=np.float32), [clear_winner, fallback_winner], 0.75
+        )
+        self.assertEqual(identity_id, 1)
+
+        identity_id, _score = best_known_identity(
+            np.array([0.2, 0.95], dtype=np.float32), [clear_winner, fallback_winner], 0.75
+        )
+        self.assertEqual(identity_id, 2)
+        self.assertEqual(fallback_identity_embeddings_for_year(fallback_winner, 2020), (blurry,))
 
     def test_capture_year_can_be_read_from_filename(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -222,6 +240,7 @@ class CatalogTests(unittest.TestCase):
             self.assertFalse(face.profile_eligible)
             identity = next(item for item in catalog.identities() if item.identity_id == person_id)
             self.assertEqual(identity.embeddings, ())
+            self.assertEqual(identity.fallback_embeddings, ())
             catalog.close()
 
     def test_reset_removes_all_catalog_data_without_deleting_source_image(self) -> None:
@@ -307,6 +326,7 @@ class CatalogTests(unittest.TestCase):
             self.assertFalse(face.profile_eligible)
             identity = next(item for item in catalog.identities() if item.identity_id == person_id)
             self.assertEqual(identity.embeddings, ())
+            self.assertEqual(len(identity.fallback_embeddings), 1)
             catalog.close()
 
     def test_profile_drops_near_duplicates_and_caps_growth(self) -> None:

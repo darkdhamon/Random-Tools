@@ -29,6 +29,7 @@ from .catalog import (
     closest_identity_matches,
     default_catalog_path,
     identity_embeddings_for_year,
+    fallback_identity_embeddings_for_year,
     image_capture_year,
 )
 from .models import ensure_age_model, ensure_models
@@ -197,7 +198,8 @@ def add_known_sample(
     for identity in identities:
         if identity.identity_id == identity_id:
             updated.append(KnownIdentity(identity_id, identity.name, identity.embeddings + (embedding,),
-                                         identity.sample_years + (capture_year,), identity.birth_year))
+                                         identity.sample_years + (capture_year,), identity.birth_year,
+                                         identity.fallback_embeddings, identity.fallback_sample_years))
             found = True
         else:
             updated.append(identity)
@@ -208,7 +210,8 @@ def add_known_sample(
         years = item.sample_years if len(item.sample_years) == len(item.embeddings) else (None,) * len(item.embeddings)
         samples = bounded_profile_samples(list(zip(item.embeddings, years, strict=True)))
         result.append(KnownIdentity(item.identity_id, item.name, tuple(v[0] for v in samples),
-                                    tuple(v[1] for v in samples), item.birth_year))
+                                    tuple(v[1] for v in samples), item.birth_year,
+                                    item.fallback_embeddings, item.fallback_sample_years))
     return result
 
 
@@ -539,9 +542,11 @@ class FaceFinderApp(tk.Tk):
             selected_identity = next((item for item in known_identities if item.name == known_person), None)
             catalog_all = not reference_paths and selected_identity is None
             target_identity_id = selected_identity.identity_id if selected_identity else None
+            fallback_references: list[np.ndarray] = []
             if selected_identity:
                 references = list(selected_identity.embeddings)
-                if not references:
+                fallback_references = list(selected_identity.fallback_embeddings)
+                if not references and not fallback_references:
                     raise ValueError(f"{known_person} has no learned face samples yet.")
             elif reference_paths:
                 self.events.put(("status", "Reading reference faces…"))
@@ -549,6 +554,12 @@ class FaceFinderApp(tk.Tk):
             else:
                 references = []
                 self.events.put(("status", "Cataloging every photo that contains a face…"))
+
+            def selected_person_score(candidates: list[np.ndarray]) -> float:
+                score = best_similarity(references, candidates) if references else -1.0
+                if selected_identity is not None and score < threshold and fallback_references:
+                    score = max(score, best_similarity(fallback_references, candidates))
+                return score
 
             files = image_files(folder, skip_screenshots=False)
             reconciliation = catalog.reconcile_files(files)
@@ -607,6 +618,9 @@ class FaceFinderApp(tk.Tk):
                     capture_year = cached.capture_year if cached else image_capture_year(path)
                     if selected_identity:
                         references = list(identity_embeddings_for_year(selected_identity, capture_year))
+                        fallback_references = list(
+                            fallback_identity_embeddings_for_year(selected_identity, capture_year)
+                        )
                     if cached:
                         catalog_faces = catalog.faces_for_image(cached.image_id)
                         handled_face_ids: set[int] = set()
@@ -702,10 +716,10 @@ class FaceFinderApp(tk.Tk):
                                     break
                         catalog_faces = catalog.faces_for_image(cached.image_id)
                         candidate_embeddings = [face.embedding for face in catalog_faces]
-                        score = best_similarity(references, candidate_embeddings) if references else -1.0
+                        score = selected_person_score(candidate_embeddings)
                         if target_identity_id is not None:
                             for face in catalog_faces:
-                                if face.identity_id is None and best_similarity(references, [face.embedding]) >= threshold:
+                                if face.identity_id is None and selected_person_score([face.embedding]) >= threshold:
                                     catalog.assign_face(face.face_id, target_identity_id)
                         if catalog_faces and (catalog_all or score >= threshold):
                             refreshed = catalog.cached_image(path) or cached
@@ -923,10 +937,10 @@ class FaceFinderApp(tk.Tk):
                         catalog.set_media_kind(stored.image_id, media_kind)
                         catalog.ensure_image_location(stored.image_id, path)
                         candidate_embeddings = [face.embedding for face in detected]
-                        score = best_similarity(references, candidate_embeddings) if references else -1.0
+                        score = selected_person_score(candidate_embeddings)
                         if target_identity_id is not None and score >= threshold:
                             for face_index, face in enumerate(detected):
-                                if assignments[face_index] is None and best_similarity(references, [face.embedding]) >= threshold:
+                                if assignments[face_index] is None and selected_person_score([face.embedding]) >= threshold:
                                     assignments[face_index] = target_identity_id
                                     unknown_statuses[face_index] = False
                                     unknown_group_ids[face_index] = None
