@@ -183,6 +183,8 @@ class FaceCatalog:
             self.connection.execute("ALTER TABLE images ADD COLUMN nsfw_scanned_at TEXT")
         if "nsfw_details" not in image_columns:
             self.connection.execute("ALTER TABLE images ADD COLUMN nsfw_details TEXT")
+        if "nsfw_model_version" not in image_columns:
+            self.connection.execute("ALTER TABLE images ADD COLUMN nsfw_model_version INTEGER")
         if "media_kind" not in image_columns:
             self.connection.execute("ALTER TABLE images ADD COLUMN media_kind TEXT")
         if "gps_latitude" not in image_columns:
@@ -419,10 +421,15 @@ class FaceCatalog:
         self, path: Path
     ) -> tuple[float | None, list[dict[str, object]] | None]:
         row = self.connection.execute(
-            "SELECT nsfw_score, nsfw_details FROM images WHERE path = ?", (str(path.resolve()),)
+            "SELECT nsfw_score, nsfw_details, nsfw_model_version FROM images WHERE path = ?",
+            (str(path.resolve()),),
         ).fetchone()
         if row is None:
             return None, None
+        from .nsfw import NSFW_MODEL_VERSION
+
+        if row[2] != NSFW_MODEL_VERSION:
+            return row[0], None
         return row[0], json.loads(row[1]) if row[1] is not None else None
 
     def set_nsfw_score(self, image_id: int, score: float) -> None:
@@ -434,10 +441,16 @@ class FaceCatalog:
         if not 0 <= score <= 1:
             raise ValueError("NSFW score must be between 0 and 1.")
         with self.connection:
+            from .nsfw import NSFW_MODEL_VERSION
+
             self.connection.execute(
-                """UPDATE images SET nsfw_score = ?, nsfw_details = ?, nsfw_scanned_at = ?
+                """UPDATE images SET nsfw_score = ?, nsfw_details = ?, nsfw_scanned_at = ?,
+                          nsfw_model_version = ?
                    WHERE id = ?""",
-                (score, json.dumps(detections), datetime.now(timezone.utc).isoformat(), image_id),
+                (
+                    score, json.dumps(detections), datetime.now(timezone.utc).isoformat(),
+                    NSFW_MODEL_VERSION, image_id,
+                ),
             )
 
     def media_kind_for_path(self, path: Path) -> str | None:
