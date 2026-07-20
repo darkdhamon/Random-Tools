@@ -819,6 +819,9 @@ PAGE = PAGE.replace(
     '<section id=locationView class=location-view><div class=location-toolbar><h1>Locations</h1><button onclick=loadLocationGroups()>Refresh</button></div><div class=geofence-form>',
     '<section id=locationView class=location-view><div class=location-toolbar><h1>Photo locations</h1><button onclick=loadLocationOverview()>Refresh</button></div><div id=locationOverviewMapFrame class=location-overview-map><div id=locationOverviewTiles class=geofence-tiles aria-hidden=true></div><svg id=locationOverviewMarkers viewBox="0 0 1200 650" preserveAspectRatio="none" role=img aria-label="Map of all geotagged photos"></svg><div class=map-attribution>Tiles: OpenStreetMap contributors</div></div><div id=locationOverviewStatus class=identity-status></div></section><section id=settingsView class=location-view><div class=location-toolbar><h1>Location settings</h1></div><div class=geofence-form>',
 ).replace(
+    '<div id=locationOverviewStatus class=identity-status></div></section>',
+    '<div id=locationOverviewStatus class=identity-status></div><div id=locationLegalGroups class=location-groups></div></section>',
+).replace(
     '<div class=geofence-form><h2>Create a geofence</h2>',
     '<div class=geofence-form><h2 id=geofenceFormTitle>Create a geofence</h2>',
 ).replace(
@@ -879,18 +882,24 @@ function legalLocationNode(item,childrenByParent,depth=0){
   if(!children.length)return `<article class="legal-location-leaf legal-level-${Math.min(depth,3)}"><div class="legal-location-leaf-main"><div><strong>${esc(item.name)}</strong><div class="muted">${label} · ${photoLabel}</div></div>${locationPreviewStrip(item)}</div><button onclick="viewLocationTimeline(${item.id})">View photos</button></article>`;
   return `<details class="legal-location-node legal-level-${Math.min(depth,3)}" ${depth===0?'open':''}><summary><span class="legal-location-summary-title"><strong>${esc(item.name)}</strong><span class="muted">${label}</span></span><span class="legal-location-summary-actions"><span>${photoLabel}</span><button onclick="event.preventDefault();event.stopPropagation();viewLocationTimeline(${item.id})">View photos</button></span></summary><div class="legal-location-children">${children.map(child=>legalLocationNode(child,childrenByParent,depth+1)).join('')}</div></details>`;
 }
-function renderLocationSections(){
-  const custom=managedLocations.filter(item=>!item.read_only).sort((a,b)=>a.path.localeCompare(b.path)),legal=managedLocations.filter(item=>item.read_only),legalIds=new Set(legal.map(item=>item.id)),childrenByParent=new Map();
+function renderCustomGeofences(){
+  const custom=managedLocations.filter(item=>!item.read_only).sort((a,b)=>a.path.localeCompare(b.path));
+  locationGroups.innerHTML=`<section class="location-section"><h2>Custom geofences</h2><div class="custom-location-grid">${custom.length?custom.map(customLocationCard).join(''):'<p>No custom geofences yet.</p>'}</div></section>`;
+}
+function renderLegalLocationSections(){
+  const legalWithPhotos=managedLocations.filter(item=>item.read_only&&item.photo_count>0),visibleIds=new Set(legalWithPhotos.map(item=>item.id)),byId=new Map(managedLocations.filter(item=>item.read_only).map(item=>[item.id,item]));
+  for(const item of [...legalWithPhotos]){let parent=byId.get(item.parent_id);while(parent&&!visibleIds.has(parent.id)){legalWithPhotos.push(parent);visibleIds.add(parent.id);parent=byId.get(parent.parent_id)}}
+  const legal=legalWithPhotos,legalIds=new Set(legal.map(item=>item.id)),childrenByParent=new Map();
   for(const item of legal){const parent=legalIds.has(item.parent_id)?item.parent_id:null;if(!childrenByParent.has(parent))childrenByParent.set(parent,[]);childrenByParent.get(parent).push(item)}
   const roots=(childrenByParent.get(null)||[]).sort((a,b)=>a.name.localeCompare(b.name));
-  locationGroups.innerHTML=`<section class="location-section"><h2>Custom geofences</h2><div class="custom-location-grid">${custom.length?custom.map(customLocationCard).join(''):'<p>No custom geofences yet.</p>'}</div></section><section class="location-section"><h2>Legal locations</h2><h3>Nation level</h3><div class="legal-location-tree">${roots.length?roots.map(item=>legalLocationNode(item,childrenByParent)).join(''):'<p>No legal locations contain cataloged photos.</p>'}</div></section>`;
+  locationLegalGroups.innerHTML=`<section class="location-section"><h2>Legal locations containing photos</h2><h3>Nation level</h3><div class="legal-location-tree">${roots.length?roots.map(item=>legalLocationNode(item,childrenByParent)).join(''):'<p>No legal locations contain cataloged photos.</p>'}</div></section>`;
 }
 async function loadLocationGroups() {
   locationStatus.textContent='Loading locations…';
   try {
     managedLocations=await api('/api/locations');
     geofenceParent.innerHTML='<option value="">No parent</option>'+managedLocations.filter(item=>item.id!==editingLocationId).map(item=>`<option value="${item.id}">${esc(item.path)}</option>`).join('');
-    renderLocationSections();
+    renderCustomGeofences();
     locationStatus.textContent=`${managedLocations.length} locations`;
   } catch(error) { locationStatus.textContent='Load failed: '+error.message; }
 }
@@ -978,7 +987,7 @@ function renderLocationOverview(){
 }
 async function loadLocationOverview(){
   locationOverviewStatus.textContent='Loading photo locations…';
-  try{locationOverviewPoints=await api('/api/location-points');renderLocationOverview()}catch(error){locationOverviewStatus.textContent='Map failed: '+error.message}
+  try{[locationOverviewPoints,managedLocations]=await Promise.all([api('/api/location-points'),api('/api/locations')]);renderLocationOverview();renderLegalLocationSections()}catch(error){locationOverviewStatus.textContent='Map failed: '+error.message}
 }
 function mapTileUrl(layer,z,x,y){
   if(layer==='road')return `https://tile.openstreetmap.org/${z}/${x}/${y}.png`;
