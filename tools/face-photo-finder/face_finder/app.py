@@ -123,6 +123,14 @@ def forced_identity_decision(
     return best if float(np.dot(embedding, best.embedding)) >= 0.995 else None
 
 
+def record_unknown_photo(
+    groups: dict[int, set[Path]], group_id: int, path: Path, minimum_photos: int
+) -> bool:
+    """Record one distinct new photo and report when its anonymous group is ready for review."""
+    groups.setdefault(group_id, set()).add(path)
+    return len(groups[group_id]) >= minimum_photos
+
+
 class IdentityRequest:
     def __init__(
         self,
@@ -238,8 +246,9 @@ def detection_context(
 
 
 class FaceFinderApp(tk.Tk):
-    def __init__(self) -> None:
+    def __init__(self, background_mode: bool = False) -> None:
         super().__init__()
+        self.background_mode = background_mode
         self.title("Face Photo Finder")
         self.geometry("1080x780")
         self.minsize(800, 650)
@@ -266,6 +275,17 @@ class FaceFinderApp(tk.Tk):
         self._restore_settings()
         self.protocol("WM_DELETE_WINDOW", self._close)
         self.after(100, self._drain_events)
+        if self.background_mode:
+            self.withdraw()
+            self.after(250, self._start_background_scan)
+
+    def _start_background_scan(self) -> None:
+        if not Path(self.folder_var.get()).is_dir():
+            self.destroy()
+            return
+        self.references.clear()
+        self.known_person_var.set("")
+        self.start_scan()
 
     def _build(self) -> None:
         outer = ttk.Frame(self, padding=14)
@@ -495,12 +515,15 @@ class FaceFinderApp(tk.Tk):
         references = list(self.references)
         known_person = self.known_person_var.get().strip()
         self.worker = threading.Thread(
-            target=self._scan_worker, args=(folder, threshold, references, known_person), daemon=True
+            target=self._scan_worker,
+            args=(folder, threshold, references, known_person, 3 if self.background_mode else 1),
+            daemon=True,
         )
         self.worker.start()
 
     def _scan_worker(
-        self, folder: Path, threshold: float, reference_paths: list[Path], known_person: str
+        self, folder: Path, threshold: float, reference_paths: list[Path], known_person: str,
+        unknown_prompt_photo_count: int = 1,
     ) -> None:
         catalog: FaceCatalog | None = None
         try:
@@ -544,6 +567,7 @@ class FaceFinderApp(tk.Tk):
             forced_matches: dict[Path, list[ForcedIdentityMatch]] = {}
             skip_unknowns = False
             offered_unknown_groups: set[int] = set()
+            new_unknown_photos: dict[int, set[Path]] = {}
             for index, path in enumerate(files, start=1):
                 if self.cancel_event.is_set():
                     break
@@ -704,12 +728,27 @@ class FaceFinderApp(tk.Tk):
                                 unknown_group_id, _unknown_score = best_unknown_group(
                                     face.embedding, unknown_groups, learning_threshold
                                 )
+                                if unknown_group_id is None and catalog_all and unknown_prompt_photo_count > 1:
+                                    unknown_group_id = catalog.create_unknown_group()
+                                    intentionally_unknown = True
+                                    unknown_groups = add_unknown_sample(
+                                        unknown_groups, unknown_group_id, face.embedding
+                                    )
+                            unknown_group_ready = False
+                            if unknown_group_id is not None:
+                                unknown_group_ready = record_unknown_photo(
+                                    new_unknown_photos,
+                                    unknown_group_id,
+                                    path,
+                                    unknown_prompt_photo_count,
+                                )
                             if (
                                 identity_id is None
                                 and unknown_group_id is not None
                                 and catalog_all
                                 and not skip_unknowns
                                 and unknown_group_id not in offered_unknown_groups
+                                and unknown_group_ready
                             ):
                                 offered_unknown_groups.add(unknown_group_id)
                                 previous_count = catalog.unknown_group_face_count(unknown_group_id)
@@ -1001,6 +1040,9 @@ class FaceFinderApp(tk.Tk):
                     self._show_face_picker(payload)
                 elif kind == "identify_face":
                     assert isinstance(payload, IdentityRequest)
+                    if self.background_mode:
+                        self.deiconify()
+                        self.lift()
                     self._show_identity_prompt(payload)
                 elif kind == "related_face":
                     if payload is self.identity_request and self.identity_dialog:
@@ -1014,8 +1056,12 @@ class FaceFinderApp(tk.Tk):
                 elif kind == "done":
                     self.matches = list(payload)  # type: ignore[arg-type]
                     self._finish(f"Found {len(self.matches)} matching photo(s)." if not self.cancel_event.is_set() else f"Cancelled. Found {len(self.matches)} match(es).")
+                    if self.background_mode:
+                        self.after(250, self.destroy)
                 elif kind == "error":
                     self._finish("Scan failed.")
+                    if self.background_mode:
+                        self.deiconify()
                     messagebox.showerror("Scan failed", str(payload))
         except queue.Empty:
             pass
@@ -1910,8 +1956,8 @@ class FaceFinderApp(tk.Tk):
         self.status_var.set(f"Copied {copied} photo(s) to {target}")
 
 
-def main() -> None:
-    FaceFinderApp().mainloop()
+def main(background_mode: bool = False) -> None:
+    FaceFinderApp(background_mode=background_mode).mainloop()
 
 
 if __name__ == "__main__":

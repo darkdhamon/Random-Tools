@@ -19,6 +19,7 @@ A private, local desktop tool that recursively scans a folder and finds photos l
 - pre-processes upcoming uncached photos with a separate bounded background detector while identity questions are open;
 - catalogs all face-containing photos when no reference or known person is selected, prompting to name unfamiliar faces;
 - asks again when a new photo matches a previously anonymous person, with an option to update every earlier match;
+- supports an hourly per-user background catalog task that stays hidden unless the same unidentified person appears in at least three distinct new photos;
 - searches by a previously learned person from the **Known person** list without requiring another reference photo;
 - autocompletes identity names case-insensitively while still allowing new names;
 - shows up to three closest named-profile buttons with match percentages when automatic recognition is uncertain;
@@ -45,6 +46,8 @@ python run.py
 ```
 
 On macOS/Linux, activate with `source .venv/bin/activate` instead.
+
+On Windows, run `install-background-task.ps1` to install the hourly **Face Photo Finder Background Catalog** task. It scans the last folder selected in the app, relinks reorganized files, and stays hidden unless identification is needed. Task Scheduler ignores overlapping runs.
 
 ## Use
 
