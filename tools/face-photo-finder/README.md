@@ -41,6 +41,7 @@ A private, local desktop tool that recursively scans a folder and finds photos l
 - detects cats and dogs locally with the Apache-licensed OpenCV NanoDet model, saves editable purple pet reticles, and supports manually named/targeted pets of any species;
 - hides identities from the Timeline person filter when they no longer occur in any available photo, while retaining their biometric samples and keeping them available for future assignments;
 - stores biometric face crops with retained samples so Identity Management reference thumbnails remain available after source photos move, disappear, are deleted, or are archived;
+- uses a local quantized CLIP classifier to conservatively detect drawings, paintings, statues, sculptures, mannequins, and dolls; high-confidence artwork is cataloged but excluded from biometric matching and profile learning;
 - extracts EXIF GPS coordinates, supports editable place names and coordinates, and shows an offline map preview with an explicit OpenStreetMap link;
 - searches by a previously learned person from the **Known person** list without requiring another reference photo;
 - autocompletes identity names case-insensitively while still allowing new names;

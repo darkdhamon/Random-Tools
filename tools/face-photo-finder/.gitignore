@@ -1,2 +1,3 @@
 models/*.onnx
 models/*.download
+models/clip-tokenizer.json

@@ -24,6 +24,17 @@ AGE_MODEL = {
     ),
 }
 
+ART_MODELS = {
+    "clip-vit-base-patch32-q4.onnx": (
+        "https://huggingface.co/Xenova/clip-vit-base-patch32/resolve/main/"
+        "onnx/model_q4.onnx?download=true"
+    ),
+    "clip-tokenizer.json": (
+        "https://huggingface.co/Xenova/clip-vit-base-patch32/resolve/main/"
+        "tokenizer.json?download=true"
+    ),
+}
+
 
 def ensure_models(folder: Path, status: Callable[[str], None] | None = None) -> tuple[Path, Path]:
     folder.mkdir(parents=True, exist_ok=True)
@@ -76,3 +87,26 @@ def ensure_age_model(
             temporary.replace(destination)
         paths.append(destination)
     return paths[0]
+
+
+def ensure_art_models(
+    folder: Path, status: Callable[[str], None] | None = None
+) -> tuple[Path, Path]:
+    """Download the quantized local CLIP artwork classifier on first use."""
+    folder.mkdir(parents=True, exist_ok=True)
+    paths: list[Path] = []
+    for filename, url in ART_MODELS.items():
+        destination = folder / filename
+        minimum_size = 10_000_000 if destination.suffix == ".onnx" else 100_000
+        if not destination.is_file() or destination.stat().st_size < minimum_size:
+            if status:
+                status(f"Downloading artwork classifier {filename}…")
+            temporary = destination.with_suffix(destination.suffix + ".download")
+            subprocess.run(
+                ["curl.exe", "--location", "--fail", "--silent", "--show-error",
+                 "--ssl-no-revoke", "--output", str(temporary), url],
+                check=True,
+            )
+            temporary.replace(destination)
+        paths.append(destination)
+    return paths[0], paths[1]

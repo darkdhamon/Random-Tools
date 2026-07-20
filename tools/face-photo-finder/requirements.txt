@@ -4,3 +4,4 @@ Pillow>=10.4
 nudenet>=3.4.2,<4
 requests>=2.32,<3
 truststore>=0.10,<1
+tokenizers>=0.20,<1

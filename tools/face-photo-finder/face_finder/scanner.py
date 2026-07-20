@@ -8,6 +8,8 @@ import threading
 import cv2
 import numpy as np
 
+from .art_classifier import ArtClassifier, face_context
+
 IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp", ".bmp", ".tif", ".tiff"}
 DETECTION_MAX_EDGE = 1280
 MIN_PROFILE_SHARPNESS = 75.0
@@ -38,16 +40,23 @@ class DetectedFace:
     bbox: tuple[int, int, int, int] | None = None
     sharpness: float = 0.0
     profile_eligible: bool = False
+    is_art: bool = False
+    visual_kind: str = "photo"
+    visual_kind_score: float = 0.0
 
 
 class FaceEngine:
     """Thin wrapper around OpenCV YuNet detection and SFace embeddings."""
 
-    def __init__(self, detector_model: Path, recognizer_model: Path) -> None:
+    def __init__(
+        self, detector_model: Path, recognizer_model: Path,
+        art_classifier: ArtClassifier | None = None,
+    ) -> None:
         self.detector = cv2.FaceDetectorYN.create(
             str(detector_model), "", (320, 320), 0.75, 0.3, 5000
         )
         self.recognizer = cv2.FaceRecognizerSF.create(str(recognizer_model), "")
+        self.art_classifier = art_classifier
 
     def detect_faces(self, image_path: Path) -> list[DetectedFace]:
         image = read_image(image_path)
@@ -68,13 +77,26 @@ class FaceEngine:
                 # The aligned crop gives the picker a consistent, close-up preview.
                 x, y, face_width, face_height = (int(round(value)) for value in face[:4])
                 sharpness = face_sharpness(aligned)
+                art_result = None
+                if self.art_classifier is not None:
+                    try:
+                        art_result = self.art_classifier.classify(
+                            face_context(image, (x, y, face_width, face_height))
+                        )
+                    except Exception:
+                        art_result = None
                 results.append(
                     DetectedFace(
                         feature / norm,
                         aligned,
                         (x, y, face_width, face_height),
                         sharpness,
-                        sharpness >= MIN_PROFILE_SHARPNESS,
+                        sharpness >= MIN_PROFILE_SHARPNESS and not bool(
+                            art_result and art_result.exclude_from_biometrics
+                        ),
+                        bool(art_result and art_result.exclude_from_biometrics),
+                        art_result.kind if art_result else "photo",
+                        art_result.confidence if art_result else 0.0,
                     )
                 )
         return results

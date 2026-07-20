@@ -523,7 +523,7 @@ openPhoto = async function(id) { pendingManualTagIdentityId = null; pendingPetTa
 function assignmentBaseLabel(suggestion) { return `${suggestion.name} (#${suggestion.id})`; }
 function assignmentMatchLabel(suggestion) { return `${suggestion.same_day?'Same day · ':''}${suggestion.match_score==null?'No biometric profile':`${(suggestion.match_score*100).toFixed(1)}% match`}`; }
 function htmlAttribute(value) { return esc(value).replaceAll('"','&quot;'); }
-function faceDisplayName(face) { const number = Math.max(1,(current.faces || []).findIndex(item=>item.id===face.id)+1); return face.name || (face.unknown ? `Unknown person ${number}` : `Unprocessed face ${number}`); }
+function faceDisplayName(face) { const number = Math.max(1,(current.faces || []).findIndex(item=>item.id===face.id)+1); const base=face.name || (face.unknown ? `Unknown person ${number}` : `Unprocessed face ${number}`); return face.art_kind&&face.art_score!=null ? `${base} · ${face.art_kind} ${(face.art_score*100).toFixed(1)}%` : base; }
 function renderFaceAssignment(face) {
   const inputId = `faceAssignment${face.id}`;
   const suggestions = face.assignment_suggestions || identities.map(identity => ({...identity,same_day:false,match_score:null}));

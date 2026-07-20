@@ -320,6 +320,34 @@ class CatalogTests(unittest.TestCase):
             self.assertEqual(identity.fallback_embeddings, ())
             catalog.close()
 
+    def test_automatic_art_classification_excludes_cached_face_but_keeps_identity(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            image = root / "statue.jpg"
+            image.write_bytes(b"photo")
+            catalog = FaceCatalog(root / "catalog.sqlite3")
+            identity_id = catalog.get_or_create_identity("Statue subject")
+            stored = catalog.store_scan(
+                image,
+                [np.array([1.0, 0.0], dtype=np.float32)],
+                [identity_id],
+                previews=[np.frombuffer(b"preview", dtype=np.uint8)],
+            )
+            face_id = catalog.faces_for_image(stored.image_id)[0].face_id
+
+            self.assertEqual(catalog.pending_art_faces(1), [(face_id, b"preview")])
+            catalog.set_art_classification(face_id, "statue", 0.94, True, 1)
+
+            face = catalog.faces_for_image(stored.image_id)[0]
+            self.assertEqual(face.identity_id, identity_id)
+            self.assertTrue(face.is_art)
+            self.assertFalse(face.profile_eligible)
+            self.assertEqual(catalog.pending_art_faces(1), [])
+            gallery_face = catalog.gallery_photo(stored.image_id)["faces"][0]  # type: ignore[index]
+            self.assertEqual(gallery_face["art_kind"], "statue")
+            self.assertEqual(gallery_face["art_score"], 0.94)
+            catalog.close()
+
     def test_reset_removes_all_catalog_data_without_deleting_source_image(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

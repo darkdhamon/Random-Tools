@@ -152,6 +152,9 @@ class FaceCatalog:
                 sharpness REAL,
                 profile_eligible INTEGER NOT NULL DEFAULT 1,
                 is_art INTEGER NOT NULL DEFAULT 0,
+                art_model_version INTEGER NOT NULL DEFAULT 0,
+                art_kind TEXT,
+                art_score REAL,
                 estimated_age REAL,
                 UNIQUE(image_id, face_index)
             );
@@ -309,6 +312,14 @@ class FaceCatalog:
             self.connection.commit()
         if "is_art" not in columns:
             self.connection.execute("ALTER TABLE faces ADD COLUMN is_art INTEGER NOT NULL DEFAULT 0")
+        if "art_model_version" not in columns:
+            self.connection.execute(
+                "ALTER TABLE faces ADD COLUMN art_model_version INTEGER NOT NULL DEFAULT 0"
+            )
+        if "art_kind" not in columns:
+            self.connection.execute("ALTER TABLE faces ADD COLUMN art_kind TEXT")
+        if "art_score" not in columns:
+            self.connection.execute("ALTER TABLE faces ADD COLUMN art_score REAL")
         if "estimated_age" not in columns:
             self.connection.execute("ALTER TABLE faces ADD COLUMN estimated_age REAL")
         legacy_unknowns = self.connection.execute(
@@ -462,7 +473,8 @@ class FaceCatalog:
         faces = self.connection.execute(
             """SELECT faces.id, identities.name, faces.intentionally_unknown, faces.is_art,
                       faces.estimated_age, faces.unknown_group_id,
-                      faces.bbox_x, faces.bbox_y, faces.bbox_width, faces.bbox_height
+                      faces.bbox_x, faces.bbox_y, faces.bbox_width, faces.bbox_height,
+                      faces.art_kind, faces.art_score
                FROM faces LEFT JOIN identities ON identities.id = faces.identity_id
                WHERE faces.image_id = ? ORDER BY faces.face_index""",
             (image_id,),
@@ -471,6 +483,7 @@ class FaceCatalog:
             {"id": int(row[0]), "name": row[1], "unknown": bool(row[2]), "art": bool(row[3]),
              "estimated_age": row[4], "unknown_group_id": row[5],
              "bbox": [int(value) for value in row[6:10]] if row[6] is not None else None,
+             "art_kind": row[10], "art_score": row[11],
              "assignment_suggestions": self.face_assignment_suggestions(int(row[0]))}
             for row in faces
         ]
@@ -495,6 +508,30 @@ class FaceCatalog:
             )
         ]
         return photo
+
+    def pending_art_faces(self, model_version: int, limit: int = 500) -> list[tuple[int, bytes]]:
+        rows = self.connection.execute(
+            """SELECT id, preview FROM faces
+               WHERE art_model_version < ? AND is_art = 0 AND preview IS NOT NULL
+               ORDER BY id LIMIT ?""",
+            (model_version, limit),
+        ).fetchall()
+        return [(int(row[0]), bytes(row[1])) for row in rows]
+
+    def set_art_classification(
+        self, face_id: int, kind: str, score: float, excluded: bool, model_version: int
+    ) -> None:
+        with self.connection:
+            self.connection.execute(
+                """UPDATE faces SET art_kind = ?, art_score = ?, art_model_version = ?,
+                          is_art = CASE WHEN ? THEN 1 ELSE is_art END,
+                          profile_eligible = CASE WHEN ? THEN 0 ELSE profile_eligible END,
+                          intentionally_unknown = CASE WHEN ? THEN 0 ELSE intentionally_unknown END,
+                          unknown_group_id = CASE WHEN ? THEN NULL ELSE unknown_group_id END
+                   WHERE id = ?""",
+                (kind, score, model_version, int(excluded), int(excluded), int(excluded),
+                 int(excluded), face_id),
+            )
 
     def face_assignment_suggestions(self, face_id: int) -> list[dict[str, object]]:
         """Rank identities by same-day presence, then biometric similarity."""
@@ -1447,6 +1484,9 @@ class FaceCatalog:
         sharpness_scores: list[float] | None = None,
         profile_eligible: list[bool] | None = None,
         is_art: list[bool] | None = None,
+        art_kinds: list[str | None] | None = None,
+        art_scores: list[float | None] | None = None,
+        art_model_version: int = 0,
     ) -> CatalogImage:
         if len(embeddings) != len(identities):
             raise ValueError("Every face must have an identity assignment.")
@@ -1474,6 +1514,12 @@ class FaceCatalog:
             is_art = [False] * len(embeddings)
         if len(is_art) != len(embeddings):
             raise ValueError("Every face must have an artwork status.")
+        if art_kinds is None:
+            art_kinds = [None] * len(embeddings)
+        if art_scores is None:
+            art_scores = [None] * len(embeddings)
+        if len(art_kinds) != len(embeddings) or len(art_scores) != len(embeddings):
+            raise ValueError("Every face must have artwork-classification values.")
         resolved = path.resolve()
         stat = resolved.stat()
         capture_year = image_capture_year(resolved)
@@ -1502,8 +1548,8 @@ class FaceCatalog:
                        image_id, face_index, identity_id, embedding, preview, intentionally_unknown
                        , bbox_x, bbox_y, bbox_width, bbox_height, unknown_group_id
                        , sharpness, profile_eligible
-                       , is_art
-                   ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                       , is_art, art_kind, art_score, art_model_version
+                   ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 [
                     (
                         image_id,
@@ -1517,6 +1563,9 @@ class FaceCatalog:
                         sharpness_scores[index],
                         int(profile_eligible[index]),
                         int(is_art[index]),
+                        art_kinds[index],
+                        art_scores[index],
+                        art_model_version,
                     )
                     for index, (embedding, identity_id) in enumerate(zip(embeddings, identities, strict=True))
                 ],

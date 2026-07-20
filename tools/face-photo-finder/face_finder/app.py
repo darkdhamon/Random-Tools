@@ -32,7 +32,8 @@ from .catalog import (
     fallback_identity_embeddings_for_year,
     image_capture_year,
 )
-from .models import ensure_age_model, ensure_models
+from .art_classifier import ART_MODEL_VERSION, ArtClassifier
+from .models import ensure_age_model, ensure_art_models, ensure_models
 from .media_kind import classify_media_kind, filename_media_kind
 from .nsfw import NsfwDetector
 from .prefetch import DetectionPrefetcher
@@ -549,8 +550,28 @@ class FaceFinderApp(tk.Tk):
         try:
             model_dir = Path(__file__).resolve().parents[1] / "models"
             detector, recognizer = ensure_models(model_dir, lambda value: self.events.put(("status", value)))
-            engine = FaceEngine(detector, recognizer)
+            art_model, art_tokenizer = ensure_art_models(
+                model_dir, lambda value: self.events.put(("status", value))
+            )
+            art_classifier = ArtClassifier(art_model, art_tokenizer)
+            engine = FaceEngine(detector, recognizer, art_classifier)
             catalog = FaceCatalog(default_catalog_path())
+            pending_art_faces = catalog.pending_art_faces(ART_MODEL_VERSION)
+            if pending_art_faces:
+                self.events.put((
+                    "status", f"Reviewing {len(pending_art_faces)} cached faces for artwork…"
+                ))
+                for face_id, preview_bytes in pending_art_faces:
+                    preview = cv2.imdecode(
+                        np.frombuffer(preview_bytes, dtype=np.uint8), cv2.IMREAD_COLOR
+                    )
+                    if preview is None:
+                        continue
+                    classification = art_classifier.classify(preview)
+                    catalog.set_art_classification(
+                        face_id, classification.kind, classification.confidence,
+                        classification.exclude_from_biometrics, ART_MODEL_VERSION,
+                    )
             known_identities = catalog.identities()
             unknown_groups = catalog.unknown_groups()
             known_person_id = identity_id_from_label(known_person)
@@ -595,7 +616,7 @@ class FaceFinderApp(tk.Tk):
             ]
             self.prefetcher = DetectionPrefetcher(
                 uncached_paths,
-                lambda: FaceEngine(detector, recognizer),
+                lambda: FaceEngine(detector, recognizer, art_classifier),
                 self.cancel_event,
                 self._on_prefetched_faces,
             )
@@ -758,6 +779,18 @@ class FaceFinderApp(tk.Tk):
                         forced_unknown_groups: dict[int, int] = {}
                         accepted_index_by_detected: dict[int, int] = {}
                         for detected_index, face in enumerate(detected):
+                            if face.is_art:
+                                review_states[detected_index] = (
+                                    "artwork", f"Automatic {face.visual_kind}"
+                                )
+                                accepted_faces.append(face)
+                                accepted_index_by_detected[detected_index] = len(assignments)
+                                assignments.append(None)
+                                unknown_statuses.append(False)
+                                unknown_group_ids.append(None)
+                                profile_eligible_flags.append(False)
+                                art_flags.append(True)
+                                continue
                             learning_threshold = max(threshold, 0.55)
                             save_as_art = False
                             forced = forced_identity_decision(path, face.embedding, forced_matches)
@@ -948,6 +981,9 @@ class FaceFinderApp(tk.Tk):
                             [face.sharpness for face in detected],
                             profile_eligible_flags,
                             art_flags,
+                            [face.visual_kind for face in detected],
+                            [face.visual_kind_score for face in detected],
+                            ART_MODEL_VERSION,
                         )
                         if nsfw_score is not None and nsfw_details is not None:
                             catalog.set_nsfw_classification(
@@ -971,6 +1007,9 @@ class FaceFinderApp(tk.Tk):
                                     [face.sharpness for face in detected],
                                     profile_eligible_flags,
                                     art_flags,
+                                    [face.visual_kind for face in detected],
+                                    [face.visual_kind_score for face in detected],
+                                    ART_MODEL_VERSION,
                                 )
                         if detected and (catalog_all or score >= threshold):
                             refreshed = catalog.cached_image(path) or stored
