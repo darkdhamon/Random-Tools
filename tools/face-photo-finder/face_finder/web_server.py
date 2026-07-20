@@ -835,6 +835,7 @@ function updateBoundaryEditor() {
   boundaryHelp.textContent=geofenceBoundary.value==='radius'?'Enter a center and radius. Clicking the map moves the center.':geofenceBoundary.value==='drawn'?'Click at least three map points to trace the boundary.':'Paste an official GeoJSON Polygon or MultiPolygon to use its exact legal boundary.';renderBoundaryMap();
 }
 function addBoundaryPoint(event) {
+  if(typeof mapDragged!=='undefined'&&mapDragged){mapDragged=false;return}
   const rect=geofenceMap.getBoundingClientRect(),bounds=boundaryMapBounds(),x=(event.clientX-rect.left)/rect.width,y=(event.clientY-rect.top)/rect.height;
   const lon=bounds.centerLon+(x-.5)*2*bounds.lonSpan,lat=bounds.centerLat+(.5-y)*2*bounds.latSpan;
   if(geofenceBoundary.value==='radius'){geofenceLatitude.value=lat.toFixed(7);geofenceLongitude.value=lon.toFixed(7)}else if(geofenceBoundary.value==='drawn')drawnBoundaryPoints.push([lon,lat]);renderBoundaryMap();
@@ -888,10 +889,10 @@ PAGE = PAGE.replace(
     '<label>Base map<select id=geofenceMapStyle onchange=renderBoundaryMap()><option value=hybrid>Satellite + roads</option><option value=satellite>Satellite</option><option value=road>Road map</option></select></label><label class=map-layer-toggle><input id=geofenceRoadOverlay type=checkbox checked onchange=renderBoundaryMap()> Roads overlay</label><label class=map-layer-toggle><input id=geofenceLabelOverlay type=checkbox checked onchange=renderBoundaryMap()> Place labels</label><button onclick="useDeviceLocation(true)">Use device location</button><button onclick=undoBoundaryPoint()>Undo point</button>',
 ).replace(
     '<svg id=geofenceMap viewBox="0 0 800 360" role=img aria-label="Local geofence drawing map" onclick=addBoundaryPoint(event)></svg>',
-    '<div class=geofence-map-frame><div id=geofenceTiles class=geofence-tiles aria-hidden=true></div><svg id=geofenceMap viewBox="0 0 800 360" role=img aria-label="Geofence drawing map" onclick=addBoundaryPoint(event)></svg><div class=map-attribution>Tiles: Esri &amp; OpenStreetMap contributors</div></div>',
+    '<div id=geofenceMapFrame class=geofence-map-frame tabindex=0 aria-label="Interactive geofence map. Drag or use WASD to pan; use the mouse wheel or Q and E to zoom."><div id=geofenceTiles class=geofence-tiles aria-hidden=true></div><svg id=geofenceMap viewBox="0 0 800 360" preserveAspectRatio="none" role=img aria-label="Geofence drawing map" onclick=addBoundaryPoint(event)></svg><div class=map-controls-help>Drag/WASD: pan Â· Wheel/Q/E: zoom</div><div class=map-attribution>Tiles: Esri &amp; OpenStreetMap contributors</div></div>',
 ).replace(
     '</style>',
-    r'''.boundary-map-controls .map-layer-toggle{flex-direction:row;align-items:center;padding-bottom:8px}.map-layer-toggle input{width:auto;margin:0}.geofence-map-frame{position:relative;width:100%;aspect-ratio:20/9;max-height:52vh;min-height:260px;overflow:hidden;border:1px solid #5a7c83;border-radius:8px;background:#173039}.geofence-tiles,.geofence-map-frame>svg{position:absolute!important;inset:0;width:100%!important;height:100%!important;max-height:none!important;border:0!important;border-radius:0!important;background:none!important}.geofence-tiles{overflow:hidden;background:#173039}.geofence-tile{position:absolute;width:256px;height:256px;max-width:none;user-select:none;pointer-events:none}.map-attribution{position:absolute;right:4px;bottom:3px;background:#111c;color:#ddd;font-size:10px;padding:2px 4px;pointer-events:none}</style>''',
+    r'''.boundary-map-controls .map-layer-toggle{flex-direction:row;align-items:center;padding-bottom:8px}.map-layer-toggle input{width:auto;margin:0}.geofence-map-frame{position:relative;width:100%;aspect-ratio:20/9;max-height:52vh;min-height:260px;overflow:hidden;border:1px solid #5a7c83;border-radius:8px;background:#173039;touch-action:none;outline:none}.geofence-map-frame:focus{border-color:#60ddea;box-shadow:0 0 0 2px #60ddea66}.geofence-tiles,.geofence-map-frame>svg{position:absolute!important;inset:0;width:100%!important;height:100%!important;max-height:none!important;border:0!important;border-radius:0!important;background:none!important}.geofence-tiles{overflow:hidden;background:#173039}.geofence-tile{position:absolute;width:256px;height:256px;max-width:none;user-select:none;pointer-events:none}.map-controls-help,.map-attribution{position:absolute;bottom:3px;background:#111c;color:#ddd;font-size:10px;padding:2px 4px;pointer-events:none}.map-controls-help{left:4px}.map-attribution{right:4px}.geofence-map-frame.dragging{cursor:grabbing}.geofence-map-frame.dragging>svg{cursor:grabbing!important}</style>''',
 ).replace(
     '</body>',
     r'''<script>
@@ -903,18 +904,19 @@ function mapTileUrl(layer,z,x,y){
 function renderMapTiles(){
   const centerLat=Math.max(-85.0511,Math.min(85.0511,Number(geofenceLatitude.value)||0));
   const centerLon=Number(geofenceLongitude.value)||0,spanKm=Math.max(.1,Number(geofenceMapSpan.value)||10);
-  const zoom=Math.max(1,Math.min(19,Math.round(Math.log2(40075/(spanKm*2)*800/256))));
+  const width=geofenceMapFrame.clientWidth||800,height=geofenceMapFrame.clientHeight||360;
+  const zoom=Math.max(1,Math.min(19,Math.round(Math.log2(40075/(spanKm*2)*width/256))));
   const count=2**zoom,world=256*count;
   const centerX=(centerLon+180)/360*world;
   const sin=Math.sin(centerLat*Math.PI/180),centerY=(.5-Math.log((1+sin)/(1-sin))/(4*Math.PI))*world;
   const layers=geofenceMapStyle.value==='road'?['road']:['satellite'];
   if(geofenceMapStyle.value==='hybrid'&&geofenceRoadOverlay.checked)layers.push('roads');
   if(geofenceMapStyle.value==='hybrid'&&geofenceLabelOverlay.checked)layers.push('labels');
-  const firstX=Math.floor((centerX-400)/256),lastX=Math.floor((centerX+400)/256);
-  const firstY=Math.floor((centerY-180)/256),lastY=Math.floor((centerY+180)/256);let html='';
+  const firstX=Math.floor((centerX-width/2)/256),lastX=Math.floor((centerX+width/2)/256);
+  const firstY=Math.floor((centerY-height/2)/256),lastY=Math.floor((centerY+height/2)/256);let html='';
   for(const layer of layers)for(let ty=firstY;ty<=lastY;ty++)for(let tx=firstX;tx<=lastX;tx++){
     if(ty<0||ty>=count)continue;const wrappedX=((tx%count)+count)%count;
-    html+=`<img class="geofence-tile" alt="" src="${mapTileUrl(layer,zoom,wrappedX,ty)}" style="left:${tx*256-(centerX-400)}px;top:${ty*256-(centerY-180)}px">`;
+    html+=`<img class="geofence-tile" alt="" src="${mapTileUrl(layer,zoom,wrappedX,ty)}" style="left:${tx*256-(centerX-width/2)}px;top:${ty*256-(centerY-height/2)}px">`;
   }
   geofenceTiles.innerHTML=html;
 }
@@ -937,6 +939,21 @@ function useDeviceLocation(force=false){
     boundaryHelp.textContent=`Map centered on this device (accuracy about ${Math.round(position.coords.accuracy)} meters).`;
   },error=>{useFallbackMapLocation();boundaryHelp.textContent=`Could not use device location (${error.message}). Map centered on Madison Lake, Minnesota.`},{enableHighAccuracy:true,timeout:10000,maximumAge:300000});
 }
+let mapDragStart=null,mapDragged=false;
+function panBoundaryMap(horizontal,vertical){
+  const bounds=boundaryMapBounds();
+  geofenceLongitude.value=Math.max(-180,Math.min(180,bounds.centerLon+horizontal*bounds.lonSpan)).toFixed(7);
+  geofenceLatitude.value=Math.max(-85,Math.min(85,bounds.centerLat+vertical*bounds.latSpan)).toFixed(7);
+  renderBoundaryMap();
+}
+function zoomBoundaryMap(factor){geofenceMapSpan.value=Math.max(.1,Math.min(2000,(Number(geofenceMapSpan.value)||10)*factor)).toFixed(2);renderBoundaryMap()}
+geofenceMapFrame.addEventListener('pointerdown',event=>{if(event.button!==0)return;mapDragStart={x:event.clientX,y:event.clientY,lat:Number(geofenceLatitude.value)||0,lon:Number(geofenceLongitude.value)||0};mapDragged=false;geofenceMapFrame.classList.add('dragging');geofenceMapFrame.setPointerCapture(event.pointerId);geofenceMapFrame.focus()});
+geofenceMapFrame.addEventListener('pointermove',event=>{if(!mapDragStart)return;const dx=event.clientX-mapDragStart.x,dy=event.clientY-mapDragStart.y;if(Math.hypot(dx,dy)<3)return;mapDragged=true;const bounds=boundaryMapBounds();geofenceLongitude.value=Math.max(-180,Math.min(180,mapDragStart.lon-dx/geofenceMapFrame.clientWidth*2*bounds.lonSpan)).toFixed(7);geofenceLatitude.value=Math.max(-85,Math.min(85,mapDragStart.lat+dy/geofenceMapFrame.clientHeight*2*bounds.latSpan)).toFixed(7);renderBoundaryMap()});
+function endMapDrag(){mapDragStart=null;geofenceMapFrame.classList.remove('dragging')}
+geofenceMapFrame.addEventListener('pointerup',endMapDrag);geofenceMapFrame.addEventListener('pointercancel',endMapDrag);
+geofenceMapFrame.addEventListener('wheel',event=>{event.preventDefault();zoomBoundaryMap(event.deltaY<0?.8:1.25)},{passive:false});
+geofenceMapFrame.addEventListener('keydown',event=>{const key=event.key.toLowerCase();if(!'wasdqe'.includes(key))return;event.preventDefault();if(key==='q'||key==='e')zoomBoundaryMap(key==='q'?1.25:.8);else panBoundaryMap(key==='a'?-.2:key==='d'?.2:0,key==='w'?.2:key==='s'?-.2:0)});
+window.addEventListener('resize',()=>requestAnimationFrame(renderBoundaryMap));
 const renderBoundaryOverlay=renderBoundaryMap;
 renderBoundaryMap=function(){renderMapTiles();renderBoundaryOverlay()};
 const showAppTabWithoutDeviceLocation=showAppTab;
