@@ -167,9 +167,17 @@ function renderIdentityTable() {
     viewButton.textContent = 'View photos';
     viewButton.onclick = () => viewIdentityTimeline(identity.id);
     actionCell.append(viewButton);
-    const saveIdentity = () => saveIdentityRow(identity, nameInput, yearInput);
-    nameInput.addEventListener('change', saveIdentity);
-    yearInput.addEventListener('change', saveIdentity);
+    const saveIdentityName = () => saveIdentityRow(identity, nameInput, yearInput, false);
+    nameInput.addEventListener('input', () => {
+      clearTimeout(nameInput.identitySaveTimer);
+      identityStatus.textContent = 'Name changed — saving...';
+      nameInput.identitySaveTimer = setTimeout(saveIdentityName, 700);
+    });
+    nameInput.addEventListener('change', () => {
+      clearTimeout(nameInput.identitySaveTimer);
+      saveIdentityName();
+    });
+    yearInput.addEventListener('change', () => saveIdentityRow(identity, nameInput, yearInput, true));
     identityTableBody.append(row);
   }
 }
@@ -246,7 +254,7 @@ async function assignUnknownCluster(group, identityId) {
   try { await post('/api/assign-unknown-groups',{group_ids:group.group_ids,identity_id:+identityId}); await people(true); await loadIdentityTable(); identityStatus.textContent = `Added cluster to ${target.name} (#${target.id})`; }
   catch (error) { identityStatus.textContent = 'Assignment failed: ' + error.message; }
 }
-async function saveIdentityRow(identity, nameInput, yearInput) {
+async function saveIdentityRow(identity, nameInput, yearInput, rerender) {
   identityStatus.textContent = 'Saving identity...';
   try {
     await post('/api/identity', {id:identity.id,name:nameInput.value,birth_year:yearInput.value||null});
@@ -256,7 +264,7 @@ async function saveIdentityRow(identity, nameInput, yearInput) {
     const option = person.querySelector(`option[value="${identity.id}"]`);
     if (option) option.textContent = identity.name;
     identityStatus.textContent = 'Identity saved automatically';
-    renderIdentityTable();
+    if (rerender) renderIdentityTable();
   } catch (error) { identityStatus.textContent = 'Save failed: ' + error.message; }
 }
 function viewIdentityTimeline(identityId) {
