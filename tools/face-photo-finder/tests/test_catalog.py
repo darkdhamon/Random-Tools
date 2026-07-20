@@ -289,7 +289,7 @@ class CatalogTests(unittest.TestCase):
             identities = catalog.identities()
             self.assertEqual([(item.identity_id, item.name, item.birth_year) for item in identities], [(keep_id, "Same Name", 1980)])
             self.assertEqual(catalog.faces_for_image(second.image_id)[0].identity_id, keep_id)
-            self.assertEqual(catalog.gallery_photo(first.image_id)["face_tags"], [{"identity_id": keep_id, "name": "Same Name"}])  # type: ignore[index]
+            self.assertEqual(catalog.gallery_photo(first.image_id)["face_tags"], [{"identity_id": keep_id, "name": "Same Name", "target_x": None, "target_y": None}])  # type: ignore[index]
             catalog.close()
 
             reopened = FaceCatalog(catalog_path)
@@ -455,17 +455,23 @@ class CatalogTests(unittest.TestCase):
             stored = catalog.store_scan(image, [], [])
             person_id = catalog.get_or_create_identity("Farv")
 
-            catalog.add_photo_identity_tag(stored.image_id, person_id)
+            catalog.add_photo_identity_tag(stored.image_id, person_id, 0.25, 0.75)
             photo = catalog.gallery_photo(stored.image_id)
             self.assertEqual(photo["face_count"], 0)  # type: ignore[index]
             self.assertEqual(
                 photo["face_tags"],  # type: ignore[index]
-                [{"identity_id": person_id, "name": "Farv"}],
+                [{"identity_id": person_id, "name": "Farv", "target_x": 0.25, "target_y": 0.75}],
             )
             matches = catalog.gallery_photos(identity_id=person_id)
             self.assertEqual([item["id"] for item in matches], [stored.image_id])
             identity = next(item for item in catalog.identities() if item.identity_id == person_id)
             self.assertEqual(identity.embeddings, ())
+
+            catalog.add_photo_identity_tag(stored.image_id, person_id, 0.5, 0.4)
+            retargeted = catalog.gallery_photo(stored.image_id)["face_tags"][0]  # type: ignore[index]
+            self.assertEqual((retargeted["target_x"], retargeted["target_y"]), (0.5, 0.4))
+            with self.assertRaises(ValueError):
+                catalog.add_photo_identity_tag(stored.image_id, person_id, 1.1, 0.5)
 
             catalog.remove_photo_identity_tag(stored.image_id, person_id)
             self.assertEqual(catalog.gallery_photo(stored.image_id)["face_tags"], [])  # type: ignore[index]

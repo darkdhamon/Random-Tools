@@ -160,6 +160,8 @@ class FaceCatalog:
                 image_id INTEGER NOT NULL REFERENCES images(id) ON DELETE CASCADE,
                 identity_id INTEGER NOT NULL REFERENCES identities(id) ON DELETE CASCADE,
                 created_at TEXT NOT NULL,
+                target_x REAL,
+                target_y REAL,
                 PRIMARY KEY(image_id, identity_id)
             );
             CREATE INDEX IF NOT EXISTS photo_identity_tags_identity_idx
@@ -241,6 +243,11 @@ class FaceCatalog:
         if "gps_scanned_at" not in image_columns:
             self.connection.execute("ALTER TABLE images ADD COLUMN gps_scanned_at TEXT")
         metadata_columns = {row[1] for row in self.connection.execute("PRAGMA table_info(image_metadata)")}
+        tag_columns = {row[1] for row in self.connection.execute("PRAGMA table_info(photo_identity_tags)")}
+        if "target_x" not in tag_columns:
+            self.connection.execute("ALTER TABLE photo_identity_tags ADD COLUMN target_x REAL")
+        if "target_y" not in tag_columns:
+            self.connection.execute("ALTER TABLE photo_identity_tags ADD COLUMN target_y REAL")
         if "nsfw_override" not in metadata_columns:
             self.connection.execute("ALTER TABLE image_metadata ADD COLUMN nsfw_override INTEGER")
         if "media_kind_override" not in metadata_columns:
@@ -448,9 +455,10 @@ class FaceCatalog:
             for row in faces
         ]
         photo["face_tags"] = [
-            {"identity_id": int(tag[0]), "name": tag[1]}
+            {"identity_id": int(tag[0]), "name": tag[1],
+             "target_x": tag[2], "target_y": tag[3]}
             for tag in self.connection.execute(
-                """SELECT identities.id, identities.name
+                """SELECT identities.id, identities.name, tags.target_x, tags.target_y
                    FROM photo_identity_tags tags
                    JOIN identities ON identities.id = tags.identity_id
                    WHERE tags.image_id = ? ORDER BY identities.name COLLATE NOCASE""",
@@ -1129,8 +1137,9 @@ class FaceCatalog:
                 (target_identity_id, *sources),
             )
             self.connection.execute(
-                f"""INSERT OR IGNORE INTO photo_identity_tags(image_id, identity_id, created_at)
-                    SELECT image_id, ?, created_at FROM photo_identity_tags
+                f"""INSERT OR IGNORE INTO photo_identity_tags(
+                           image_id, identity_id, created_at, target_x, target_y)
+                    SELECT image_id, ?, created_at, target_x, target_y FROM photo_identity_tags
                     WHERE identity_id IN ({source_placeholders})""",
                 (target_identity_id, *sources),
             )
@@ -1474,15 +1483,27 @@ class FaceCatalog:
                 (image_row[0],),
             )
 
-    def add_photo_identity_tag(self, image_id: int, identity_id: int) -> None:
+    def add_photo_identity_tag(
+        self, image_id: int, identity_id: int,
+        target_x: float | None = None, target_y: float | None = None,
+    ) -> None:
         """Tag a person in a photo without treating the tag as biometric evidence."""
+        if (target_x is None) != (target_y is None):
+            raise ValueError("Both target coordinates are required.")
+        if target_x is not None and not (0.0 <= target_x <= 1.0 and 0.0 <= target_y <= 1.0):
+            raise ValueError("Target coordinates must be within the image.")
         with self.connection:
             cursor = self.connection.execute(
-                """INSERT OR IGNORE INTO photo_identity_tags(image_id, identity_id, created_at)
-                   SELECT ?, ?, ?
+                """INSERT INTO photo_identity_tags(
+                         image_id, identity_id, created_at, target_x, target_y)
+                   SELECT ?, ?, ?, ?, ?
                    WHERE EXISTS (SELECT 1 FROM images WHERE id = ? AND missing_since IS NULL)
-                     AND EXISTS (SELECT 1 FROM identities WHERE id = ?)""",
-                (image_id, identity_id, datetime.now(timezone.utc).isoformat(), image_id, identity_id),
+                     AND EXISTS (SELECT 1 FROM identities WHERE id = ?)
+                   ON CONFLICT(image_id, identity_id) DO UPDATE SET
+                       target_x = COALESCE(excluded.target_x, target_x),
+                       target_y = COALESCE(excluded.target_y, target_y)""",
+                (image_id, identity_id, datetime.now(timezone.utc).isoformat(),
+                 target_x, target_y, image_id, identity_id),
             )
         if cursor.rowcount == 0:
             existing = self.connection.execute(

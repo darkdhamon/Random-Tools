@@ -503,12 +503,13 @@ async function executeBulkAction() {
 
 PAGE = PAGE.replace(
     "</style>",
-    r'''.face-entry,.person-tag{display:grid;grid-template-columns:1fr auto;gap:7px;align-items:center}.face-assignment{grid-column:1/2;display:flex;gap:7px}.face-assignment input{margin:0!important;min-width:0;flex:1}.face-assignment button{white-space:nowrap}.face-entry .remove-face,.person-tag button{grid-column:2;background:#70242a;border-color:#bd5058}.add-person-tag{display:flex;gap:7px;margin-top:9px}.add-person-tag select{margin:0!important;flex:1}.empty-faces{padding:8px 0;color:#aaa}</style>''',
+    r'''.face-entry,.person-tag{display:grid;grid-template-columns:1fr auto;gap:7px;align-items:center}.face-assignment{grid-column:1/2;display:flex;gap:7px}.face-assignment input{margin:0!important;min-width:0;flex:1}.face-assignment button{white-space:nowrap}.face-entry .remove-face{grid-column:2;background:#70242a;border-color:#bd5058}.person-tag-actions{grid-column:2;display:flex;gap:6px}.person-tag-actions .remove-tag{background:#70242a;border-color:#bd5058}.add-person-tag{display:flex;gap:7px;margin-top:9px}.add-person-tag select{margin:0!important;flex:1}.viewer.manual-targeting img{cursor:crosshair}.viewer.manual-targeting .face-reticle{pointer-events:none}.empty-faces{padding:8px 0;color:#aaa}</style>''',
 ).replace(
     "</body>",
     r'''<script>
 const openPhotoWithFaceTags = openPhoto;
-openPhoto = async function(id) { await openPhotoWithFaceTags(id); renderFaceTagControls(); };
+let pendingManualTagIdentityId = null;
+openPhoto = async function(id) { pendingManualTagIdentityId = null; full.parentElement.classList.remove('manual-targeting'); await openPhotoWithFaceTags(id); renderFaceTagControls(); };
 function assignmentBaseLabel(suggestion) { return `${suggestion.name} (#${suggestion.id})`; }
 function assignmentMatchLabel(suggestion) { return `${suggestion.same_day?'Same day · ':''}${suggestion.match_score==null?'No biometric profile':`${(suggestion.match_score*100).toFixed(1)}% match`}`; }
 function htmlAttribute(value) { return esc(value).replaceAll('"','&quot;'); }
@@ -532,12 +533,12 @@ async function assignFaceFromInput(faceId, inputId) {
 }
 function renderFaceTagControls() {
   const detected = current.faces || [];
+  const tags = current.face_tags || [];
   faces.innerHTML = detected.length ? detected.map(face => `<div id="faceEntry${face.id}" class="face-entry"><span>${esc(faceDisplayName(face))}${face.art?' · artwork':''}${face.estimated_age!=null?' · age '+face.estimated_age:''}</span>${renderFaceAssignment(face)}<button class="remove-face" onclick="removeDetectedFace(${face.id})">Not a face / remove</button></div>`).join('') : '<div class="empty-faces">No faces detected.</div>';
-  faces.insertAdjacentHTML('beforeend', `<button id="showFaceTagsButton" class="show-tags-button" onclick="toggleFaceTags()" ${detected.some(face=>face.bbox)?'':'disabled'}>${faceTagsVisible?'Hide tags':'Show tags'}</button>`);
+  faces.insertAdjacentHTML('beforeend', `<button id="showFaceTagsButton" class="show-tags-button" onclick="toggleFaceTags()" ${detected.some(face=>face.bbox)||tags.some(tag=>tag.target_x!=null)?'':'disabled'}>${faceTagsVisible?'Hide tags':'Show tags'}</button>`);
   let tagBox = document.getElementById('personTags');
   if (!tagBox) { tagBox = document.createElement('div'); tagBox.id = 'personTags'; faces.insertAdjacentElement('afterend', tagBox); }
-  const tags = current.face_tags || [];
-  tagBox.innerHTML = '<h3>Manual person tags</h3>' + (tags.length ? tags.map(tag => `<div class="person-tag"><span>${esc(tag.name)} <span class="muted">(non-biometric tag)</span></span><button onclick="removePersonTag(${tag.identity_id})">Remove tag</button></div>`).join('') : '<div class="empty-faces">No manual person tags.</div>') + `<div class="add-person-tag"><select id="newPersonTag"><option value="">Choose a person…</option>${identities.map(person=>`<option value="${person.id}">${esc(person.name)}</option>`).join('')}</select><button onclick="addPersonTag()">Add tag</button></div>`;
+  tagBox.innerHTML = '<h3>Manual person tags</h3>' + (tags.length ? tags.map(tag => `<div id="manualTag${tag.identity_id}" class="person-tag"><span>${esc(tag.name)} <span class="muted">(non-biometric${tag.target_x==null?'':', targeted'})</span></span><div class="person-tag-actions"><button onclick="startManualPersonTarget(${tag.identity_id})">${tag.target_x==null?'Target':'Retarget'}</button><button class="remove-tag" onclick="removePersonTag(${tag.identity_id})">Remove tag</button></div></div>`).join('') : '<div class="empty-faces">No manual person tags.</div>') + `<div class="add-person-tag"><select id="newPersonTag"><option value="">Choose a person…</option>${identities.map(person=>`<option value="${person.id}">${esc(person.name)}</option>`).join('')}</select><button onclick="addPersonTag()">Add tag</button><button onclick="targetNewPersonTag()">Target on photo</button></div>`;
 }
 async function removeDetectedFace(faceId) {
   if (!confirm('Mark this detection as not a face and remove its person assignment?')) return;
@@ -549,6 +550,25 @@ async function addPersonTag() {
   await post('/api/photo-identity-tag', {image_id:current.id,identity_id:identityId}); await openPhoto(current.id);
   saveState.textContent = 'Person tag added (not used for biometric matching)';
 }
+function targetNewPersonTag() { const identityId = +document.getElementById('newPersonTag').value; if (identityId) startManualPersonTarget(identityId); }
+function startManualPersonTarget(identityId) {
+  const identity = identities.find(item=>item.id===identityId); if (!identity) return;
+  pendingManualTagIdentityId = identityId; full.parentElement.classList.add('manual-targeting');
+  saveState.textContent = `Click ${identity.name}'s location in the photo, or press Escape to cancel.`;
+}
+function cancelManualPersonTarget() { pendingManualTagIdentityId = null; full.parentElement.classList.remove('manual-targeting'); saveState.textContent = 'Manual tag targeting cancelled'; }
+full.addEventListener('click', async event => {
+  if (!pendingManualTagIdentityId) return;
+  const bounds = full.getBoundingClientRect();
+  const targetX = Math.max(0,Math.min(1,(event.clientX-bounds.left)/bounds.width));
+  const targetY = Math.max(0,Math.min(1,(event.clientY-bounds.top)/bounds.height));
+  const identityId = pendingManualTagIdentityId, imageId = current.id;
+  pendingManualTagIdentityId = null; full.parentElement.classList.remove('manual-targeting');
+  await post('/api/photo-identity-tag',{image_id:imageId,identity_id:identityId,target_x:targetX,target_y:targetY});
+  await openPhoto(imageId); faceTagsVisible = true; renderFaceTagControls(); renderFaceReticles();
+  saveState.textContent = 'Targeted manual person tag saved (not used for biometric matching)';
+});
+document.addEventListener('keydown',event=>{if(event.key==='Escape'&&pendingManualTagIdentityId)cancelManualPersonTarget();});
 async function removePersonTag(identityId) {
   await post('/api/photo-identity-tag', {image_id:current.id,identity_id:identityId,action:'remove'}); await openPhoto(current.id);
   saveState.textContent = 'Person tag removed';
@@ -583,7 +603,7 @@ PAGE = PAGE.replace(
     '<div class=viewer><img id=full><div id=faceReticleLayer class=face-reticle-layer></div>',
 ).replace(
     "</style>",
-    r'''.viewer{position:relative}.face-reticle-layer{position:absolute;inset:0;pointer-events:none;display:none}.face-reticle{position:absolute;border:3px solid var(--reticle-color);box-sizing:border-box;filter:drop-shadow(0 1px 2px #000);pointer-events:auto;cursor:pointer}.face-reticle:before,.face-reticle:after{content:'';position:absolute;background:var(--reticle-color)}.face-reticle:before{width:18px;height:2px;left:50%;top:50%;transform:translate(-50%,-50%)}.face-reticle:after{width:2px;height:18px;left:50%;top:50%;transform:translate(-50%,-50%)}.face-reticle.recognized{--reticle-color:#35e287}.face-reticle.unknown{--reticle-color:#a4aeb2}.face-reticle.unprocessed{--reticle-color:#ff4f5f}.face-reticle.active{--reticle-color:#21d9ee}.face-reticle-label{position:absolute;left:-3px;top:-27px;max-width:220px;padding:3px 6px;background:var(--reticle-color);color:#07110d;border-radius:4px;font-weight:700;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.show-tags-button{margin:8px 0;width:100%}</style>''',
+    r'''.viewer{position:relative}.face-reticle-layer{position:absolute;inset:0;pointer-events:none;display:none}.face-reticle{position:absolute;border:3px solid var(--reticle-color);box-sizing:border-box;filter:drop-shadow(0 1px 2px #000);pointer-events:auto;cursor:pointer}.face-reticle:before,.face-reticle:after{content:'';position:absolute;background:var(--reticle-color)}.face-reticle:before{width:18px;height:2px;left:50%;top:50%;transform:translate(-50%,-50%)}.face-reticle:after{width:2px;height:18px;left:50%;top:50%;transform:translate(-50%,-50%)}.face-reticle.recognized{--reticle-color:#35e287}.face-reticle.unknown{--reticle-color:#a4aeb2}.face-reticle.unprocessed{--reticle-color:#ff4f5f}.face-reticle.active{--reticle-color:#21d9ee}.face-reticle.manual-tag{--reticle-color:#ffd65a;pointer-events:none}.face-reticle-label{position:absolute;left:-3px;top:-27px;max-width:220px;padding:3px 6px;background:var(--reticle-color);color:#07110d;border-radius:4px;font-weight:700;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.show-tags-button{margin:8px 0;width:100%}</style>''',
 ).replace(
     "</body>",
     r'''<script>
@@ -623,6 +643,14 @@ function renderFaceReticles() {
     reticle.style.width = `${Math.max(18,width*scaleX)}px`; reticle.style.height = `${Math.max(18,height*scaleY)}px`;
     const label = document.createElement('span'); label.className = 'face-reticle-label';
     label.textContent = faceDisplayName(face);
+    reticle.append(label); faceReticleLayer.append(reticle);
+  }
+  for (const tag of (current.face_tags || []).filter(item=>item.target_x!=null&&item.target_y!=null)) {
+    const reticle = document.createElement('div'); reticle.className = 'face-reticle manual-tag';
+    reticle.style.left = `${imageRect.left-viewerRect.left+tag.target_x*imageRect.width-22}px`;
+    reticle.style.top = `${imageRect.top-viewerRect.top+tag.target_y*imageRect.height-22}px`;
+    reticle.style.width = '44px'; reticle.style.height = '44px';
+    const label = document.createElement('span'); label.className = 'face-reticle-label'; label.textContent = `${tag.name} · manual tag`;
     reticle.append(label); faceReticleLayer.append(reticle);
   }
 }
@@ -781,7 +809,11 @@ class GalleryHandler(BaseHTTPRequestHandler):
                     if body.get("action") == "remove":
                         catalog.remove_photo_identity_tag(int(body["image_id"]), int(body["identity_id"]))
                     else:
-                        catalog.add_photo_identity_tag(int(body["image_id"]), int(body["identity_id"]))
+                        catalog.add_photo_identity_tag(
+                            int(body["image_id"]), int(body["identity_id"]),
+                            float(body["target_x"]) if body.get("target_x") is not None else None,
+                            float(body["target_y"]) if body.get("target_y") is not None else None,
+                        )
                 finally: catalog.close()
                 self._json({"ok": True})
             elif self.path == "/api/identity":
