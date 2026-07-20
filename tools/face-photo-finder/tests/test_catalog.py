@@ -444,11 +444,20 @@ class CatalogTests(unittest.TestCase):
                 np.array([0.98, 0.02], dtype=np.float32), catalog.unknown_groups(), 0.8
             )
             self.assertEqual(matched_group, group_id)
+            summaries = catalog.unidentified_summaries()
+            self.assertEqual(summaries[0]["id"], group_id)
+            self.assertEqual(summaries[0]["face_count"], 1)
+            self.assertEqual(summaries[0]["photo_count"], 1)
+            self.assertEqual(
+                [item["id"] for item in catalog.gallery_photos(unknown_group_id=group_id)],
+                [stored.image_id],
+            )
             person_id = catalog.get_or_create_identity("Later Identified")
             catalog.assign_face(face.face_id, person_id)
             identified = catalog.faces_for_image(stored.image_id)[0]
             self.assertFalse(identified.intentionally_unknown)
             self.assertEqual(identified.identity_name, "Later Identified")
+            self.assertEqual(catalog.unidentified_summaries(), [])
             catalog.close()
 
     def test_unknown_group_can_be_retroactively_assigned_to_identity(self) -> None:

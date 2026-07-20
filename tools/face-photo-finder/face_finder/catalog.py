@@ -288,6 +288,7 @@ class FaceCatalog:
         self, search: str = "", identity_id: int | None = None, year: int | None = None,
         limit: int = 100, offset: int = 0, nsfw_filter: str = "all",
         excluded_kinds: tuple[str, ...] = (), media_kind: str | None = None,
+        unknown_group_id: int | None = None,
     ) -> list[dict[str, object]]:
         clauses = ["images.missing_since IS NULL"]
         values: list[object] = []
@@ -301,6 +302,11 @@ class FaceCatalog:
                             OR EXISTS (SELECT 1 FROM photo_identity_tags tags
                                        WHERE tags.image_id = images.id AND tags.identity_id = ?))""")
             values.extend((identity_id, identity_id))
+        if unknown_group_id is not None:
+            clauses.append(
+                "EXISTS (SELECT 1 FROM faces WHERE faces.image_id = images.id AND faces.unknown_group_id = ?)"
+            )
+            values.append(unknown_group_id)
         if year is not None:
             clauses.append("COALESCE(images.capture_year_override, images.capture_year) = ?")
             values.append(year)
@@ -775,6 +781,46 @@ class FaceCatalog:
                WHERE faces.id = ? AND faces.identity_id IS NOT NULL
                      AND faces.profile_eligible = 1 AND faces.preview IS NOT NULL
                      AND images.missing_since IS NULL""",
+            (face_id,),
+        ).fetchone()
+        return bytes(row[0]) if row else None
+
+    def unidentified_summaries(self) -> list[dict[str, object]]:
+        """Return persisted anonymous face groups for identity-management review."""
+        rows = self.connection.execute(
+            """SELECT unknown_groups.id,
+                      COUNT(CASE WHEN images.missing_since IS NULL THEN faces.id END),
+                      COUNT(DISTINCT CASE WHEN images.missing_since IS NULL THEN faces.image_id END)
+               FROM unknown_groups
+               LEFT JOIN faces ON faces.unknown_group_id = unknown_groups.id
+               LEFT JOIN images ON images.id = faces.image_id
+               GROUP BY unknown_groups.id
+               HAVING COUNT(CASE WHEN images.missing_since IS NULL THEN faces.id END) > 0
+               ORDER BY unknown_groups.id DESC"""
+        ).fetchall()
+        previews: dict[int, list[int]] = {}
+        for group_id, face_id in self.connection.execute(
+            """SELECT faces.unknown_group_id, faces.id
+               FROM faces JOIN images ON images.id = faces.image_id
+               WHERE faces.unknown_group_id IS NOT NULL AND faces.preview IS NOT NULL
+                     AND images.missing_since IS NULL
+               ORDER BY faces.unknown_group_id, faces.profile_eligible DESC, faces.id"""
+        ).fetchall():
+            group_previews = previews.setdefault(int(group_id), [])
+            if len(group_previews) < 12:
+                group_previews.append(int(face_id))
+        return [
+            {"id": int(row[0]), "label": f"Unidentified person {int(row[0])}",
+             "face_count": int(row[1]), "photo_count": int(row[2]),
+             "reference_face_ids": previews.get(int(row[0]), [])}
+            for row in rows
+        ]
+
+    def unidentified_reference_preview(self, face_id: int) -> bytes | None:
+        row = self.connection.execute(
+            """SELECT faces.preview FROM faces JOIN images ON images.id = faces.image_id
+               WHERE faces.id = ? AND faces.unknown_group_id IS NOT NULL
+                     AND faces.preview IS NOT NULL AND images.missing_since IS NULL""",
             (face_id,),
         ).fetchone()
         return bytes(row[0]) if row else None

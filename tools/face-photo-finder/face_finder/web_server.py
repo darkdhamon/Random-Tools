@@ -93,13 +93,14 @@ PAGE = PAGE.replace(
     '<div id=timelineMore style="text-align:center;padding:15px"><button id=more',
 ).replace(
     "<div id=modal class=modal>",
-    r'''<section id=identityView class=identity-view><div class=identity-toolbar><h1>Identity management</h1><input id=identitySearch placeholder="Search identities" oninput=renderIdentityTable()><button onclick=loadIdentityTable()>Refresh</button></div><div id=identityStatus class=identity-status></div><div class=identity-table-wrap><table class=identity-table><thead><tr><th>Name</th><th>Reference images</th><th>Birth year</th><th>Approx. age</th><th>Photos</th><th>Faces</th><th>Profile samples</th><th>Timeline</th></tr></thead><tbody id=identityTableBody></tbody></table></div></section><div id=modal class=modal>''',
+    r'''<section id=identityView class=identity-view><div class=identity-toolbar><h1>Identity management</h1><button id=recognizedPeopleTab class=active onclick="showIdentityKind('recognized')">Recognized people</button><button id=unidentifiedPeopleTab onclick="showIdentityKind('unidentified')">Unidentified people</button><input id=identitySearch placeholder="Search identities" oninput=renderIdentityTable()><button onclick=loadIdentityTable()>Refresh</button></div><div id=identityStatus class=identity-status></div><div id=recognizedPeoplePanel class=identity-table-wrap><table class=identity-table><thead><tr><th>Name</th><th>Reference images</th><th>Birth year</th><th>Approx. age</th><th>Photos</th><th>Faces</th><th>Profile samples</th><th>Timeline</th></tr></thead><tbody id=identityTableBody></tbody></table></div><div id=unidentifiedPeoplePanel class=identity-table-wrap style="display:none"><table class=identity-table><thead><tr><th>Anonymous group</th><th>Appearances</th><th>Photos</th><th>Faces</th><th>Timeline</th></tr></thead><tbody id=unidentifiedTableBody></tbody></table></div></section><div id=modal class=modal>''',
 ).replace(
     "</body>",
     r'''<div id=referenceDialog class=danger-dialog role=dialog aria-modal=true aria-labelledby=referenceTitle><div class="danger-box reference-viewer"><button class=close onclick=closeReferencePreview()>Close</button><h2 id=referenceTitle>Reference image</h2><img id=referenceFull alt="Identity reference image"></div></div><script>
-let identityManagementRows = [];
-function showAppTab(tabName) {
+let identityManagementRows = [], unidentifiedManagementRows = [], identityKind = 'recognized', unknownGroupFilter = '';
+function showAppTab(tabName, preservePersonFilter=false) {
   const identityActive = tabName === 'identity';
+  if (!identityActive && !preservePersonFilter) unknownGroupFilter = '';
   timelineTabButton.classList.toggle('active', !identityActive);
   identityTabButton.classList.toggle('active', identityActive);
   timelineHeader.style.display = identityActive ? 'none' : '';
@@ -111,12 +112,13 @@ function showAppTab(tabName) {
 async function loadIdentityTable() {
   identityStatus.textContent = 'Loading identities...';
   try {
-    identityManagementRows = await api('/api/identity-summaries');
-    identityStatus.textContent = `${identityManagementRows.length} identities`;
+    [identityManagementRows, unidentifiedManagementRows] = await Promise.all([api('/api/identity-summaries'),api('/api/unidentified-summaries')]);
+    identityStatus.textContent = identityKind === 'recognized' ? `${identityManagementRows.length} recognized people` : `${unidentifiedManagementRows.length} unidentified people`;
     renderIdentityTable();
   } catch (error) { identityStatus.textContent = 'Load failed: ' + error.message; }
 }
 function renderIdentityTable() {
+  if (identityKind === 'unidentified') { renderUnidentifiedTable(); return; }
   const query = identitySearch.value.trim().toLowerCase();
   identityTableBody.innerHTML = '';
   for (const identity of identityManagementRows.filter(item => item.name.toLowerCase().includes(query))) {
@@ -164,6 +166,38 @@ function renderIdentityTable() {
     identityTableBody.append(row);
   }
 }
+function showIdentityKind(kind) {
+  identityKind = kind;
+  recognizedPeopleTab.classList.toggle('active', kind === 'recognized');
+  unidentifiedPeopleTab.classList.toggle('active', kind === 'unidentified');
+  recognizedPeoplePanel.style.display = kind === 'recognized' ? '' : 'none';
+  unidentifiedPeoplePanel.style.display = kind === 'unidentified' ? '' : 'none';
+  identitySearch.placeholder = kind === 'recognized' ? 'Search identities' : 'Search unidentified groups';
+  renderIdentityTable();
+}
+function renderUnidentifiedTable() {
+  const query = identitySearch.value.trim().toLowerCase();
+  unidentifiedTableBody.innerHTML = '';
+  for (const group of unidentifiedManagementRows.filter(item => item.label.toLowerCase().includes(query))) {
+    const row = document.createElement('tr');
+    row.insertCell().textContent = group.label;
+    const referenceCell = row.insertCell();
+    const strip = document.createElement('div'); strip.className = 'reference-strip';
+    for (const faceId of group.reference_face_ids || []) {
+      const button = document.createElement('button'); button.className = 'reference-thumb';
+      const preview = document.createElement('img'); preview.loading = 'lazy'; preview.alt = group.label;
+      preview.src = `/api/unidentified-reference?id=${faceId}`; button.append(preview);
+      button.onclick = () => openUnidentifiedPreview(faceId, group.label); strip.append(button);
+    }
+    referenceCell.append(strip);
+    row.insertCell().textContent = group.photo_count;
+    row.insertCell().textContent = group.face_count;
+    const actionCell = row.insertCell(); const viewButton = document.createElement('button');
+    viewButton.textContent = 'View photos'; viewButton.onclick = () => viewUnidentifiedTimeline(group.id); actionCell.append(viewButton);
+    unidentifiedTableBody.append(row);
+  }
+  identityStatus.textContent = `${unidentifiedManagementRows.length} unidentified people`;
+}
 async function saveIdentityRow(identity, nameInput, yearInput) {
   identityStatus.textContent = 'Saving identity...';
   try {
@@ -178,10 +212,12 @@ async function saveIdentityRow(identity, nameInput, yearInput) {
   } catch (error) { identityStatus.textContent = 'Save failed: ' + error.message; }
 }
 function viewIdentityTimeline(identityId) {
+  unknownGroupFilter = '';
   person.value = String(identityId);
-  showAppTab('timeline');
+  showAppTab('timeline', true);
   load();
 }
+function viewUnidentifiedTimeline(groupId) { person.value = ''; unknownGroupFilter = String(groupId); showAppTab('timeline', true); load(); }
 function openReferencePreview(faceId, identityName) {
   referenceTitle.textContent = `${identityName} reference`;
   referenceFull.src = `/api/identity-reference?id=${faceId}`;
@@ -191,6 +227,7 @@ function closeReferencePreview() {
   referenceDialog.classList.remove('open');
   referenceFull.removeAttribute('src');
 }
+function openUnidentifiedPreview(faceId, label) { referenceTitle.textContent = label; referenceFull.src = `/api/unidentified-reference?id=${faceId}`; referenceDialog.classList.add('open'); }
 </script></body>''',
 )
 PAGE = PAGE.replace(
@@ -439,6 +476,11 @@ async function removePersonTag(identityId) {
 </script></body>''',
 )
 
+PAGE = PAGE.replace(
+    "identity_id:person.value,year:year.value",
+    "identity_id:person.value,unknown_group_id:unknownGroupFilter,year:year.value",
+)
+
 
 class GalleryHandler(BaseHTTPRequestHandler):
     token = secrets.token_urlsafe(24)
@@ -469,6 +511,7 @@ class GalleryHandler(BaseHTTPRequestHandler):
         try:
             if parsed.path == "/api/photos":
                 identity = query.get("identity_id", [""])[0]
+                unknown_group = query.get("unknown_group_id", [""])[0]
                 year = query.get("year", [""])[0]
                 self._json(catalog.gallery_photos(
                     query.get("q", [""])[0], int(identity) if identity else None,
@@ -476,6 +519,7 @@ class GalleryHandler(BaseHTTPRequestHandler):
                     int(query.get("offset", ["0"])[0]), query.get("nsfw", ["all"])[0],
                     tuple(filter(None, query.get("exclude_kinds", [""])[0].split(","))),
                     query.get("media_kind", [""])[0] or None,
+                    int(unknown_group) if unknown_group else None,
                 ))
             elif parsed.path == "/api/photo":
                 photo = catalog.gallery_photo(int(query["id"][0]))
@@ -484,8 +528,17 @@ class GalleryHandler(BaseHTTPRequestHandler):
                 self._json([{"id": x.identity_id, "name": x.name, "birth_year": x.birth_year} for x in catalog.identities()])
             elif parsed.path == "/api/identity-summaries":
                 self._json(catalog.identity_summaries())
+            elif parsed.path == "/api/unidentified-summaries":
+                self._json(catalog.unidentified_summaries())
             elif parsed.path == "/api/identity-reference":
                 preview = catalog.identity_reference_preview(int(query["id"][0]))
+                if preview is None: self.send_error(404); return
+                self.send_response(200); self.send_header("Content-Type", "image/jpeg")
+                self.send_header("Content-Length", str(len(preview)))
+                self.send_header("Cache-Control", "private, max-age=3600")
+                self.end_headers(); self.wfile.write(preview)
+            elif parsed.path == "/api/unidentified-reference":
+                preview = catalog.unidentified_reference_preview(int(query["id"][0]))
                 if preview is None: self.send_error(404); return
                 self.send_response(200); self.send_header("Content-Type", "image/jpeg")
                 self.send_header("Content-Length", str(len(preview)))
