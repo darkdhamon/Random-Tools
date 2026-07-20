@@ -348,6 +348,31 @@ class CatalogTests(unittest.TestCase):
             self.assertEqual(after_removal.identified_count, 1)  # type: ignore[union-attr]
             catalog.close()
 
+    def test_manual_person_tags_are_non_biometric_and_searchable(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            image = root / "car.jpg"
+            image.write_bytes(b"image placeholder")
+            catalog = FaceCatalog(root / "catalog.sqlite3")
+            stored = catalog.store_scan(image, [], [])
+            person_id = catalog.get_or_create_identity("Farv")
+
+            catalog.add_photo_identity_tag(stored.image_id, person_id)
+            photo = catalog.gallery_photo(stored.image_id)
+            self.assertEqual(photo["face_count"], 0)  # type: ignore[index]
+            self.assertEqual(
+                photo["face_tags"],  # type: ignore[index]
+                [{"identity_id": person_id, "name": "Farv"}],
+            )
+            matches = catalog.gallery_photos(identity_id=person_id)
+            self.assertEqual([item["id"] for item in matches], [stored.image_id])
+            identity = next(item for item in catalog.identities() if item.identity_id == person_id)
+            self.assertEqual(identity.embeddings, ())
+
+            catalog.remove_photo_identity_tag(stored.image_id, person_id)
+            self.assertEqual(catalog.gallery_photo(stored.image_id)["face_tags"], [])  # type: ignore[index]
+            catalog.close()
+
     def test_modified_image_is_not_returned_as_cached(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

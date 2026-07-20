@@ -406,6 +406,40 @@ async function executeBulkAction() {
 )
 
 
+PAGE = PAGE.replace(
+    "</style>",
+    r'''.face-entry,.person-tag{display:grid;grid-template-columns:1fr auto;gap:7px;align-items:center}.face-entry select{grid-column:1/2;margin:0!important}.face-entry .remove-face,.person-tag button{grid-column:2;background:#70242a;border-color:#bd5058}.add-person-tag{display:flex;gap:7px;margin-top:9px}.add-person-tag select{margin:0!important;flex:1}.empty-faces{padding:8px 0;color:#aaa}</style>''',
+).replace(
+    "</body>",
+    r'''<script>
+const openPhotoWithFaceTags = openPhoto;
+openPhoto = async function(id) { await openPhotoWithFaceTags(id); renderFaceTagControls(); };
+function renderFaceTagControls() {
+  const detected = current.faces || [];
+  faces.innerHTML = detected.length ? detected.map(face => `<div class="face-entry"><span>${esc(face.name||(face.unknown?'Unknown person':'Unprocessed'))}${face.art?' · artwork':''}${face.estimated_age!=null?' · age '+face.estimated_age:''}</span><select aria-label="Assign detected face" onchange="assignFace(${face.id},this.value)"><option value="">${face.name?'Reassign…':'Assign person…'}</option>${identities.map(person=>`<option value="${person.id}">${esc(person.name)}</option>`).join('')}</select><button class="remove-face" onclick="removeDetectedFace(${face.id})">Not a face / remove</button></div>`).join('') : '<div class="empty-faces">No faces detected.</div>';
+  let tagBox = document.getElementById('personTags');
+  if (!tagBox) { tagBox = document.createElement('div'); tagBox.id = 'personTags'; faces.insertAdjacentElement('afterend', tagBox); }
+  const tags = current.face_tags || [];
+  tagBox.innerHTML = '<h3>Manual person tags</h3>' + (tags.length ? tags.map(tag => `<div class="person-tag"><span>${esc(tag.name)} <span class="muted">(non-biometric tag)</span></span><button onclick="removePersonTag(${tag.identity_id})">Remove tag</button></div>`).join('') : '<div class="empty-faces">No manual person tags.</div>') + `<div class="add-person-tag"><select id="newPersonTag"><option value="">Choose a person…</option>${identities.map(person=>`<option value="${person.id}">${esc(person.name)}</option>`).join('')}</select><button onclick="addPersonTag()">Add tag</button></div>`;
+}
+async function removeDetectedFace(faceId) {
+  if (!confirm('Mark this detection as not a face and remove its person assignment?')) return;
+  await post('/api/face', {face_id:faceId,action:'remove'}); await openPhoto(current.id);
+  saveState.textContent = 'False face detection removed';
+}
+async function addPersonTag() {
+  const identityId = +document.getElementById('newPersonTag').value; if (!identityId) return;
+  await post('/api/photo-identity-tag', {image_id:current.id,identity_id:identityId}); await openPhoto(current.id);
+  saveState.textContent = 'Person tag added (not used for biometric matching)';
+}
+async function removePersonTag(identityId) {
+  await post('/api/photo-identity-tag', {image_id:current.id,identity_id:identityId,action:'remove'}); await openPhoto(current.id);
+  saveState.textContent = 'Person tag removed';
+}
+</script></body>''',
+)
+
+
 class GalleryHandler(BaseHTTPRequestHandler):
     token = secrets.token_urlsafe(24)
 
@@ -494,7 +528,19 @@ class GalleryHandler(BaseHTTPRequestHandler):
                 self._json({"ok": True})
             elif self.path == "/api/face":
                 catalog = self._catalog()
-                try: catalog.assign_face(int(body["face_id"]), int(body["identity_id"]))
+                try:
+                    action = str(body.get("action", "assign"))
+                    if action == "remove": catalog.remove_face(int(body["face_id"]))
+                    else: catalog.assign_face(int(body["face_id"]), int(body["identity_id"]))
+                finally: catalog.close()
+                self._json({"ok": True})
+            elif self.path == "/api/photo-identity-tag":
+                catalog = self._catalog()
+                try:
+                    if body.get("action") == "remove":
+                        catalog.remove_photo_identity_tag(int(body["image_id"]), int(body["identity_id"]))
+                    else:
+                        catalog.add_photo_identity_tag(int(body["image_id"]), int(body["identity_id"]))
                 finally: catalog.close()
                 self._json({"ok": True})
             elif self.path == "/api/identity":

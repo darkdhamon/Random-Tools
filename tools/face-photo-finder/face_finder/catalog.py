@@ -153,6 +153,14 @@ class FaceCatalog:
                 UNIQUE(image_id, face_index)
             );
             CREATE INDEX IF NOT EXISTS faces_identity_idx ON faces(identity_id);
+            CREATE TABLE IF NOT EXISTS photo_identity_tags (
+                image_id INTEGER NOT NULL REFERENCES images(id) ON DELETE CASCADE,
+                identity_id INTEGER NOT NULL REFERENCES identities(id) ON DELETE CASCADE,
+                created_at TEXT NOT NULL,
+                PRIMARY KEY(image_id, identity_id)
+            );
+            CREATE INDEX IF NOT EXISTS photo_identity_tags_identity_idx
+                ON photo_identity_tags(identity_id);
             CREATE TABLE IF NOT EXISTS image_metadata (
                 image_id INTEGER PRIMARY KEY REFERENCES images(id) ON DELETE CASCADE,
                 title TEXT NOT NULL DEFAULT '',
@@ -286,8 +294,11 @@ class FaceCatalog:
             pattern = f"%{search}%"
             values.extend((pattern, pattern, pattern))
         if identity_id is not None:
-            clauses.append("EXISTS (SELECT 1 FROM faces WHERE faces.image_id = images.id AND faces.identity_id = ?)")
-            values.append(identity_id)
+            clauses.append("""(EXISTS (SELECT 1 FROM faces WHERE faces.image_id = images.id
+                                      AND faces.identity_id = ?)
+                            OR EXISTS (SELECT 1 FROM photo_identity_tags tags
+                                       WHERE tags.image_id = images.id AND tags.identity_id = ?))""")
+            values.extend((identity_id, identity_id))
         if year is not None:
             clauses.append("COALESCE(images.capture_year_override, images.capture_year) = ?")
             values.append(year)
@@ -392,6 +403,16 @@ class FaceCatalog:
             {"id": int(row[0]), "name": row[1], "unknown": bool(row[2]), "art": bool(row[3]),
              "estimated_age": row[4], "unknown_group_id": row[5]}
             for row in faces
+        ]
+        photo["face_tags"] = [
+            {"identity_id": int(tag[0]), "name": tag[1]}
+            for tag in self.connection.execute(
+                """SELECT identities.id, identities.name
+                   FROM photo_identity_tags tags
+                   JOIN identities ON identities.id = tags.identity_id
+                   WHERE tags.image_id = ? ORDER BY identities.name COLLATE NOCASE""",
+                (image_id,),
+            ).fetchall()
         ]
         return photo
 
@@ -1168,6 +1189,32 @@ class FaceCatalog:
                    (SELECT COUNT(*) FROM faces WHERE faces.image_id = images.id AND identity_id IS NOT NULL)
                    WHERE id = ?""",
                 (image_row[0],),
+            )
+
+    def add_photo_identity_tag(self, image_id: int, identity_id: int) -> None:
+        """Tag a person in a photo without treating the tag as biometric evidence."""
+        with self.connection:
+            cursor = self.connection.execute(
+                """INSERT OR IGNORE INTO photo_identity_tags(image_id, identity_id, created_at)
+                   SELECT ?, ?, ?
+                   WHERE EXISTS (SELECT 1 FROM images WHERE id = ? AND missing_since IS NULL)
+                     AND EXISTS (SELECT 1 FROM identities WHERE id = ?)""",
+                (image_id, identity_id, datetime.now(timezone.utc).isoformat(), image_id, identity_id),
+            )
+        if cursor.rowcount == 0:
+            existing = self.connection.execute(
+                "SELECT 1 FROM photo_identity_tags WHERE image_id = ? AND identity_id = ?",
+                (image_id, identity_id),
+            ).fetchone()
+            if existing is None:
+                raise ValueError("Photo or identity was not found.")
+
+    def remove_photo_identity_tag(self, image_id: int, identity_id: int) -> None:
+        """Remove a non-biometric person tag from a photo."""
+        with self.connection:
+            self.connection.execute(
+                "DELETE FROM photo_identity_tags WHERE image_id = ? AND identity_id = ?",
+                (image_id, identity_id),
             )
 
     def mark_intentionally_unknown(self, face_id: int) -> int:

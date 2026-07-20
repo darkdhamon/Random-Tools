@@ -54,6 +54,9 @@ class WebGalleryUiTests(unittest.TestCase):
         self.assertIn("identity.reference_face_ids", PAGE)
         self.assertIn('/api/identity-reference?id=', PAGE)
         self.assertIn('openReferencePreview', PAGE)
+        self.assertIn('Not a face / remove', PAGE)
+        self.assertIn('Manual person tags', PAGE)
+        self.assertIn("post('/api/photo-identity-tag'", PAGE)
         self.assertNotIn("current = null;\n    await load();", PAGE)
         self.assertNotIn('>Save metadata</button>', PAGE)
 
