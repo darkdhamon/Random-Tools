@@ -430,6 +430,31 @@ class CatalogTests(unittest.TestCase):
             self.assertEqual(next(item for item in catalog.albums() if item["id"] == album_id)["photo_count"], 22)
             catalog.close()
 
+    def test_bulk_album_location_only_updates_photos_without_coordinates(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            catalog = FaceCatalog(root / "catalog.sqlite3")
+            located = root / "located.jpg"; located.write_bytes(b"located")
+            missing = root / "missing.jpg"; missing.write_bytes(b"missing")
+            located_id = catalog.store_scan(located, [], []).image_id
+            missing_id = catalog.store_scan(missing, [], []).image_id
+            album_id = catalog.create_album("Shared trip")
+            catalog.set_photo_albums(located_id, [album_id])
+            catalog.set_photo_albums(missing_id, [album_id])
+            catalog.update_gallery_metadata(
+                located_id, "", "", "", 0, None, location_name="Old place",
+                latitude=10.0, longitude=20.0,
+            )
+            self.assertEqual(catalog.set_gallery_locations(
+                [], "New place", 44.2, -93.8, album_id=album_id, only_missing=True,
+            ), 1)
+            self.assertEqual(catalog.gallery_photo(located_id)["latitude"], 10.0)  # type: ignore[index]
+            updated = catalog.gallery_photo(missing_id)
+            self.assertEqual(updated["location_name"], "New place")  # type: ignore[index]
+            self.assertEqual(updated["latitude"], 44.2)  # type: ignore[index]
+            self.assertEqual(updated["longitude"], -93.8)  # type: ignore[index]
+            catalog.close()
+
     def test_nested_geofences_and_manual_locations_can_overlap(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

@@ -422,10 +422,11 @@ PAGE = PAGE.replace(
     r'''<button id=selectModeButton onclick=toggleSelectionMode()>Select photos</button></header>''',
 ).replace(
     "</body>",
-    r'''<div id=bulkBar class=bulk-bar><strong id=selectedCount>0 selected</strong><button class=safe-button onclick="bulkSetNsfw(0)">Mark safe</button><button class=danger-button onclick="bulkSetNsfw(1)">Mark NSFW</button><button class=document-button onclick=bulkSetDocuments()>Mark documents</button><button class=archive-button onclick="requestBulkAction('archive')">Archive selected</button><button class=danger-button onclick="requestBulkAction('delete')">Delete selected</button><button onclick=clearSelection()>Done</button></div><div id=bulkDialog class=danger-dialog role=dialog aria-modal=true aria-labelledby=bulkTitle><div class=danger-box><h2 id=bulkTitle></h2><p id=bulkMessage></p><div id=archiveOptions class=archive-options><label>Existing archive<select id=archiveExisting></select></label><label>Or create a new archive<input id=archiveNew placeholder="Example: Vacation.zip"></label><div class=muted>Leave the new name blank to use the selected existing archive. The default is GeneralArchive.zip.</div></div><div id=bulkError class=save-state></div><div class=danger-actions><button onclick=cancelBulkAction()>Cancel</button><button id=bulkConfirmButton onclick=executeBulkAction()></button></div></div></div><script>
+    r'''<div id=bulkBar class=bulk-bar><strong id=selectedCount>0 selected</strong><button class=safe-button onclick="bulkSetNsfw(0)">Mark safe</button><button class=danger-button onclick="bulkSetNsfw(1)">Mark NSFW</button><button class=document-button onclick=bulkSetDocuments()>Mark documents</button><button onclick=requestBulkLocation()>Set location</button><button class=archive-button onclick="requestBulkAction('archive')">Archive selected</button><button class=danger-button onclick="requestBulkAction('delete')">Delete selected</button><button onclick=clearSelection()>Done</button></div><div id=bulkDialog class=danger-dialog role=dialog aria-modal=true aria-labelledby=bulkTitle><div class=danger-box><h2 id=bulkTitle></h2><p id=bulkMessage></p><div id=archiveOptions class=archive-options><label>Existing archive<select id=archiveExisting></select></label><label>Or create a new archive<input id=archiveNew placeholder="Example: Vacation.zip"></label><div class=muted>Leave the new name blank to use the selected existing archive. The default is GeneralArchive.zip.</div></div><div id=bulkError class=save-state></div><div class=danger-actions><button onclick=cancelBulkAction()>Cancel</button><button id=bulkConfirmButton onclick=executeBulkAction()></button></div></div></div><div id=bulkLocationDialog class=danger-dialog role=dialog aria-modal=true aria-labelledby=bulkLocationTitle><div class=danger-box><h2 id=bulkLocationTitle>Set photo location</h2><p id=bulkLocationMessage></p><label>Place name<input id=bulkLocationName placeholder="Home, Madison Lake, Minnesota…"></label><div class=location-row><label>Latitude<input id=bulkLocationLatitude type=number min=-90 max=90 step=any></label><label>Longitude<input id=bulkLocationLongitude type=number min=-180 max=180 step=any></label></div><div id=bulkLocationError class=save-state></div><div class=danger-actions><button onclick=cancelBulkLocation()>Cancel</button><button onclick=executeBulkLocation()>Set location</button></div></div></div><script>
 const selectedPhotos = new Map();
 let selectionMode = false;
 let pendingBulkAction = null;
+let bulkLocationTarget = null;
 function attachSelection(card, photo) {
   const picker = document.createElement('button');
   picker.className = 'select-box';
@@ -492,6 +493,18 @@ async function bulkSetDocuments() {
   requestAnimationFrame(() => window.scrollTo(0, Math.min(
     preservedScroll, Math.max(0, document.documentElement.scrollHeight - window.innerHeight)
   )));
+}
+function openBulkLocationDialog(target,message){
+  bulkLocationTarget=target;bulkLocationMessage.textContent=message;bulkLocationName.value='';bulkLocationLatitude.value='';bulkLocationLongitude.value='';bulkLocationError.textContent='';bulkLocationDialog.classList.add('open');bulkLocationName.focus();
+}
+function requestBulkLocation(){if(selectedPhotos.size)openBulkLocationDialog({ids:[...selectedPhotos.keys()]},`Set one location for ${selectedPhotos.size} selected photo${selectedPhotos.size===1?'':'s'}.`)}
+function requestAlbumMissingLocation(albumId){const album=albums.find(item=>item.id===albumId);openBulkLocationDialog({album_id:albumId,only_missing:true},`Set a location only for photos in “${album?.name||'this album'}” that do not already have GPS coordinates.`)}
+function cancelBulkLocation(){bulkLocationDialog.classList.remove('open');bulkLocationTarget=null}
+async function executeBulkLocation(){
+  if(!bulkLocationTarget)return;const latitude=Number(bulkLocationLatitude.value),longitude=Number(bulkLocationLongitude.value);
+  if(!Number.isFinite(latitude)||latitude < -90||latitude > 90||!Number.isFinite(longitude)||longitude < -180||longitude > 180){bulkLocationError.textContent='Enter a valid latitude and longitude.';return}
+  bulkLocationError.textContent='Saving location…';
+  try{const result=await post('/api/bulk-location',{...bulkLocationTarget,location_name:bulkLocationName.value,latitude,longitude});bulkLocationDialog.classList.remove('open');bulkLocationTarget=null;clearSelection();if(albumView.style.display==='block')await loadAlbumManagement();alert(`${result.updated} photo${result.updated===1?'':'s'} updated.`)}catch(error){bulkLocationError.textContent=`Location update failed: ${error.message}`}
 }
 async function requestBulkAction(action) {
   if (!selectedPhotos.size) return;
@@ -1146,7 +1159,7 @@ const albumNameTimers=new Map();
 function albumDateRange(album){if(!album.capture_start)return 'No photos';if(album.capture_start===album.capture_end)return album.capture_start;return `${album.capture_start} - ${album.capture_end}`}
 function renderAlbumManagement(){
   albumManagementStatus.textContent=`${albums.length} album${albums.length===1?'':'s'}`;
-  albumManagementGrid.innerHTML=albums.length?albums.map(album=>`<article class="album-management-card"><input aria-label="Album name" value="${esc(album.name)}" oninput="queueAlbumNameSave(${album.id},this)"><div id="albumSave-${album.id}" class="album-management-save"></div><div class="muted">${album.photo_count} photo${album.photo_count===1?'':'s'} | ${esc(albumDateRange(album))}</div><div class="album-management-previews">${album.preview_photo_ids.map(id=>`<img loading="lazy" src="/media?id=${id}&thumb=1" alt="">`).join('')}</div><div class="album-management-people"><strong>People (${album.people.length})</strong><div class="album-management-people-list">${album.people.length?album.people.map(identity=>`<button class="album-person-chip" onclick="viewAlbumPersonTimeline(${album.id},${identity.id})">${esc(identity.name)} (${identity.photo_count})</button>`).join(''):'<span class="muted">No identified people</span>'}</div></div><div class="album-management-actions"><button onclick="viewAlbumTimeline(${album.id})">View and edit photos</button></div></article>`).join(''):'<p>No albums yet. Create one to start organizing photos.</p>';
+  albumManagementGrid.innerHTML=albums.length?albums.map(album=>`<article class="album-management-card"><input aria-label="Album name" value="${esc(album.name)}" oninput="queueAlbumNameSave(${album.id},this)"><div id="albumSave-${album.id}" class="album-management-save"></div><div class="muted">${album.photo_count} photo${album.photo_count===1?'':'s'} | ${esc(albumDateRange(album))}</div><div class="album-management-previews">${album.preview_photo_ids.map(id=>`<img loading="lazy" src="/media?id=${id}&thumb=1${privacySuffix()}" alt="">`).join('')}</div><div class="album-management-people"><strong>People (${album.people.length})</strong><div class="album-management-people-list">${album.people.length?album.people.map(identity=>`<button class="album-person-chip" onclick="viewAlbumPersonTimeline(${album.id},${identity.id})">${esc(identity.name)} (${identity.photo_count})</button>`).join(''):'<span class="muted">No identified people</span>'}</div></div><div class="album-management-actions"><button onclick="viewAlbumTimeline(${album.id})">View and edit photos</button><button onclick="requestAlbumMissingLocation(${album.id})">Set missing locations</button></div></article>`).join(''):'<p>No albums yet. Create one to start organizing photos.</p>';
 }
 async function loadAlbumManagement(){albumManagementStatus.textContent='Loading albums...';try{await loadAlbums();renderAlbumManagement()}catch(error){albumManagementStatus.textContent='Load failed: '+error.message}}
 function queueAlbumNameSave(albumId,input){const status=document.getElementById(`albumSave-${albumId}`);status.textContent='Saving...';clearTimeout(albumNameTimers.get(albumId));albumNameTimers.set(albumId,setTimeout(()=>saveAlbumName(albumId,input),500))}
@@ -1172,6 +1185,7 @@ function toggleNsfwVisibility(){
   if(!showNsfw.checked&&contentFilter.value==='all')contentFilter.value='normal';
   closeLocationPhotoPanel();
   if(timeline.style.display!=='none')load(true);
+  else if(albumView.style.display==='block')renderAlbumManagement();
   else if(locationView.style.display==='block')loadLocationOverview();
   else if(settingsView.style.display==='block')loadLocationGroups();
 }
@@ -1480,6 +1494,19 @@ class GalleryHandler(BaseHTTPRequestHandler):
                 try:
                     updated = catalog.set_media_kind_overrides(
                         [int(value) for value in body["ids"]], body.get("value")
+                    )
+                finally: catalog.close()
+                self._json({"ok": True, "updated": updated})
+            elif self.path == "/api/bulk-location":
+                catalog = self._catalog()
+                try:
+                    album_id = body.get("album_id")
+                    updated = catalog.set_gallery_locations(
+                        [int(value) for value in body.get("ids", [])],
+                        str(body.get("location_name", "")),
+                        float(body["latitude"]), float(body["longitude"]),
+                        album_id=int(album_id) if album_id not in (None, "") else None,
+                        only_missing=bool(body.get("only_missing", False)),
                     )
                 finally: catalog.close()
                 self._json({"ok": True, "updated": updated})

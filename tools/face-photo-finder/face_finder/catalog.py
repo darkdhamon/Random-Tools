@@ -1733,6 +1733,50 @@ class FaceCatalog:
             )
         return len(unique_ids)
 
+    def set_gallery_locations(
+        self, image_ids: list[int], location_name: str, latitude: float, longitude: float,
+        *, album_id: int | None = None, only_missing: bool = False,
+    ) -> int:
+        """Set coordinates in bulk, optionally targeting only unlocated photos in an album."""
+        if not -90 <= latitude <= 90:
+            raise ValueError("Latitude must be between -90 and 90.")
+        if not -180 <= longitude <= 180:
+            raise ValueError("Longitude must be between -180 and 180.")
+        if album_id is not None:
+            rows = self.connection.execute(
+                """SELECT images.id FROM album_photos
+                   JOIN images ON images.id=album_photos.image_id
+                   LEFT JOIN image_metadata metadata ON metadata.image_id=images.id
+                   WHERE album_photos.album_id=? AND images.missing_since IS NULL
+                     AND (?=0 OR COALESCE(metadata.location_removed,0)=1
+                          OR (COALESCE(metadata.latitude,images.gps_latitude) IS NULL
+                              AND COALESCE(metadata.longitude,images.gps_longitude) IS NULL))""",
+                (album_id, int(only_missing)),
+            ).fetchall()
+            unique_ids = [int(row[0]) for row in rows]
+        else:
+            unique_ids = list(dict.fromkeys(int(image_id) for image_id in image_ids))
+            if not unique_ids:
+                raise ValueError("Select at least one photo.")
+            placeholders = ",".join("?" for _ in unique_ids)
+            found = int(self.connection.execute(
+                f"SELECT COUNT(*) FROM images WHERE id IN ({placeholders}) AND missing_since IS NULL",
+                unique_ids,
+            ).fetchone()[0])
+            if found != len(unique_ids):
+                raise ValueError("One or more selected photos were not found in the catalog.")
+        with self.connection:
+            self.connection.executemany(
+                """INSERT INTO image_metadata(image_id,location_name,latitude,longitude,location_removed)
+                   VALUES (?,?,?,?,0) ON CONFLICT(image_id) DO UPDATE SET
+                   location_name=excluded.location_name,latitude=excluded.latitude,
+                   longitude=excluded.longitude,location_removed=0""",
+                [(image_id, location_name.strip(), latitude, longitude) for image_id in unique_ids],
+            )
+        for image_id in unique_ids:
+            self._refresh_image_boundary_matches(image_id, latitude, longitude)
+        return len(unique_ids)
+
     def nsfw_score_for_path(self, path: Path) -> float | None:
         row = self.connection.execute(
             "SELECT nsfw_score FROM images WHERE path = ?", (str(path.resolve()),)
