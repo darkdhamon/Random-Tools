@@ -881,6 +881,49 @@ updateBoundaryEditor();
 </script></body>''',
 )
 
+# Keep geofence boundary editing local to the app while providing familiar
+# road, satellite, and hybrid tile layers beneath the SVG drawing surface.
+PAGE = PAGE.replace(
+    '<button onclick=undoBoundaryPoint()>Undo point</button>',
+    '<label>Base map<select id=geofenceMapStyle onchange=renderBoundaryMap()><option value=hybrid>Satellite + roads</option><option value=satellite>Satellite</option><option value=road>Road map</option></select></label><label class=map-layer-toggle><input id=geofenceRoadOverlay type=checkbox checked onchange=renderBoundaryMap()> Roads overlay</label><label class=map-layer-toggle><input id=geofenceLabelOverlay type=checkbox checked onchange=renderBoundaryMap()> Place labels</label><button onclick=undoBoundaryPoint()>Undo point</button>',
+).replace(
+    '<svg id=geofenceMap viewBox="0 0 800 360" role=img aria-label="Local geofence drawing map" onclick=addBoundaryPoint(event)></svg>',
+    '<div class=geofence-map-frame><div id=geofenceTiles class=geofence-tiles aria-hidden=true></div><svg id=geofenceMap viewBox="0 0 800 360" role=img aria-label="Geofence drawing map" onclick=addBoundaryPoint(event)></svg><div class=map-attribution>Tiles: Esri &amp; OpenStreetMap contributors</div></div>',
+).replace(
+    '</style>',
+    r'''.boundary-map-controls .map-layer-toggle{flex-direction:row;align-items:center;padding-bottom:8px}.map-layer-toggle input{width:auto;margin:0}.geofence-map-frame{position:relative;width:100%;aspect-ratio:20/9;max-height:52vh;min-height:260px;overflow:hidden;border:1px solid #5a7c83;border-radius:8px;background:#173039}.geofence-tiles,.geofence-map-frame>svg{position:absolute!important;inset:0;width:100%!important;height:100%!important;max-height:none!important;border:0!important;border-radius:0!important;background:none!important}.geofence-tiles{overflow:hidden;background:#173039}.geofence-tile{position:absolute;width:256px;height:256px;max-width:none;user-select:none;pointer-events:none}.map-attribution{position:absolute;right:4px;bottom:3px;background:#111c;color:#ddd;font-size:10px;padding:2px 4px;pointer-events:none}</style>''',
+).replace(
+    '</body>',
+    r'''<script>
+function mapTileUrl(layer,z,x,y){
+  if(layer==='road')return `https://tile.openstreetmap.org/${z}/${x}/${y}.png`;
+  const service=layer==='satellite'?'World_Imagery':layer==='roads'?'Reference/World_Transportation':'Reference/World_Boundaries_and_Places';
+  return `https://server.arcgisonline.com/ArcGIS/rest/services/${service}/MapServer/tile/${z}/${y}/${x}`;
+}
+function renderMapTiles(){
+  const centerLat=Math.max(-85.0511,Math.min(85.0511,Number(geofenceLatitude.value)||0));
+  const centerLon=Number(geofenceLongitude.value)||0,spanKm=Math.max(.1,Number(geofenceMapSpan.value)||10);
+  const zoom=Math.max(1,Math.min(19,Math.round(Math.log2(40075/(spanKm*2)*800/256))));
+  const count=2**zoom,world=256*count;
+  const centerX=(centerLon+180)/360*world;
+  const sin=Math.sin(centerLat*Math.PI/180),centerY=(.5-Math.log((1+sin)/(1-sin))/(4*Math.PI))*world;
+  const layers=geofenceMapStyle.value==='road'?['road']:['satellite'];
+  if(geofenceMapStyle.value==='hybrid'&&geofenceRoadOverlay.checked)layers.push('roads');
+  if(geofenceMapStyle.value==='hybrid'&&geofenceLabelOverlay.checked)layers.push('labels');
+  const firstX=Math.floor((centerX-400)/256),lastX=Math.floor((centerX+400)/256);
+  const firstY=Math.floor((centerY-180)/256),lastY=Math.floor((centerY+180)/256);let html='';
+  for(const layer of layers)for(let ty=firstY;ty<=lastY;ty++)for(let tx=firstX;tx<=lastX;tx++){
+    if(ty<0||ty>=count)continue;const wrappedX=((tx%count)+count)%count;
+    html+=`<img class="geofence-tile" alt="" src="${mapTileUrl(layer,zoom,wrappedX,ty)}" style="left:${tx*256-(centerX-400)}px;top:${ty*256-(centerY-180)}px">`;
+  }
+  geofenceTiles.innerHTML=html;
+}
+const renderBoundaryOverlay=renderBoundaryMap;
+renderBoundaryMap=function(){renderMapTiles();renderBoundaryOverlay()};
+requestAnimationFrame(renderBoundaryMap);
+</script></body>''',
+)
+
 
 class GalleryHandler(BaseHTTPRequestHandler):
     token = secrets.token_urlsafe(24)
