@@ -97,7 +97,7 @@ PAGE = PAGE.replace(
     r'''<section id=identityView class=identity-view><div class=identity-toolbar><h1>Identity management</h1><button id=recognizedPeopleTab class=active onclick="showIdentityKind('recognized')">Recognized people</button><button id=unidentifiedPeopleTab onclick="showIdentityKind('unidentified')">Unidentified people</button><input id=identitySearch placeholder="Search identities or IDs" oninput=renderIdentityTable()><button onclick=createNewIdentity()>New identity</button><button id=mergeIdentityButton disabled onclick=requestIdentityMerge()>Merge selected…</button><button onclick=loadIdentityTable()>Refresh</button></div><div id=identityStatus class=identity-status></div><div id=recognizedPeoplePanel class=identity-table-wrap><table class=identity-table><thead><tr><th>Select</th><th>ID</th><th>Name</th><th>Reference images</th><th>Birth year</th><th>Approx. age</th><th>Photos</th><th>Faces</th><th>Profile samples</th><th>Timeline</th></tr></thead><tbody id=identityTableBody></tbody></table></div><div id=unidentifiedPeoplePanel class=identity-table-wrap style="display:none"><table class=identity-table><thead><tr><th>Anonymous group</th><th>Appearances</th><th>Photos</th><th>Faces</th><th>Timeline</th></tr></thead><tbody id=unidentifiedTableBody></tbody></table></div></section><div id=modal class=modal>''',
 ).replace(
     "</body>",
-    r'''<div id=referenceDialog class=danger-dialog role=dialog aria-modal=true aria-labelledby=referenceTitle><div class="danger-box reference-viewer"><button class=close onclick=closeReferencePreview()>Close</button><h2 id=referenceTitle>Reference image</h2><img id=referenceFull alt="Identity reference image"></div></div><script>
+    r'''<div id=referenceDialog class=danger-dialog role=dialog aria-modal=true aria-labelledby=referenceTitle><div class="danger-box reference-viewer"><button class=close onclick=closeReferencePreview()>Close</button><h2 id=referenceTitle>Reference image</h2><img id=referenceFull alt="Identity reference image"><div class=reference-actions><button class="danger-button reference-not-face" onclick=removeCurrentReferenceFace()>Not a face</button></div></div></div><script>
 let identityManagementRows = [], unidentifiedManagementRows = [], identityKind = 'recognized', unknownGroupFilter = '', selectedIdentityIds = new Set();
 function showAppTab(tabName, preservePersonFilter=false) {
   const identityActive = tabName === 'identity';
@@ -148,10 +148,7 @@ function renderIdentityTable() {
       preview.src = `/api/identity-reference?id=${faceId}`;
       previewButton.append(preview);
       previewButton.onclick = () => openReferencePreview(faceId, identity.name);
-      const removeButton = document.createElement('button'); removeButton.className = 'reference-not-face';
-      removeButton.textContent = 'Not a face'; removeButton.title = `Remove this false face detection from ${identity.name}`;
-      removeButton.onclick = event => { event.stopPropagation(); removeReferenceFace(faceId, identity.name); };
-      referenceItem.append(previewButton, removeButton); referenceStrip.append(referenceItem);
+      referenceItem.append(previewButton); referenceStrip.append(referenceItem);
     }
     if (!referenceStrip.children.length) referenceStrip.textContent = 'No eligible references';
     referenceCell.append(referenceStrip);
@@ -226,9 +223,7 @@ function renderUnidentifiedTable() {
       const preview = document.createElement('img'); preview.loading = 'lazy'; preview.alt = group.label;
       preview.src = `/api/unidentified-reference?id=${faceId}`; button.append(preview);
       button.onclick = () => openUnidentifiedPreview(faceId, group.label);
-      const removeButton = document.createElement('button'); removeButton.className = 'reference-not-face'; removeButton.textContent = 'Not a face';
-      removeButton.onclick = event => { event.stopPropagation(); removeReferenceFace(faceId, group.label); };
-      referenceItem.append(button, removeButton); strip.append(referenceItem);
+      referenceItem.append(button); strip.append(referenceItem);
     }
     referenceCell.append(strip);
     row.insertCell().textContent = group.photo_count;
@@ -274,13 +269,18 @@ function viewUnidentifiedTimeline(groupIds) { person.value = ''; unknownGroupFil
 function openReferencePreview(faceId, identityName) {
   referenceTitle.textContent = `${identityName} reference`;
   referenceFull.src = `/api/identity-reference?id=${faceId}`;
+  referenceDialog.dataset.faceId = faceId;
+  referenceDialog.dataset.label = identityName;
   referenceDialog.classList.add('open');
 }
 function closeReferencePreview() {
   referenceDialog.classList.remove('open');
   referenceFull.removeAttribute('src');
+  delete referenceDialog.dataset.faceId;
+  delete referenceDialog.dataset.label;
 }
-function openUnidentifiedPreview(faceId, label) { referenceTitle.textContent = label; referenceFull.src = `/api/unidentified-reference?id=${faceId}`; referenceDialog.classList.add('open'); }
+function openUnidentifiedPreview(faceId, label) { referenceTitle.textContent = label; referenceFull.src = `/api/unidentified-reference?id=${faceId}`; referenceDialog.dataset.faceId = faceId; referenceDialog.dataset.label = label; referenceDialog.classList.add('open'); }
+function removeCurrentReferenceFace() { const faceId = +referenceDialog.dataset.faceId; if (faceId) removeReferenceFace(faceId, referenceDialog.dataset.label || 'selected'); }
 async function removeReferenceFace(faceId, label) {
   if (!confirm(`Mark this ${label} reference as not a face? It will be removed from the catalog and biometric matching.`)) return;
   try { await post('/api/face',{face_id:faceId,action:'remove'}); closeReferencePreview(); await loadIdentityTable(); identityStatus.textContent = 'False reference face removed'; }
@@ -630,7 +630,7 @@ PAGE = PAGE.replace(
     '<th>Anonymous group</th><th>Last seen</th><th>Appearances</th>',
 ).replace(
     '</style>',
-    r'''.reference-item{display:flex;flex-direction:column;flex:0 0 auto;width:64px}.reference-item .reference-thumb{width:64px}.reference-not-face{padding:3px 2px;margin-top:3px;background:#72242a;border-color:#b84b54;color:#fff;font-size:10px;white-space:normal}.reference-not-face:hover{background:#a72b35}</style>''',
+    r'''.reference-item{display:flex;flex:0 0 auto;width:64px}.reference-item .reference-thumb{width:64px}.reference-actions{display:flex;justify-content:center;margin-top:16px}.reference-not-face{background:#9d1c25;border-color:#ef5963;color:#fff;font-weight:700}.reference-not-face:hover{background:#c32632}</style>''',
 )
 
 
