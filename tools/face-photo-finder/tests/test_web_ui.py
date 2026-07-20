@@ -26,6 +26,12 @@ class WebGalleryUiTests(unittest.TestCase):
         self.assertIn("className='month-group'", PAGE)
         self.assertIn("className='day-group'", PAGE)
         self.assertIn("weekday:'long',month:'long',day:'numeric'", PAGE)
+        self.assertIn("c.dataset.photoId=x.id", PAGE)
+        self.assertIn("removeDeletedCard(deletedId)", PAGE)
+        self.assertIn("offset = Math.max(0, offset - 1)", PAGE)
+        self.assertIn("deleteScrollPosition = window.scrollY", PAGE)
+        self.assertIn("requestAnimationFrame(() => window.scrollTo", PAGE)
+        self.assertNotIn("current = null;\n    await load();", PAGE)
         self.assertNotIn('>Save metadata</button>', PAGE)
 
 

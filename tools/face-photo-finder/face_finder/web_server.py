@@ -68,6 +68,7 @@ PAGE = PAGE.replace(
     "</body>",
     r'''<div id=deleteDialog class=danger-dialog role=dialog aria-modal=true aria-labelledby=deleteTitle><div class=danger-box><h2 id=deleteTitle>Danger: permanently delete photo?</h2><p>This will permanently delete <strong id=deleteName></strong> from your computer and remove it from the catalog.</p><p><strong>This action cannot be undone.</strong></p><div id=deleteError class=save-state></div><div class=danger-actions><button onclick=cancelDelete()>Cancel</button><button id=confirmDeleteButton class=danger-button onclick=confirmDelete()>Delete permanently</button></div></div></div><script>
 const openPhotoWithDelete = openPhoto;
+let deleteScrollPosition = 0;
 openPhoto = async function(id) {
   await openPhotoWithDelete(id);
   let zone = document.getElementById('dangerZone');
@@ -82,6 +83,7 @@ openPhoto = async function(id) {
 function requestDelete() {
   if (!current) return;
   clearTimeout(saveTimer);
+  deleteScrollPosition = window.scrollY;
   deleteName.textContent = current.name;
   deleteError.textContent = '';
   confirmDeleteButton.disabled = false;
@@ -90,6 +92,7 @@ function requestDelete() {
 function cancelDelete() { deleteDialog.classList.remove('open'); }
 async function confirmDelete() {
   if (!current) return;
+  const deletedId = current.id;
   confirmDeleteButton.disabled = true;
   deleteError.textContent = 'Deleting...';
   try {
@@ -97,11 +100,26 @@ async function confirmDelete() {
     deleteDialog.classList.remove('open');
     modal.style.display = 'none';
     current = null;
-    await load();
+    removeDeletedCard(deletedId);
+    requestAnimationFrame(() => window.scrollTo(0, Math.min(
+      deleteScrollPosition, Math.max(0, document.documentElement.scrollHeight - window.innerHeight)
+    )));
   } catch (error) {
     deleteError.textContent = 'Delete failed: ' + error.message;
     confirmDeleteButton.disabled = false;
   }
+}
+function removeDeletedCard(id) {
+  const card = document.querySelector(`.card[data-photo-id="${id}"]`);
+  if (!card) return;
+  const day = card.closest('.day-group');
+  const month = card.closest('.month-group');
+  const yearSection = card.closest('.year-group');
+  card.remove();
+  offset = Math.max(0, offset - 1);
+  if (day && !day.querySelector('.card')) day.remove();
+  if (month && !month.querySelector('.card')) month.remove();
+  if (yearSection && !yearSection.querySelector('.card')) yearSection.remove();
 }
 </script></body>''',
 )
@@ -119,6 +137,9 @@ PAGE = PAGE.replace(
     "const infiniteObserver=new IntersectionObserver(entries=>{if(entries.some(entry=>entry.isIntersecting))load(false)},{rootMargin:'600px 0px'});infiniteObserver.observe(more);people().then(load);</script>",
 )
 PAGE = PAGE.replace(
+    "c.className='card';c.innerHTML=",
+    "c.className='card';c.dataset.photoId=x.id;c.innerHTML=",
+).replace(
     "</style>",
     r'''.month-group{margin:0 0 28px}.month-group>h3{margin:12px 0;padding:8px 12px;background:#18363c;border-left:4px solid #49aeb9;border-radius:5px}.day-group{margin:0 0 20px}.day-group>h4{margin:10px 0 8px;color:#9de9f1;font-size:14px}</style>''',
 ).replace(
