@@ -442,9 +442,11 @@ class CatalogTests(unittest.TestCase):
             self.assertEqual([item["id"] for item in catalog.gallery_photos(year=2018)], [stored.image_id])
             self.assertEqual([item["id"] for item in catalog.gallery_photos(nsfw_filter="nsfw")], [stored.image_id])
             self.assertEqual(catalog.gallery_photos(nsfw_filter="safe"), [])
-            self.assertEqual(
-                [item["id"] for item in catalog.gallery_photos(nsfw_filter="review")],
-                [stored.image_id],
+            self.assertEqual(catalog.gallery_photos(nsfw_filter="review"), [])
+            self.assertEqual(catalog.gallery_photos(nsfw_filter="conflict"), [])
+            catalog.update_gallery_metadata(
+                stored.image_id, "Summer trip", "At the lake", "family, vacation", 5, 2018,
+                None, "document", "Lake Michigan", 43.0, -87.0,
             )
             self.assertEqual(
                 [item["id"] for item in catalog.gallery_photos(nsfw_filter="conflict")],
