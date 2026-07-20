@@ -93,11 +93,11 @@ PAGE = PAGE.replace(
     '<div id=timelineMore style="text-align:center;padding:15px"><button id=more',
 ).replace(
     "<div id=modal class=modal>",
-    r'''<section id=identityView class=identity-view><div class=identity-toolbar><h1>Identity management</h1><button id=recognizedPeopleTab class=active onclick="showIdentityKind('recognized')">Recognized people</button><button id=unidentifiedPeopleTab onclick="showIdentityKind('unidentified')">Unidentified people</button><input id=identitySearch placeholder="Search identities" oninput=renderIdentityTable()><button onclick=loadIdentityTable()>Refresh</button></div><div id=identityStatus class=identity-status></div><div id=recognizedPeoplePanel class=identity-table-wrap><table class=identity-table><thead><tr><th>Name</th><th>Reference images</th><th>Birth year</th><th>Approx. age</th><th>Photos</th><th>Faces</th><th>Profile samples</th><th>Timeline</th></tr></thead><tbody id=identityTableBody></tbody></table></div><div id=unidentifiedPeoplePanel class=identity-table-wrap style="display:none"><table class=identity-table><thead><tr><th>Anonymous group</th><th>Appearances</th><th>Photos</th><th>Faces</th><th>Timeline</th></tr></thead><tbody id=unidentifiedTableBody></tbody></table></div></section><div id=modal class=modal>''',
+    r'''<section id=identityView class=identity-view><div class=identity-toolbar><h1>Identity management</h1><button id=recognizedPeopleTab class=active onclick="showIdentityKind('recognized')">Recognized people</button><button id=unidentifiedPeopleTab onclick="showIdentityKind('unidentified')">Unidentified people</button><input id=identitySearch placeholder="Search identities or IDs" oninput=renderIdentityTable()><button onclick=createNewIdentity()>New identity</button><button id=mergeIdentityButton disabled onclick=requestIdentityMerge()>Merge selected…</button><button onclick=loadIdentityTable()>Refresh</button></div><div id=identityStatus class=identity-status></div><div id=recognizedPeoplePanel class=identity-table-wrap><table class=identity-table><thead><tr><th>Select</th><th>ID</th><th>Name</th><th>Reference images</th><th>Birth year</th><th>Approx. age</th><th>Photos</th><th>Faces</th><th>Profile samples</th><th>Timeline</th></tr></thead><tbody id=identityTableBody></tbody></table></div><div id=unidentifiedPeoplePanel class=identity-table-wrap style="display:none"><table class=identity-table><thead><tr><th>Anonymous group</th><th>Appearances</th><th>Photos</th><th>Faces</th><th>Timeline</th></tr></thead><tbody id=unidentifiedTableBody></tbody></table></div></section><div id=modal class=modal>''',
 ).replace(
     "</body>",
     r'''<div id=referenceDialog class=danger-dialog role=dialog aria-modal=true aria-labelledby=referenceTitle><div class="danger-box reference-viewer"><button class=close onclick=closeReferencePreview()>Close</button><h2 id=referenceTitle>Reference image</h2><img id=referenceFull alt="Identity reference image"></div></div><script>
-let identityManagementRows = [], unidentifiedManagementRows = [], identityKind = 'recognized', unknownGroupFilter = '';
+let identityManagementRows = [], unidentifiedManagementRows = [], identityKind = 'recognized', unknownGroupFilter = '', selectedIdentityIds = new Set();
 function showAppTab(tabName, preservePersonFilter=false) {
   const identityActive = tabName === 'identity';
   if (!identityActive && !preservePersonFilter) unknownGroupFilter = '';
@@ -121,8 +121,13 @@ function renderIdentityTable() {
   if (identityKind === 'unidentified') { renderUnidentifiedTable(); return; }
   const query = identitySearch.value.trim().toLowerCase();
   identityTableBody.innerHTML = '';
-  for (const identity of identityManagementRows.filter(item => item.name.toLowerCase().includes(query))) {
+  for (const identity of identityManagementRows.filter(item => item.name.toLowerCase().includes(query) || String(item.id).includes(query))) {
     const row = document.createElement('tr');
+    const selectCell = row.insertCell(); const selector = document.createElement('input'); selector.type = 'checkbox';
+    selector.checked = selectedIdentityIds.has(identity.id); selector.setAttribute('aria-label', `Select ${identity.name} identity ${identity.id}`);
+    selector.onchange = () => { selector.checked ? selectedIdentityIds.add(identity.id) : selectedIdentityIds.delete(identity.id); updateIdentityMergeButton(); };
+    selectCell.append(selector);
+    row.insertCell().textContent = identity.id;
     const nameCell = row.insertCell();
     const nameInput = document.createElement('input');
     nameInput.className = 'name-input';
@@ -166,13 +171,33 @@ function renderIdentityTable() {
     identityTableBody.append(row);
   }
 }
+function updateIdentityMergeButton() { mergeIdentityButton.disabled = selectedIdentityIds.size < 2; mergeIdentityButton.textContent = selectedIdentityIds.size < 2 ? 'Merge selected…' : `Merge ${selectedIdentityIds.size} selected…`; }
+async function createNewIdentity() {
+  const name = prompt('Name for the new identity (duplicate names are allowed):'); if (!name || !name.trim()) return;
+  try { await post('/api/create-identity',{name}); await people(true); await loadIdentityTable(); identityStatus.textContent = `Created a distinct identity named ${name.trim()}`; }
+  catch (error) { identityStatus.textContent = 'Create failed: ' + error.message; }
+}
+function requestIdentityMerge() {
+  const selected = identityManagementRows.filter(item => selectedIdentityIds.has(item.id)); if (selected.length < 2) return;
+  mergeIdentityTarget.innerHTML = selected.map(item => `<option value="${item.id}">${esc(item.name)} (#${item.id})</option>`).join('');
+  mergeIdentitySummary.textContent = `Merge ${selected.length} identities. All faces and manual person tags will move to the identity you keep; the other identity IDs will be permanently removed.`;
+  mergeIdentityError.textContent = ''; mergeIdentityDialog.classList.add('open');
+}
+function cancelIdentityMerge() { mergeIdentityDialog.classList.remove('open'); }
+async function confirmIdentityMerge() {
+  confirmIdentityMergeButton.disabled = true; mergeIdentityError.textContent = 'Merging…';
+  try { await post('/api/merge-identities',{identity_ids:[...selectedIdentityIds],target_identity_id:+mergeIdentityTarget.value}); selectedIdentityIds.clear(); cancelIdentityMerge(); await people(true); await loadIdentityTable(); identityStatus.textContent = 'Identities merged successfully'; }
+  catch (error) { mergeIdentityError.textContent = 'Merge failed: ' + error.message; }
+  finally { confirmIdentityMergeButton.disabled = false; updateIdentityMergeButton(); }
+}
 function showIdentityKind(kind) {
   identityKind = kind;
   recognizedPeopleTab.classList.toggle('active', kind === 'recognized');
   unidentifiedPeopleTab.classList.toggle('active', kind === 'unidentified');
   recognizedPeoplePanel.style.display = kind === 'recognized' ? '' : 'none';
   unidentifiedPeoplePanel.style.display = kind === 'unidentified' ? '' : 'none';
-  identitySearch.placeholder = kind === 'recognized' ? 'Search identities' : 'Search unidentified groups';
+  mergeIdentityButton.style.display = kind === 'recognized' ? '' : 'none';
+  identitySearch.placeholder = kind === 'recognized' ? 'Search identities or IDs' : 'Search unidentified groups';
   renderIdentityTable();
 }
 function renderUnidentifiedTable() {
@@ -483,6 +508,23 @@ PAGE = PAGE.replace(
 )
 
 PAGE = PAGE.replace(
+    "async function people(){identities=await api('/api/identities');for(let p of identities)",
+    "async function people(refresh=false){identities=await api('/api/identities');if(refresh){person.innerHTML='<option value=\"\">All people</option>'}for(let p of identities)",
+).replace(
+    "o.textContent=p.name;",
+    "o.textContent=`${p.name} (#${p.id})`;",
+).replace(
+    "${esc(p.name)}</option>",
+    "${esc(p.name)} (#${p.id})</option>",
+).replace(
+    "${esc(person.name)}</option>",
+    "${esc(person.name)} (#${person.id})</option>",
+).replace(
+    "</body>",
+    r'''<div id=mergeIdentityDialog class=danger-dialog role=dialog aria-modal=true aria-labelledby=mergeIdentityTitle><div class=danger-box><h2 id=mergeIdentityTitle>Merge identities?</h2><p id=mergeIdentitySummary></p><label>Identity to keep<select id=mergeIdentityTarget></select></label><p><strong>The removed identity IDs cannot be restored.</strong></p><div id=mergeIdentityError class=save-state></div><div class=danger-actions><button onclick=cancelIdentityMerge()>Cancel</button><button id=confirmIdentityMergeButton class=danger-button onclick=confirmIdentityMerge()>Merge identities</button></div></div></div></body>''',
+)
+
+PAGE = PAGE.replace(
     '<div class=viewer><img id=full>',
     '<div class=viewer><img id=full><div id=faceReticleLayer class=face-reticle-layer></div>',
 ).replace(
@@ -648,6 +690,20 @@ class GalleryHandler(BaseHTTPRequestHandler):
                     )
                 finally: catalog.close()
                 self._json({"ok": True})
+            elif self.path == "/api/create-identity":
+                catalog = self._catalog()
+                try: identity_id = catalog.create_identity(str(body.get("name", "")))
+                finally: catalog.close()
+                self._json({"ok": True, "id": identity_id})
+            elif self.path == "/api/merge-identities":
+                catalog = self._catalog()
+                try:
+                    faces, tags = catalog.merge_identities(
+                        [int(value) for value in body["identity_ids"]],
+                        int(body["target_identity_id"]),
+                    )
+                finally: catalog.close()
+                self._json({"ok": True, "faces": faces, "tags": tags})
             elif self.path == "/api/delete-photo":
                 catalog = self._catalog()
                 try: deleted = catalog.delete_photo(int(body["id"]))

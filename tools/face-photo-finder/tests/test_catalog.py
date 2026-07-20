@@ -220,6 +220,35 @@ class CatalogTests(unittest.TestCase):
             self.assertNotIn("Alex Smit", [item.name for item in catalog.identities()])
             catalog.close()
 
+    def test_duplicate_names_have_distinct_ids_and_can_be_merged(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            first_image = root / "first.jpg"; first_image.write_bytes(b"first")
+            second_image = root / "second.jpg"; second_image.write_bytes(b"second")
+            catalog_path = root / "catalog.sqlite3"
+            catalog = FaceCatalog(catalog_path)
+            keep_id = catalog.create_identity("Same Name", 1980)
+            merge_id = catalog.create_identity("Same Name", 1990)
+            self.assertNotEqual(keep_id, merge_id)
+            first = catalog.store_scan(first_image, [np.array([1.0, 0.0], dtype=np.float32)], [keep_id])
+            second = catalog.store_scan(second_image, [np.array([0.0, 1.0], dtype=np.float32)], [merge_id])
+            catalog.add_photo_identity_tag(first.image_id, keep_id)
+            catalog.add_photo_identity_tag(first.image_id, merge_id)
+
+            moved_faces, moved_tags = catalog.merge_identities([keep_id, merge_id], keep_id)
+            self.assertEqual(moved_faces, 1)
+            self.assertEqual(moved_tags, 1)
+            identities = catalog.identities()
+            self.assertEqual([(item.identity_id, item.name, item.birth_year) for item in identities], [(keep_id, "Same Name", 1980)])
+            self.assertEqual(catalog.faces_for_image(second.image_id)[0].identity_id, keep_id)
+            self.assertEqual(catalog.gallery_photo(first.image_id)["face_tags"], [{"identity_id": keep_id, "name": "Same Name"}])  # type: ignore[index]
+            catalog.close()
+
+            reopened = FaceCatalog(catalog_path)
+            another_id = reopened.create_identity("Same Name")
+            self.assertNotEqual(another_id, keep_id)
+            reopened.close()
+
     def test_art_face_is_linked_to_identity_but_excluded_from_profile(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

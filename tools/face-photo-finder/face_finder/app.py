@@ -50,6 +50,20 @@ from .scanner import (
 from .settings import AppSettings, load_settings, save_settings
 
 
+def identity_display_label(identity: KnownIdentity) -> str:
+    return f"{identity.name} (#{identity.identity_id})"
+
+
+def identity_id_from_label(value: str) -> int | None:
+    suffix = value.rsplit(" (#", 1)
+    if len(suffix) != 2 or not suffix[1].endswith(")"):
+        return None
+    try:
+        return int(suffix[1][:-1])
+    except ValueError:
+        return None
+
+
 def autocomplete_matches(query: str, options: list[str]) -> list[str]:
     normalized = query.casefold().strip()
     if not normalized:
@@ -421,7 +435,7 @@ class FaceFinderApp(tk.Tk):
         if names is None:
             catalog = FaceCatalog(default_catalog_path())
             try:
-                names = [identity.name for identity in catalog.identities()]
+                names = [identity_display_label(identity) for identity in catalog.identities()]
             finally:
                 catalog.close()
         current = self.known_person_var.get()
@@ -539,7 +553,13 @@ class FaceFinderApp(tk.Tk):
             catalog = FaceCatalog(default_catalog_path())
             known_identities = catalog.identities()
             unknown_groups = catalog.unknown_groups()
-            selected_identity = next((item for item in known_identities if item.name == known_person), None)
+            known_person_id = identity_id_from_label(known_person)
+            selected_identity = next(
+                (item for item in known_identities
+                 if item.identity_id == known_person_id
+                 or (known_person_id is None and item.name == known_person)),
+                None,
+            )
             catalog_all = not reference_paths and selected_identity is None
             target_identity_id = selected_identity.identity_id if selected_identity else None
             fallback_references: list[np.ndarray] = []
@@ -963,7 +983,7 @@ class FaceFinderApp(tk.Tk):
                     error = str(exc)
                 self._on_progress(ScanProgress(index, len(files), path, match, error))
             results.sort(key=lambda item: (-item.score, str(item.path).casefold()))
-            self.events.put(("identity_names", [item.name for item in catalog.identities()]))
+            self.events.put(("identity_names", [identity_display_label(item) for item in catalog.identities()]))
             self.events.put(("done", results))
         except Exception as exc:
             if self.cancel_event.is_set():
@@ -1368,7 +1388,7 @@ class FaceFinderApp(tk.Tk):
             target_id = catalog.get_or_create_identity(target_name)
             changed = catalog.reassign_faces([int(item) for item in items], target_id)
             removed = catalog.remove_identity_if_unused(source.identity_id)
-            self._refresh_known_people([item.name for item in catalog.identities()])
+            self._refresh_known_people([identity_display_label(item) for item in catalog.identities()])
             target_var.set(target_name)
             refresh_identity_lists(target_name if removed else source.name)
             self.status_var.set(f"Reassigned {changed} face/photo assignment(s) to {target_name}.")

@@ -177,6 +177,31 @@ class FaceCatalog:
             );
             """
         )
+        identity_indexes = self.connection.execute("PRAGMA index_list(identities)").fetchall()
+        if any(bool(row[2]) and row[3] == "u" for row in identity_indexes):
+            # Early catalogs made names unique. IDs are the durable identity key, so rebuild
+            # only this parent table while foreign-key enforcement is temporarily paused.
+            self.connection.commit()
+            self.connection.execute("PRAGMA foreign_keys = OFF")
+            try:
+                with self.connection:
+                    self.connection.execute(
+                        """CREATE TABLE identities_without_unique_name (
+                               id INTEGER PRIMARY KEY, name TEXT NOT NULL COLLATE NOCASE,
+                               created_at TEXT NOT NULL, birth_year INTEGER)"""
+                    )
+                    self.connection.execute(
+                        """INSERT INTO identities_without_unique_name(id, name, created_at, birth_year)
+                           SELECT id, name, created_at, birth_year FROM identities"""
+                    )
+                    self.connection.execute("DROP TABLE identities")
+                    self.connection.execute(
+                        "ALTER TABLE identities_without_unique_name RENAME TO identities"
+                    )
+            finally:
+                self.connection.execute("PRAGMA foreign_keys = ON")
+            if self.connection.execute("PRAGMA foreign_key_check").fetchone() is not None:
+                raise sqlite3.DatabaseError("Identity schema migration failed foreign-key validation.")
         columns = {row[1] for row in self.connection.execute("PRAGMA table_info(faces)")}
         identity_columns = {row[1] for row in self.connection.execute("PRAGMA table_info(identities)")}
         image_columns = {row[1] for row in self.connection.execute("PRAGMA table_info(images)")}
@@ -834,11 +859,6 @@ class FaceCatalog:
             raise ValueError("An identity name is required.")
         if birth_year is not None and not 1900 <= birth_year <= datetime.now().year:
             raise ValueError("Birth year must be between 1900 and the current year.")
-        existing = self.connection.execute(
-            "SELECT id FROM identities WHERE name = ? COLLATE NOCASE", (clean_name,)
-        ).fetchone()
-        if existing is not None and int(existing[0]) != identity_id:
-            raise ValueError("Another identity already uses that name.")
         with self.connection:
             cursor = self.connection.execute(
                 "UPDATE identities SET name = ?, birth_year = ? WHERE id = ?",
@@ -915,6 +935,53 @@ class FaceCatalog:
         )
         self.connection.commit()
         return int(cursor.lastrowid)
+
+    def create_identity(self, name: str, birth_year: int | None = None) -> int:
+        """Create a distinct identity even when another profile uses the same display name."""
+        clean_name = " ".join(name.split())
+        if not clean_name:
+            raise ValueError("An identity name is required.")
+        if birth_year is not None and not 1900 <= birth_year <= datetime.now().year:
+            raise ValueError("Birth year must be between 1900 and the current year.")
+        cursor = self.connection.execute(
+            "INSERT INTO identities(name, created_at, birth_year) VALUES (?, ?, ?)",
+            (clean_name, datetime.now(timezone.utc).isoformat(), birth_year),
+        )
+        self.connection.commit()
+        return int(cursor.lastrowid)
+
+    def merge_identities(self, identity_ids: list[int], target_identity_id: int) -> tuple[int, int]:
+        """Merge selected profiles into one stable target identity."""
+        selected = list(dict.fromkeys(int(value) for value in identity_ids))
+        if target_identity_id not in selected or len(selected) < 2:
+            raise ValueError("Select at least two identities and choose one selected identity to keep.")
+        placeholders = ",".join("?" for _ in selected)
+        existing = self.connection.execute(
+            f"SELECT id FROM identities WHERE id IN ({placeholders})", selected
+        ).fetchall()
+        if len(existing) != len(selected):
+            raise ValueError("One or more selected identities no longer exist.")
+        sources = [value for value in selected if value != target_identity_id]
+        source_placeholders = ",".join("?" for _ in sources)
+        with self.connection:
+            face_cursor = self.connection.execute(
+                f"UPDATE faces SET identity_id = ? WHERE identity_id IN ({source_placeholders})",
+                (target_identity_id, *sources),
+            )
+            self.connection.execute(
+                f"""INSERT OR IGNORE INTO photo_identity_tags(image_id, identity_id, created_at)
+                    SELECT image_id, ?, created_at FROM photo_identity_tags
+                    WHERE identity_id IN ({source_placeholders})""",
+                (target_identity_id, *sources),
+            )
+            tag_cursor = self.connection.execute(
+                f"DELETE FROM photo_identity_tags WHERE identity_id IN ({source_placeholders})",
+                sources,
+            )
+            self.connection.execute(
+                f"DELETE FROM identities WHERE id IN ({source_placeholders})", sources
+            )
+        return int(face_cursor.rowcount), int(tag_cursor.rowcount)
 
     def identity_assignments(self, identity_id: int) -> list[IdentityAssignment]:
         rows = self.connection.execute(
@@ -1071,7 +1138,9 @@ class FaceCatalog:
         with self.connection:
             cursor = self.connection.execute(
                 """DELETE FROM identities WHERE id = ?
-                   AND NOT EXISTS (SELECT 1 FROM faces WHERE identity_id = identities.id)""",
+                   AND NOT EXISTS (SELECT 1 FROM faces WHERE identity_id = identities.id)
+                   AND NOT EXISTS (SELECT 1 FROM photo_identity_tags
+                                   WHERE identity_id = identities.id)""",
                 (identity_id,),
             )
         return cursor.rowcount > 0
