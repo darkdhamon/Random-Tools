@@ -179,7 +179,7 @@ PAGE = PAGE.replace(
 )
 PAGE = PAGE.replace(
     "</style>",
-    r'''.card{position:relative}.select-box{display:none;position:absolute;z-index:1;top:9px;left:9px;width:34px;height:34px;border-radius:50%;background:#171717dd;border:2px solid #ddd;font-size:20px;line-height:1}.selection-mode .select-box{display:block}.card.selected{outline:4px solid #5de0ee;outline-offset:-4px}.card.selected .select-box{display:block;background:#168594;border-color:#baf8ff}.bulk-bar{display:none;position:fixed;z-index:12;left:50%;bottom:18px;transform:translateX(-50%);align-items:center;gap:9px;background:#152a2e;border:1px solid #55c9d6;border-radius:10px;padding:10px 14px;box-shadow:0 8px 30px #000}.selection-mode .bulk-bar{display:flex}.archive-button{background:#17627a;border-color:#56bad5;font-weight:700}.archive-options{display:none;background:#162529;padding:12px;border-radius:7px}.archive-options label{display:block;margin:8px 0}.archive-options select,.archive-options input{display:block;width:100%;box-sizing:border-box;margin-top:5px}</style>''',
+    r'''.card{position:relative}.select-box{display:none;position:absolute;z-index:1;top:9px;left:9px;width:34px;height:34px;border-radius:50%;background:#171717dd;border:2px solid #ddd;font-size:20px;line-height:1}.selection-mode .select-box{display:block}.card.selected{outline:4px solid #5de0ee;outline-offset:-4px}.card.selected .select-box{display:block;background:#168594;border-color:#baf8ff}.bulk-bar{display:none;position:fixed;z-index:12;left:50%;bottom:18px;transform:translateX(-50%);align-items:center;justify-content:center;flex-wrap:wrap;max-width:calc(100vw - 36px);gap:9px;background:#152a2e;border:1px solid #55c9d6;border-radius:10px;padding:10px 14px;box-shadow:0 8px 30px #000}.selection-mode .bulk-bar{display:flex}.archive-button{background:#17627a;border-color:#56bad5;font-weight:700}.safe-button{background:#176b50;border-color:#55d3a5;font-weight:700}.archive-options{display:none;background:#162529;padding:12px;border-radius:7px}.archive-options label{display:block;margin:8px 0}.archive-options select,.archive-options input{display:block;width:100%;box-sizing:border-box;margin-top:5px}</style>''',
 ).replace(
     "c.onclick=()=>openPhoto(x.id);",
     "attachSelection(c,x);",
@@ -188,7 +188,7 @@ PAGE = PAGE.replace(
     r'''<button id=selectModeButton onclick=toggleSelectionMode()>Select photos</button></header>''',
 ).replace(
     "</body>",
-    r'''<div id=bulkBar class=bulk-bar><strong id=selectedCount>0 selected</strong><button class=archive-button onclick="requestBulkAction('archive')">Archive selected</button><button class=danger-button onclick="requestBulkAction('delete')">Delete selected</button><button onclick=clearSelection()>Done</button></div><div id=bulkDialog class=danger-dialog role=dialog aria-modal=true aria-labelledby=bulkTitle><div class=danger-box><h2 id=bulkTitle></h2><p id=bulkMessage></p><div id=archiveOptions class=archive-options><label>Existing archive<select id=archiveExisting></select></label><label>Or create a new archive<input id=archiveNew placeholder="Example: Vacation.zip"></label><div class=muted>Leave the new name blank to use the selected existing archive. The default is GeneralArchive.zip.</div></div><div id=bulkError class=save-state></div><div class=danger-actions><button onclick=cancelBulkAction()>Cancel</button><button id=bulkConfirmButton onclick=executeBulkAction()></button></div></div></div><script>
+    r'''<div id=bulkBar class=bulk-bar><strong id=selectedCount>0 selected</strong><button class=safe-button onclick="bulkSetNsfw(0)">Mark safe</button><button class=danger-button onclick="bulkSetNsfw(1)">Mark NSFW</button><button class=archive-button onclick="requestBulkAction('archive')">Archive selected</button><button class=danger-button onclick="requestBulkAction('delete')">Delete selected</button><button onclick=clearSelection()>Done</button></div><div id=bulkDialog class=danger-dialog role=dialog aria-modal=true aria-labelledby=bulkTitle><div class=danger-box><h2 id=bulkTitle></h2><p id=bulkMessage></p><div id=archiveOptions class=archive-options><label>Existing archive<select id=archiveExisting></select></label><label>Or create a new archive<input id=archiveNew placeholder="Example: Vacation.zip"></label><div class=muted>Leave the new name blank to use the selected existing archive. The default is GeneralArchive.zip.</div></div><div id=bulkError class=save-state></div><div class=danger-actions><button onclick=cancelBulkAction()>Cancel</button><button id=bulkConfirmButton onclick=executeBulkAction()></button></div></div></div><script>
 const selectedPhotos = new Map();
 let selectionMode = false;
 let pendingBulkAction = null;
@@ -226,6 +226,22 @@ function clearSelection() {
   document.body.classList.remove('selection-mode');
   selectModeButton.textContent = 'Select photos';
   updateSelectedCount();
+}
+async function bulkSetNsfw(value) {
+  if (!selectedPhotos.size) return;
+  const ids = [...selectedPhotos.keys()];
+  const preservedScroll = window.scrollY;
+  try { await post('/api/nsfw-override', {ids, value}); }
+  catch (error) { alert(`NSFW update failed: ${error.message}`); return; }
+  const filter = contentFilter.value;
+  const remove = filter === 'conflict'
+    || (value === 0 && filter === 'nsfw')
+    || (value === 1 && hideNsfw.checked && !['all','nsfw'].includes(filter));
+  if (remove) ids.forEach(removeDeletedCard);
+  clearSelection();
+  requestAnimationFrame(() => window.scrollTo(0, Math.min(
+    preservedScroll, Math.max(0, document.documentElement.scrollHeight - window.innerHeight)
+  )));
 }
 async function requestBulkAction(action) {
   if (!selectedPhotos.size) return;
@@ -371,6 +387,14 @@ class GalleryHandler(BaseHTTPRequestHandler):
                 try: deleted = catalog.delete_photos([int(value) for value in body["ids"]])
                 finally: catalog.close()
                 self._json({"ok": True, "deleted": len(deleted)})
+            elif self.path == "/api/nsfw-override":
+                catalog = self._catalog()
+                try:
+                    updated = catalog.set_nsfw_overrides(
+                        [int(value) for value in body["ids"]], int(body["value"])
+                    )
+                finally: catalog.close()
+                self._json({"ok": True, "updated": updated})
             elif self.path == "/api/archive-photos":
                 catalog = self._catalog()
                 try:

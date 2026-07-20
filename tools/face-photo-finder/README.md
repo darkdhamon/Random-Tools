@@ -27,6 +27,7 @@ A private, local desktop tool that recursively scans a folder and finds photos l
 - detects screenshots and document/receipt-style images locally, with independent hide filters, type searches, and manual corrections;
 - presents the web gallery as a newest-first year/month/day timeline and automatically saves metadata edits after typing pauses;
 - supports multi-select deletion with a danger confirmation and lets archived selections target an existing `.zip`/`.hide` archive or a newly named `.zip`, defaulting to `Hidden Pictures/GeneralArchive.zip`;
+- applies **Mark safe** or **Mark NSFW** decisions to multiple selected gallery photos at once;
 - extracts EXIF GPS coordinates, supports editable place names and coordinates, and shows an offline map preview with an explicit OpenStreetMap link;
 - searches by a previously learned person from the **Known person** list without requiring another reference photo;
 - autocompletes identity names case-insensitively while still allowing new names;

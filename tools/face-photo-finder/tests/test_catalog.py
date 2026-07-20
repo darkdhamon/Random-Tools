@@ -444,14 +444,13 @@ class CatalogTests(unittest.TestCase):
             self.assertEqual(catalog.gallery_photos(nsfw_filter="safe"), [])
             self.assertEqual(catalog.gallery_photos(nsfw_filter="review"), [])
             self.assertEqual(catalog.gallery_photos(nsfw_filter="conflict"), [])
-            catalog.update_gallery_metadata(
-                stored.image_id, "Summer trip", "At the lake", "family, vacation", 5, 2018,
-                None, "document", "Lake Michigan", 43.0, -87.0,
-            )
+            self.assertEqual(catalog.set_nsfw_overrides([stored.image_id], None), 1)
             self.assertEqual(
                 [item["id"] for item in catalog.gallery_photos(nsfw_filter="conflict")],
                 [stored.image_id],
             )
+            self.assertEqual(catalog.set_nsfw_overrides([stored.image_id], 0), 1)
+            self.assertEqual(catalog.gallery_photos(nsfw_filter="conflict"), [])
             self.assertEqual(catalog.gallery_photos(excluded_kinds=("document",)), [])
             self.assertEqual(
                 [item["id"] for item in catalog.gallery_photos(media_kind="document")],

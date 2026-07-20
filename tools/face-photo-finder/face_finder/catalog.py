@@ -554,6 +554,27 @@ class FaceCatalog:
                 "UPDATE images SET capture_year_override = ? WHERE id = ?", (capture_year, image_id)
             )
 
+    def set_nsfw_overrides(self, image_ids: list[int], value: int | None) -> int:
+        """Apply one manual NSFW decision to multiple catalog photos."""
+        if value not in (None, 0, 1):
+            raise ValueError("NSFW override must be automatic, safe, or NSFW.")
+        unique_ids = list(dict.fromkeys(int(image_id) for image_id in image_ids))
+        if not unique_ids:
+            raise ValueError("Select at least one photo.")
+        placeholders = ",".join("?" for _ in unique_ids)
+        found = int(self.connection.execute(
+            f"SELECT COUNT(*) FROM images WHERE id IN ({placeholders})", unique_ids
+        ).fetchone()[0])
+        if found != len(unique_ids):
+            raise ValueError("One or more selected photos were not found in the catalog.")
+        with self.connection:
+            self.connection.executemany(
+                """INSERT INTO image_metadata(image_id, nsfw_override) VALUES (?, ?)
+                   ON CONFLICT(image_id) DO UPDATE SET nsfw_override=excluded.nsfw_override""",
+                [(image_id, value) for image_id in unique_ids],
+            )
+        return len(unique_ids)
+
     def nsfw_score_for_path(self, path: Path) -> float | None:
         row = self.connection.execute(
             "SELECT nsfw_score FROM images WHERE path = ?", (str(path.resolve()),)
