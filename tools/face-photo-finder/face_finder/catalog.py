@@ -692,16 +692,65 @@ class FaceCatalog:
                GROUP BY identities.id, identities.name, identities.birth_year
                ORDER BY identities.name COLLATE NOCASE"""
         ).fetchall()
+        reference_rows = self.connection.execute(
+            """SELECT faces.identity_id, faces.id, faces.embedding,
+                      COALESCE(images.capture_year_override, images.capture_year)
+               FROM faces JOIN images ON images.id = faces.image_id
+               WHERE faces.identity_id IS NOT NULL AND faces.profile_eligible = 1
+                     AND faces.preview IS NOT NULL AND images.missing_since IS NULL
+               ORDER BY faces.identity_id, faces.id"""
+        ).fetchall()
+        references: dict[int, list[tuple[int, np.ndarray, int | None]]] = {}
+        for identity_id, face_id, embedding, capture_year in reference_rows:
+            references.setdefault(int(identity_id), []).append(
+                (int(face_id), np.frombuffer(embedding, dtype=np.float32).copy(), capture_year)
+            )
+
+        def selected_face_ids(identity_id: int) -> list[int]:
+            records = sorted(
+                references.get(identity_id, []), key=lambda item: (item[2] is None, item[2] or 0)
+            )
+            selected: list[tuple[int, np.ndarray, int | None]] = []
+            for record in records:
+                if selected and max(
+                    float(np.dot(record[1], known[1])) for known in selected
+                ) >= PROFILE_DUPLICATE_SIMILARITY:
+                    continue
+                selected.append(record)
+            if len(selected) > PROFILE_MAX_SAMPLES:
+                buckets: dict[int | None, list[tuple[int, np.ndarray, int | None]]] = {}
+                for record in selected:
+                    buckets.setdefault(record[2], []).append(record)
+                balanced: list[tuple[int, np.ndarray, int | None]] = []
+                while len(balanced) < PROFILE_MAX_SAMPLES and any(buckets.values()):
+                    for year in sorted(buckets, key=lambda value: (value is None, value or 0)):
+                        if buckets[year] and len(balanced) < PROFILE_MAX_SAMPLES:
+                            balanced.append(buckets[year].pop(0))
+                selected = balanced
+            return [record[0] for record in selected]
+
         current_year = datetime.now().year
-        return [
-            {
-                "id": int(row[0]), "name": row[1], "birth_year": row[2],
+        summaries = []
+        for row in rows:
+            identity_id = int(row[0])
+            summaries.append({
+                "id": identity_id, "name": row[1], "birth_year": row[2],
                 "age": current_year - int(row[2]) if row[2] is not None else None,
                 "face_count": int(row[3]), "photo_count": int(row[4]),
                 "profile_sample_count": int(row[5]),
-            }
-            for row in rows
-        ]
+                "reference_face_ids": selected_face_ids(identity_id),
+            })
+        return summaries
+
+    def identity_reference_preview(self, face_id: int) -> bytes | None:
+        row = self.connection.execute(
+            """SELECT faces.preview FROM faces JOIN images ON images.id = faces.image_id
+               WHERE faces.id = ? AND faces.identity_id IS NOT NULL
+                     AND faces.profile_eligible = 1 AND faces.preview IS NOT NULL
+                     AND images.missing_since IS NULL""",
+            (face_id,),
+        ).fetchone()
+        return bytes(row[0]) if row else None
 
     def update_identity(self, identity_id: int, name: str, birth_year: int | None) -> None:
         """Rename an identity and update its birth year after validating uniqueness."""

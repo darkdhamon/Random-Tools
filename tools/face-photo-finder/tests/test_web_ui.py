@@ -50,6 +50,10 @@ class WebGalleryUiTests(unittest.TestCase):
         self.assertIn("api('/api/identity-summaries')", PAGE)
         self.assertIn("post('/api/identity'", PAGE)
         self.assertIn('View photos', PAGE)
+        self.assertIn('Reference images', PAGE)
+        self.assertIn("identity.reference_face_ids", PAGE)
+        self.assertIn('/api/identity-reference?id=', PAGE)
+        self.assertIn('openReferencePreview', PAGE)
         self.assertNotIn("current = null;\n    await load();", PAGE)
         self.assertNotIn('>Save metadata</button>', PAGE)
 

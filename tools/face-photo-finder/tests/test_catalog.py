@@ -82,6 +82,10 @@ class CatalogTests(unittest.TestCase):
                 image,
                 [np.array([1.0, 0.0], dtype=np.float32), np.array([0.0, 1.0], dtype=np.float32)],
                 [identity_id, identity_id],
+                previews=[
+                    np.frombuffer(b"\xff\xd8reference-one", dtype=np.uint8),
+                    np.frombuffer(b"\xff\xd8reference-two", dtype=np.uint8),
+                ],
                 profile_eligible=[True, False],
             )
 
@@ -93,6 +97,11 @@ class CatalogTests(unittest.TestCase):
             self.assertEqual(summary["photo_count"], 1)
             self.assertEqual(summary["face_count"], 2)
             self.assertEqual(summary["profile_sample_count"], 1)
+            self.assertEqual(len(summary["reference_face_ids"]), 1)
+            self.assertEqual(
+                catalog.identity_reference_preview(summary["reference_face_ids"][0]),
+                b"\xff\xd8reference-one",
+            )
             with self.assertRaises(ValueError):
                 catalog.update_identity(identity_id, "", 1985)
             catalog.close()

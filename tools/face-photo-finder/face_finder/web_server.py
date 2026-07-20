@@ -84,7 +84,7 @@ openPhoto = async function(id) {
 )
 PAGE = PAGE.replace(
     "</style>",
-    r'''.app-tabs{position:sticky;top:0;z-index:15;display:flex;gap:6px;background:#101719;padding:8px 14px;border-bottom:1px solid #31535a}.app-tabs button{border-color:transparent;background:transparent;font-weight:700}.app-tabs button.active{background:#176679;border-color:#63d7e8}.app-tabs+header{top:49px}.identity-view{display:none;padding:22px;max-width:1200px;margin:auto}.identity-toolbar{display:flex;gap:12px;align-items:center;flex-wrap:wrap;margin-bottom:15px}.identity-toolbar input{min-width:280px}.identity-table-wrap{overflow:auto;border:1px solid #3e555a;border-radius:9px}.identity-table{width:100%;border-collapse:collapse;background:#1c1f20}.identity-table th,.identity-table td{padding:10px;border-bottom:1px solid #353d3f;text-align:left;white-space:nowrap}.identity-table th{position:sticky;top:0;background:#18363c;color:#bdf5fb}.identity-table input{box-sizing:border-box;width:100%}.identity-table .name-input{min-width:220px}.identity-table .year-input{width:100px}.identity-status{min-height:22px;color:#72dfbd}@media(max-width:750px){.app-tabs+header{top:49px}.identity-view{padding:12px}.identity-toolbar input{min-width:0;width:100%}}</style>''',
+    r'''.app-tabs{position:sticky;top:0;z-index:15;display:flex;gap:6px;background:#101719;padding:8px 14px;border-bottom:1px solid #31535a}.app-tabs button{border-color:transparent;background:transparent;font-weight:700}.app-tabs button.active{background:#176679;border-color:#63d7e8}.app-tabs+header{top:49px}.identity-view{display:none;padding:22px;max-width:1400px;margin:auto}.identity-toolbar{display:flex;gap:12px;align-items:center;flex-wrap:wrap;margin-bottom:15px}.identity-toolbar input{min-width:280px}.identity-table-wrap{overflow:auto;border:1px solid #3e555a;border-radius:9px}.identity-table{width:100%;border-collapse:collapse;background:#1c1f20}.identity-table th,.identity-table td{padding:10px;border-bottom:1px solid #353d3f;text-align:left;white-space:nowrap}.identity-table th{position:sticky;top:0;background:#18363c;color:#bdf5fb}.identity-table input{box-sizing:border-box;width:100%}.identity-table .name-input{min-width:220px}.identity-table .year-input{width:100px}.identity-status{min-height:22px;color:#72dfbd}.reference-strip{display:flex;gap:6px;max-width:390px;overflow-x:auto;padding:3px}.reference-thumb{padding:0;border:2px solid #47656b;background:#101010;flex:0 0 auto}.reference-thumb:hover{border-color:#62dbe8}.reference-thumb img{display:block;width:58px;height:58px;object-fit:cover;border-radius:4px}.reference-viewer{width:min(620px,95vw);background:#1c2325;border-color:#5dd4e2}.reference-viewer img{display:block;max-width:100%;max-height:72vh;margin:auto;border-radius:7px}.reference-viewer h2{color:#baf6fb}@media(max-width:750px){.app-tabs+header{top:49px}.identity-view{padding:12px}.identity-toolbar input{min-width:0;width:100%}.reference-strip{max-width:250px}}</style>''',
 ).replace(
     "<body><header>",
     r'''<body><nav class=app-tabs aria-label="Gallery sections"><button id=timelineTabButton class=active onclick="showAppTab('timeline')">Timeline</button><button id=identityTabButton onclick="showAppTab('identity')">Identity</button></nav><header id=timelineHeader>''',
@@ -93,10 +93,10 @@ PAGE = PAGE.replace(
     '<div id=timelineMore style="text-align:center;padding:15px"><button id=more',
 ).replace(
     "<div id=modal class=modal>",
-    r'''<section id=identityView class=identity-view><div class=identity-toolbar><h1>Identity management</h1><input id=identitySearch placeholder="Search identities" oninput=renderIdentityTable()><button onclick=loadIdentityTable()>Refresh</button></div><div id=identityStatus class=identity-status></div><div class=identity-table-wrap><table class=identity-table><thead><tr><th>Name</th><th>Birth year</th><th>Approx. age</th><th>Photos</th><th>Faces</th><th>Profile samples</th><th>Timeline</th></tr></thead><tbody id=identityTableBody></tbody></table></div></section><div id=modal class=modal>''',
+    r'''<section id=identityView class=identity-view><div class=identity-toolbar><h1>Identity management</h1><input id=identitySearch placeholder="Search identities" oninput=renderIdentityTable()><button onclick=loadIdentityTable()>Refresh</button></div><div id=identityStatus class=identity-status></div><div class=identity-table-wrap><table class=identity-table><thead><tr><th>Name</th><th>Reference images</th><th>Birth year</th><th>Approx. age</th><th>Photos</th><th>Faces</th><th>Profile samples</th><th>Timeline</th></tr></thead><tbody id=identityTableBody></tbody></table></div></section><div id=modal class=modal>''',
 ).replace(
     "</body>",
-    r'''<script>
+    r'''<div id=referenceDialog class=danger-dialog role=dialog aria-modal=true aria-labelledby=referenceTitle><div class="danger-box reference-viewer"><button class=close onclick=closeReferencePreview()>Close</button><h2 id=referenceTitle>Reference image</h2><img id=referenceFull alt="Identity reference image"></div></div><script>
 let identityManagementRows = [];
 function showAppTab(tabName) {
   const identityActive = tabName === 'identity';
@@ -126,6 +126,23 @@ function renderIdentityTable() {
     nameInput.className = 'name-input';
     nameInput.value = identity.name;
     nameCell.append(nameInput);
+    const referenceCell = row.insertCell();
+    const referenceStrip = document.createElement('div');
+    referenceStrip.className = 'reference-strip';
+    for (const faceId of identity.reference_face_ids || []) {
+      const previewButton = document.createElement('button');
+      previewButton.className = 'reference-thumb';
+      previewButton.title = `Open reference for ${identity.name}`;
+      const preview = document.createElement('img');
+      preview.loading = 'lazy';
+      preview.alt = `Reference for ${identity.name}`;
+      preview.src = `/api/identity-reference?id=${faceId}`;
+      previewButton.append(preview);
+      previewButton.onclick = () => openReferencePreview(faceId, identity.name);
+      referenceStrip.append(previewButton);
+    }
+    if (!referenceStrip.children.length) referenceStrip.textContent = 'No eligible references';
+    referenceCell.append(referenceStrip);
     const yearCell = row.insertCell();
     const yearInput = document.createElement('input');
     yearInput.className = 'year-input';
@@ -164,6 +181,15 @@ function viewIdentityTimeline(identityId) {
   person.value = String(identityId);
   showAppTab('timeline');
   load();
+}
+function openReferencePreview(faceId, identityName) {
+  referenceTitle.textContent = `${identityName} reference`;
+  referenceFull.src = `/api/identity-reference?id=${faceId}`;
+  referenceDialog.classList.add('open');
+}
+function closeReferencePreview() {
+  referenceDialog.classList.remove('open');
+  referenceFull.removeAttribute('src');
 }
 </script></body>''',
 )
@@ -424,6 +450,13 @@ class GalleryHandler(BaseHTTPRequestHandler):
                 self._json([{"id": x.identity_id, "name": x.name, "birth_year": x.birth_year} for x in catalog.identities()])
             elif parsed.path == "/api/identity-summaries":
                 self._json(catalog.identity_summaries())
+            elif parsed.path == "/api/identity-reference":
+                preview = catalog.identity_reference_preview(int(query["id"][0]))
+                if preview is None: self.send_error(404); return
+                self.send_response(200); self.send_header("Content-Type", "image/jpeg")
+                self.send_header("Content-Length", str(len(preview)))
+                self.send_header("Cache-Control", "private, max-age=3600")
+                self.end_headers(); self.wfile.write(preview)
             elif parsed.path == "/api/archives":
                 self._json(available_archives())
             elif parsed.path == "/media":
