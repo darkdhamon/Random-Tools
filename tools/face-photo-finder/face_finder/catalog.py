@@ -1691,8 +1691,32 @@ class FaceCatalog:
                 float(current_coordinates[1]) if current_coordinates and current_coordinates[1] is not None else None,
             )
 
+        # A resized/exported copy can have its own image row even though it is the same photo.
+        # Keep the privacy decision consistent across those catalog records.
+        self.set_nsfw_overrides([image_id], nsfw_override)
+
+    def _related_nsfw_image_ids(self, image_ids: list[int]) -> list[int]:
+        """Find conservative duplicate records that should share one privacy decision."""
+        rows = self.connection.execute(
+            """SELECT id,path,capture_date,content_hash FROM images
+               WHERE missing_since IS NULL"""
+        ).fetchall()
+        selected = {int(image_id) for image_id in image_ids}
+        selected_rows = [row for row in rows if int(row[0]) in selected]
+        exact_hashes = {str(row[3]) for row in selected_rows if row[3]}
+        dated_names = {
+            (Path(str(row[1])).name.casefold(), str(row[2]))
+            for row in selected_rows if row[2]
+        }
+        return sorted({
+            int(row[0]) for row in rows
+            if int(row[0]) in selected
+            or (row[3] and str(row[3]) in exact_hashes)
+            or (row[2] and (Path(str(row[1])).name.casefold(), str(row[2])) in dated_names)
+        })
+
     def set_nsfw_overrides(self, image_ids: list[int], value: int | None) -> int:
-        """Apply one manual NSFW decision to multiple catalog photos."""
+        """Apply one manual NSFW decision and keep duplicate photo records synchronized."""
         if value not in (None, 0, 1):
             raise ValueError("NSFW override must be automatic, safe, or NSFW.")
         unique_ids = list(dict.fromkeys(int(image_id) for image_id in image_ids))
@@ -1704,11 +1728,12 @@ class FaceCatalog:
         ).fetchone()[0])
         if found != len(unique_ids):
             raise ValueError("One or more selected photos were not found in the catalog.")
+        synchronized_ids = self._related_nsfw_image_ids(unique_ids)
         with self.connection:
             self.connection.executemany(
                 """INSERT INTO image_metadata(image_id, nsfw_override) VALUES (?, ?)
                    ON CONFLICT(image_id) DO UPDATE SET nsfw_override=excluded.nsfw_override""",
-                [(image_id, value) for image_id in unique_ids],
+                [(image_id, value) for image_id in synchronized_ids],
             )
         return len(unique_ids)
 

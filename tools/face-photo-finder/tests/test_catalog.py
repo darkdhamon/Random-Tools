@@ -1049,6 +1049,31 @@ class CatalogTests(unittest.TestCase):
             )
             catalog.close()
 
+    def test_nsfw_override_is_shared_by_dated_duplicate_photo_records(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            original = root / "original" / "IMG_5541.JPG"
+            resized = root / "export" / "img_5541.jpg"
+            original.parent.mkdir(); resized.parent.mkdir()
+            original.write_bytes(b"original image")
+            resized.write_bytes(b"resized image")
+            catalog = FaceCatalog(root / "catalog.sqlite3")
+            original_id = catalog.store_scan(original, [], []).image_id
+            resized_id = catalog.store_scan(resized, [], []).image_id
+            with catalog.connection:
+                catalog.connection.execute(
+                    "UPDATE images SET capture_date='2014-10-12' WHERE id IN (?,?)",
+                    (original_id, resized_id),
+                )
+
+            self.assertEqual(catalog.set_nsfw_overrides([original_id], 1), 1)
+            self.assertTrue(catalog.image_is_nsfw(original_id))
+            self.assertTrue(catalog.image_is_nsfw(resized_id))
+            catalog.set_nsfw_overrides([resized_id], 0)
+            self.assertFalse(catalog.image_is_nsfw(original_id))
+            self.assertFalse(catalog.image_is_nsfw(resized_id))
+            catalog.close()
+
     def test_best_known_identity_applies_threshold(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             catalog = FaceCatalog(Path(temporary) / "catalog.sqlite3")
