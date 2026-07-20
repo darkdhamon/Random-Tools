@@ -1006,6 +1006,22 @@ function overviewWorldPoint(latitude,longitude,zoom){
   const world=256*2**zoom,lat=Math.max(-85.0511,Math.min(85.0511,latitude)),sin=Math.sin(lat*Math.PI/180);
   return {x:(longitude+180)/360*world,y:(.5-Math.log((1+sin)/(1-sin))/(4*Math.PI))*world};
 }
+function locationClusterRadius(cluster){return cluster.count>99?24:cluster.count>9?21:18}
+function mergeOverlappingLocationClusters(clusters){
+  let changed=true;
+  while(changed){
+    changed=false;
+    outer:for(let leftIndex=0;leftIndex<clusters.length;leftIndex++)for(let rightIndex=leftIndex+1;rightIndex<clusters.length;rightIndex++){
+      const left=clusters[leftIndex],right=clusters[rightIndex];
+      const leftX=left.x/left.count,leftY=left.y/left.count,rightX=right.x/right.count,rightY=right.y/right.count;
+      const minimumGap=locationClusterRadius(left)+locationClusterRadius(right)+8;
+      if(Math.hypot(leftX-rightX,leftY-rightY)>=minimumGap)continue;
+      left.x+=right.x;left.y+=right.y;left.count+=right.count;left.ids.push(...right.ids);
+      clusters.splice(rightIndex,1);changed=true;break outer;
+    }
+  }
+  return clusters;
+}
 function renderLocationOverview(){
   const width=locationOverviewMapFrame.clientWidth||1200,height=locationOverviewMapFrame.clientHeight||650;
   if(!locationOverviewPoints.length){locationOverviewTiles.innerHTML='';locationOverviewMarkers.innerHTML='';locationOverviewStatus.textContent='No geotagged photos found.';return}
@@ -1019,10 +1035,10 @@ function renderLocationOverview(){
   for(let ty=firstY;ty<=lastY;ty++)for(let tx=firstX;tx<=lastX;tx++){if(ty<0||ty>=count)continue;const wrappedX=((tx%count)+count)%count;tiles+=`<img class="geofence-tile" alt="" src="${mapTileUrl('road',zoom,wrappedX,ty)}" style="left:${tx*256-(centerX-width/2)}px;top:${ty*256-(centerY-height/2)}px">`}
   locationOverviewTiles.innerHTML=tiles;
   const clusters=new Map();for(const point of locationOverviewPoints){const projected=overviewWorldPoint(point.latitude,point.longitude,zoom),x=projected.x-(centerX-width/2),y=projected.y-(centerY-height/2),key=`${Math.floor(x/58)}:${Math.floor(y/58)}`,cluster=clusters.get(key)||{x:0,y:0,count:0,ids:[]};cluster.x+=x;cluster.y+=y;cluster.count++;cluster.ids.push(point.id);clusters.set(key,cluster)}
-  locationOverviewClusters=[...clusters.values()];
+  locationOverviewClusters=mergeOverlappingLocationClusters([...clusters.values()]);
   locationOverviewMarkers.setAttribute('viewBox',`0 0 ${width} ${height}`);
-  locationOverviewMarkers.innerHTML=locationOverviewClusters.map((cluster,index)=>{const x=cluster.x/cluster.count,y=cluster.y/cluster.count,r=cluster.count>99?24:cluster.count>9?21:18;return `<g class="location-map-pin" role="button" tabindex="0" aria-label="Open ${cluster.count} photo${cluster.count===1?'':'s'} in this area" onclick="openLocationPhotoPanel(${index})" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();openLocationPhotoPanel(${index})}"><title>${cluster.count} photo${cluster.count===1?'':'s'} in this area</title><circle class="location-map-cluster" cx="${x}" cy="${y}" r="${r}"></circle><text class="location-map-count" x="${x}" y="${y}">${cluster.count}</text></g>`}).join('');
-  locationOverviewStatus.textContent=`${locationOverviewPoints.length.toLocaleString()} geotagged photos · ${clusters.size.toLocaleString()} map areas · automatically fitted to all locations`;
+  locationOverviewMarkers.innerHTML=locationOverviewClusters.map((cluster,index)=>{const x=cluster.x/cluster.count,y=cluster.y/cluster.count,r=locationClusterRadius(cluster);return `<g class="location-map-pin" role="button" tabindex="0" aria-label="Open ${cluster.count} photo${cluster.count===1?'':'s'} in this area" onclick="openLocationPhotoPanel(${index})" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();openLocationPhotoPanel(${index})}"><title>${cluster.count} photo${cluster.count===1?'':'s'} in this area</title><circle class="location-map-cluster" cx="${x}" cy="${y}" r="${r}"></circle><text class="location-map-count" x="${x}" y="${y}">${cluster.count}</text></g>`}).join('');
+  locationOverviewStatus.textContent=`${locationOverviewPoints.length.toLocaleString()} geotagged photos · ${locationOverviewClusters.length.toLocaleString()} map areas · automatically fitted to all locations`;
 }
 async function loadLocationOverview(){
   locationOverviewStatus.textContent='Loading photo locations…';

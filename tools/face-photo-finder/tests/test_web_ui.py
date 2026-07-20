@@ -133,6 +133,8 @@ class WebGalleryUiTests(unittest.TestCase):
         self.assertIn("api('/api/location-points')", PAGE)
         self.assertIn('renderLocationOverview', PAGE)
         self.assertIn('location-map-cluster', PAGE)
+        self.assertIn('mergeOverlappingLocationClusters', PAGE)
+        self.assertIn('locationClusterRadius(left)+locationClusterRadius(right)+8', PAGE)
         self.assertIn('id=locationPhotoPanel', PAGE)
         self.assertIn('openLocationPhotoPanel', PAGE)
         self.assertIn('focusLocationPhoto', PAGE)
