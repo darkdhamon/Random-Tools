@@ -40,6 +40,7 @@ A private, local desktop tool that recursively scans a folder and finds photos l
 - allows non-biometric manual person tags to target a clicked location in the photo and displays those saved targets with labeled gold reticles;
 - detects cats and dogs locally with the Apache-licensed OpenCV NanoDet model, saves editable purple pet reticles, and supports manually named/targeted pets of any species;
 - hides identities from the Timeline person filter when they no longer occur in any available photo, while retaining their biometric samples and keeping them available for future assignments;
+- stores biometric face crops with retained samples so Identity Management reference thumbnails remain available after source photos move, disappear, are deleted, or are archived;
 - extracts EXIF GPS coordinates, supports editable place names and coordinates, and shows an offline map preview with an explicit OpenStreetMap link;
 - searches by a previously learned person from the **Known person** list without requiring another reference photo;
 - autocompletes identity names case-insensitively while still allowing new names;

@@ -160,7 +160,8 @@ class FaceCatalog:
                 source_face_id INTEGER PRIMARY KEY,
                 identity_id INTEGER NOT NULL REFERENCES identities(id) ON DELETE CASCADE,
                 embedding BLOB NOT NULL, capture_year INTEGER,
-                profile_eligible INTEGER NOT NULL DEFAULT 1
+                profile_eligible INTEGER NOT NULL DEFAULT 1,
+                preview BLOB, capture_date TEXT
             );
             CREATE TABLE IF NOT EXISTS photo_identity_tags (
                 image_id INTEGER NOT NULL REFERENCES images(id) ON DELETE CASCADE,
@@ -257,6 +258,11 @@ class FaceCatalog:
             self.connection.execute("ALTER TABLE images ADD COLUMN gps_scanned_at TEXT")
         metadata_columns = {row[1] for row in self.connection.execute("PRAGMA table_info(image_metadata)")}
         tag_columns = {row[1] for row in self.connection.execute("PRAGMA table_info(photo_identity_tags)")}
+        retained_columns = {row[1] for row in self.connection.execute("PRAGMA table_info(retained_identity_samples)")}
+        if "preview" not in retained_columns:
+            self.connection.execute("ALTER TABLE retained_identity_samples ADD COLUMN preview BLOB")
+        if "capture_date" not in retained_columns:
+            self.connection.execute("ALTER TABLE retained_identity_samples ADD COLUMN capture_date TEXT")
         if "target_x" not in tag_columns:
             self.connection.execute("ALTER TABLE photo_identity_tags ADD COLUMN target_x REAL")
         if "target_y" not in tag_columns:
@@ -841,10 +847,15 @@ class FaceCatalog:
         placeholders = ",".join("?" for _ in image_ids)
         self.connection.execute(
             f"""INSERT OR IGNORE INTO retained_identity_samples(
-                       source_face_id, identity_id, embedding, capture_year, profile_eligible)
+                       source_face_id, identity_id, embedding, capture_year, profile_eligible,
+                       preview, capture_date)
                 SELECT faces.id, faces.identity_id, faces.embedding,
                        COALESCE(images.capture_year_override, images.capture_year),
-                       faces.profile_eligible
+                       faces.profile_eligible, faces.preview,
+                       CASE WHEN images.capture_year_override IS NULL
+                                  OR CAST(substr(images.capture_date, 1, 4) AS INTEGER)
+                                     = images.capture_year_override
+                            THEN NULLIF(images.capture_date, '') END
                 FROM faces JOIN images ON images.id = faces.image_id
                 WHERE faces.image_id IN ({placeholders}) AND faces.identity_id IS NOT NULL
                       AND faces.is_art = 0 AND faces.embedding IS NOT NULL""",
@@ -865,8 +876,7 @@ class FaceCatalog:
             """SELECT identities.id, identities.name, identities.birth_year,
                       COUNT(CASE WHEN images.missing_since IS NULL THEN faces.id END),
                       COUNT(DISTINCT CASE WHEN images.missing_since IS NULL THEN faces.image_id END),
-                      COALESCE(SUM(CASE WHEN images.missing_since IS NULL
-                                            AND faces.profile_eligible = 1 THEN 1 ELSE 0 END), 0)
+                      COALESCE(SUM(CASE WHEN faces.profile_eligible = 1 THEN 1 ELSE 0 END), 0)
                       + (SELECT COUNT(*) FROM retained_identity_samples retained
                          WHERE retained.identity_id = identities.id
                                AND retained.profile_eligible = 1),
@@ -893,9 +903,15 @@ class FaceCatalog:
                            THEN NULLIF(images.capture_date, '') END
                FROM faces JOIN images ON images.id = faces.image_id
                WHERE faces.identity_id IS NOT NULL AND faces.profile_eligible = 1
-                     AND faces.preview IS NOT NULL AND images.missing_since IS NULL
+                     AND faces.preview IS NOT NULL
                ORDER BY faces.identity_id, faces.id"""
         ).fetchall()
+        reference_rows.extend(self.connection.execute(
+            """SELECT identity_id, -source_face_id, embedding, capture_year, capture_date
+               FROM retained_identity_samples
+               WHERE profile_eligible = 1 AND preview IS NOT NULL
+               ORDER BY identity_id, source_face_id"""
+        ).fetchall())
         references: dict[int, list[tuple[int, np.ndarray, int | None, str | None]]] = {}
         for identity_id, face_id, embedding, capture_year, capture_date in reference_rows:
             references.setdefault(int(identity_id), []).append(
@@ -949,11 +965,17 @@ class FaceCatalog:
         return summaries
 
     def identity_reference_preview(self, face_id: int) -> bytes | None:
+        if face_id < 0:
+            row = self.connection.execute(
+                """SELECT preview FROM retained_identity_samples
+                   WHERE source_face_id = ? AND profile_eligible = 1 AND preview IS NOT NULL""",
+                (-face_id,),
+            ).fetchone()
+            return bytes(row[0]) if row else None
         row = self.connection.execute(
             """SELECT faces.preview FROM faces JOIN images ON images.id = faces.image_id
                WHERE faces.id = ? AND faces.identity_id IS NOT NULL
-                     AND faces.profile_eligible = 1 AND faces.preview IS NOT NULL
-                     AND images.missing_since IS NULL""",
+                     AND faces.profile_eligible = 1 AND faces.preview IS NOT NULL""",
             (face_id,),
         ).fetchone()
         return bytes(row[0]) if row else None
@@ -1659,6 +1681,13 @@ class FaceCatalog:
 
     def remove_face(self, face_id: int) -> None:
         """Mark a detector false-positive by removing it and refreshing image counts."""
+        if face_id < 0:
+            with self.connection:
+                self.connection.execute(
+                    "DELETE FROM retained_identity_samples WHERE source_face_id = ?",
+                    (-face_id,),
+                )
+            return
         with self.connection:
             image_row = self.connection.execute(
                 "SELECT image_id, unknown_group_id FROM faces WHERE id = ?", (face_id,)

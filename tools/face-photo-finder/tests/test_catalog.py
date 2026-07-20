@@ -360,7 +360,10 @@ class CatalogTests(unittest.TestCase):
             catalog = FaceCatalog(root / "catalog.sqlite3")
             identity_id = catalog.get_or_create_identity("Retained Person")
             stored = catalog.store_scan(
-                image, [np.array([1.0, 0.0], dtype=np.float32)], [identity_id]
+                image,
+                [np.array([1.0, 0.0], dtype=np.float32)],
+                [identity_id],
+                previews=[np.frombuffer(b"retained-preview", dtype=np.uint8)],
             )
             self.assertIn(identity_id, catalog.gallery_identity_ids())
 
@@ -370,6 +373,14 @@ class CatalogTests(unittest.TestCase):
             retained = next(item for item in catalog.identities() if item.identity_id == identity_id)
             self.assertEqual(len(retained.embeddings), 1)
             np.testing.assert_allclose(retained.embeddings[0], [1.0, 0.0])
+            summary = next(item for item in catalog.identity_summaries() if item["id"] == identity_id)
+            self.assertEqual(summary["profile_sample_count"], 1)
+            self.assertEqual(len(summary["reference_face_ids"]), 1)
+            retained_reference_id = summary["reference_face_ids"][0]
+            self.assertLess(retained_reference_id, 0)
+            self.assertEqual(catalog.identity_reference_preview(retained_reference_id), b"retained-preview")
+            catalog.remove_face(retained_reference_id)
+            self.assertIsNone(catalog.identity_reference_preview(retained_reference_id))
             catalog.close()
 
     def test_archive_photos_moves_sources_into_zip_and_removes_catalog_rows(self) -> None:
