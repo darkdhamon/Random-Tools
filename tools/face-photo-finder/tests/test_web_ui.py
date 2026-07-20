@@ -31,6 +31,12 @@ class WebGalleryUiTests(unittest.TestCase):
         self.assertIn("offset = Math.max(0, offset - 1)", PAGE)
         self.assertIn("deleteScrollPosition = window.scrollY", PAGE)
         self.assertIn("requestAnimationFrame(() => window.scrollTo", PAGE)
+        self.assertIn("Select photos", PAGE)
+        self.assertIn("Archive selected", PAGE)
+        self.assertIn("Delete selected", PAGE)
+        self.assertIn("const selectedPhotos = new Map()", PAGE)
+        self.assertIn("'/api/archive-photos' : '/api/delete-photos'", PAGE)
+        self.assertIn("Hidden Pictures\\\\GeneralArchive.zip", PAGE)
         self.assertNotIn("current = null;\n    await load();", PAGE)
         self.assertNotIn('>Save metadata</button>', PAGE)
 

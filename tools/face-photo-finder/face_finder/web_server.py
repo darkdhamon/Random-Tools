@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import io
 import json
+import os
 import secrets
 import subprocess
 import sys
@@ -17,6 +18,8 @@ from .catalog import FaceCatalog, default_catalog_path
 HOST = "127.0.0.1"
 PORT = 8765
 APP_ROOT = Path(__file__).resolve().parents[1]
+PICTURES_ROOT = Path(os.environ.get("OneDrive", Path.home() / "OneDrive")) / "Pictures"
+GENERAL_ARCHIVE = PICTURES_ROOT / "Hidden Pictures" / "GeneralArchive.zip"
 
 
 PAGE = r'''<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width">
@@ -149,6 +152,99 @@ PAGE = PAGE.replace(
     "const infiniteObserver=new IntersectionObserver",
     r'''function timelineGrid(photo){let yearLabel=photo.year||'Unknown date',yearId='year-'+String(yearLabel).replace(/\W/g,'-'),yearSection=document.getElementById(yearId);if(!yearSection){yearSection=document.createElement('section');yearSection.id=yearId;yearSection.className='year-group';yearSection.innerHTML=`<h2>${esc(String(yearLabel))}</h2><div class="months"></div>`;timeline.append(yearSection)}let date=photo.capture_date?new Date(photo.capture_date+'T12:00:00'):null,monthKey=date?String(date.getMonth()+1).padStart(2,'0'):'unknown',monthLabel=date?date.toLocaleDateString(undefined,{month:'long'}):'Unknown month',monthId=yearId+'-month-'+monthKey,month=document.getElementById(monthId);if(!month){month=document.createElement('section');month.id=monthId;month.className='month-group';month.innerHTML=`<h3>${esc(monthLabel)}</h3><div class="days"></div>`;yearSection.querySelector('.months').append(month)}let dayKey=date?String(date.getDate()).padStart(2,'0'):'unknown',dayLabel=date?date.toLocaleDateString(undefined,{weekday:'long',month:'long',day:'numeric'}):'Unknown day',dayId=monthId+'-day-'+dayKey,grid=document.getElementById(dayId);if(!grid){let day=document.createElement('section');day.className='day-group';day.innerHTML=`<h4>${esc(dayLabel)}</h4><div id="${dayId}" class="grid"></div>`;month.querySelector('.days').append(day);grid=document.getElementById(dayId)}return grid}const infiniteObserver=new IntersectionObserver''',
 )
+PAGE = PAGE.replace(
+    "</style>",
+    r'''.card{position:relative}.select-box{display:none;position:absolute;z-index:1;top:9px;left:9px;width:34px;height:34px;border-radius:50%;background:#171717dd;border:2px solid #ddd;font-size:20px;line-height:1}.selection-mode .select-box{display:block}.card.selected{outline:4px solid #5de0ee;outline-offset:-4px}.card.selected .select-box{display:block;background:#168594;border-color:#baf8ff}.bulk-bar{display:none;position:fixed;z-index:12;left:50%;bottom:18px;transform:translateX(-50%);align-items:center;gap:9px;background:#152a2e;border:1px solid #55c9d6;border-radius:10px;padding:10px 14px;box-shadow:0 8px 30px #000}.selection-mode .bulk-bar{display:flex}.archive-button{background:#17627a;border-color:#56bad5;font-weight:700}</style>''',
+).replace(
+    "c.onclick=()=>openPhoto(x.id);",
+    "attachSelection(c,x);",
+).replace(
+    "</header>",
+    r'''<button id=selectModeButton onclick=toggleSelectionMode()>Select photos</button></header>''',
+).replace(
+    "</body>",
+    r'''<div id=bulkBar class=bulk-bar><strong id=selectedCount>0 selected</strong><button class=archive-button onclick="requestBulkAction('archive')">Archive selected</button><button class=danger-button onclick="requestBulkAction('delete')">Delete selected</button><button onclick=clearSelection()>Done</button></div><div id=bulkDialog class=danger-dialog role=dialog aria-modal=true aria-labelledby=bulkTitle><div class=danger-box><h2 id=bulkTitle></h2><p id=bulkMessage></p><div id=bulkError class=save-state></div><div class=danger-actions><button onclick=cancelBulkAction()>Cancel</button><button id=bulkConfirmButton onclick=executeBulkAction()></button></div></div></div><script>
+const selectedPhotos = new Map();
+let selectionMode = false;
+let pendingBulkAction = null;
+function attachSelection(card, photo) {
+  const picker = document.createElement('button');
+  picker.className = 'select-box';
+  picker.textContent = '✓';
+  picker.setAttribute('aria-label', `Select ${photo.name}`);
+  picker.onclick = event => { event.stopPropagation(); toggleSelected(card, photo); };
+  card.prepend(picker);
+  card.onclick = () => selectionMode ? toggleSelected(card, photo) : openPhoto(photo.id);
+}
+function toggleSelectionMode() {
+  selectionMode = !selectionMode;
+  document.body.classList.toggle('selection-mode', selectionMode);
+  selectModeButton.textContent = selectionMode ? 'Selecting photos' : 'Select photos';
+  if (!selectionMode) clearSelection();
+}
+function toggleSelected(card, photo) {
+  if (!selectionMode) {
+    selectionMode = true;
+    document.body.classList.add('selection-mode');
+    selectModeButton.textContent = 'Selecting photos';
+  }
+  if (selectedPhotos.has(photo.id)) selectedPhotos.delete(photo.id);
+  else selectedPhotos.set(photo.id, photo.name);
+  card.classList.toggle('selected', selectedPhotos.has(photo.id));
+  updateSelectedCount();
+}
+function updateSelectedCount() { selectedCount.textContent = `${selectedPhotos.size} selected`; }
+function clearSelection() {
+  selectedPhotos.clear();
+  document.querySelectorAll('.card.selected').forEach(card => card.classList.remove('selected'));
+  selectionMode = false;
+  document.body.classList.remove('selection-mode');
+  selectModeButton.textContent = 'Select photos';
+  updateSelectedCount();
+}
+function requestBulkAction(action) {
+  if (!selectedPhotos.size) return;
+  pendingBulkAction = action;
+  const count = selectedPhotos.size;
+  bulkError.textContent = '';
+  bulkConfirmButton.disabled = false;
+  if (action === 'delete') {
+    bulkTitle.textContent = `Danger: permanently delete ${count} photo${count === 1 ? '' : 's'}?`;
+    bulkMessage.innerHTML = '<strong>This action cannot be undone.</strong> The selected source files and their catalog records will be permanently removed.';
+    bulkConfirmButton.textContent = 'Delete permanently';
+    bulkConfirmButton.className = 'danger-button';
+  } else {
+    bulkTitle.textContent = `Archive ${count} photo${count === 1 ? '' : 's'}?`;
+    bulkMessage.textContent = 'The selected originals will be moved into Hidden Pictures\\GeneralArchive.zip and removed from the active catalog.';
+    bulkConfirmButton.textContent = 'Move to archive';
+    bulkConfirmButton.className = 'archive-button';
+  }
+  bulkDialog.classList.add('open');
+}
+function cancelBulkAction() { bulkDialog.classList.remove('open'); pendingBulkAction = null; }
+async function executeBulkAction() {
+  if (!pendingBulkAction || !selectedPhotos.size) return;
+  const action = pendingBulkAction;
+  const ids = [...selectedPhotos.keys()];
+  const preservedScroll = window.scrollY;
+  bulkConfirmButton.disabled = true;
+  bulkError.textContent = action === 'archive' ? 'Archiving...' : 'Deleting...';
+  try {
+    await post(action === 'archive' ? '/api/archive-photos' : '/api/delete-photos', {ids});
+    ids.forEach(removeDeletedCard);
+    bulkDialog.classList.remove('open');
+    pendingBulkAction = null;
+    clearSelection();
+    requestAnimationFrame(() => window.scrollTo(0, Math.min(
+      preservedScroll, Math.max(0, document.documentElement.scrollHeight - window.innerHeight)
+    )));
+  } catch (error) {
+    bulkError.textContent = `${action === 'archive' ? 'Archive' : 'Delete'} failed: ${error.message}`;
+    bulkConfirmButton.disabled = false;
+  }
+}
+</script></body>''',
+)
 
 
 class GalleryHandler(BaseHTTPRequestHandler):
@@ -236,6 +332,19 @@ class GalleryHandler(BaseHTTPRequestHandler):
                 try: deleted = catalog.delete_photo(int(body["id"]))
                 finally: catalog.close()
                 self._json({"ok": True, "deleted": deleted.name})
+            elif self.path == "/api/delete-photos":
+                catalog = self._catalog()
+                try: deleted = catalog.delete_photos([int(value) for value in body["ids"]])
+                finally: catalog.close()
+                self._json({"ok": True, "deleted": len(deleted)})
+            elif self.path == "/api/archive-photos":
+                catalog = self._catalog()
+                try:
+                    archived = catalog.archive_photos(
+                        [int(value) for value in body["ids"]], GENERAL_ARCHIVE, PICTURES_ROOT
+                    )
+                finally: catalog.close()
+                self._json({"ok": True, "archived": len(archived), "archive": str(GENERAL_ARCHIVE)})
             elif self.path == "/api/scan":
                 subprocess.run(["schtasks", "/Run", "/TN", "Face Photo Finder Background Catalog"], check=True, creationflags=subprocess.CREATE_NO_WINDOW)
                 self._json({"ok": True, "message": "Background catalog scan started."})

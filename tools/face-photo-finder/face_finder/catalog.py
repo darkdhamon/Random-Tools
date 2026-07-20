@@ -6,7 +6,9 @@ from pathlib import Path
 import hashlib
 import json
 import re
+import shutil
 import sqlite3
+import zipfile
 
 import numpy as np
 import cv2
@@ -430,6 +432,88 @@ class FaceCatalog:
             path.unlink()
             self.connection.execute("DELETE FROM images WHERE id = ?", (image_id,))
         return path
+
+    def delete_photos(self, image_ids: list[int]) -> list[Path]:
+        """Permanently delete several source photos and their catalog records."""
+        unique_ids = list(dict.fromkeys(int(value) for value in image_ids))
+        if not unique_ids:
+            raise ValueError("Select at least one photo.")
+        placeholders = ",".join("?" for _ in unique_ids)
+        rows = self.connection.execute(
+            f"SELECT id, path FROM images WHERE id IN ({placeholders})", unique_ids
+        ).fetchall()
+        found = {int(image_id): Path(path) for image_id, path in rows}
+        missing_ids = [image_id for image_id in unique_ids if image_id not in found]
+        if missing_ids:
+            raise ValueError("One or more selected photos were not found in the catalog.")
+        missing_files = [path for path in found.values() if not path.is_file()]
+        if missing_files:
+            raise FileNotFoundError(f"Photo no longer exists: {missing_files[0]}")
+        paths = [found[image_id] for image_id in unique_ids]
+        with self.connection:
+            for path in paths:
+                path.unlink()
+            self.connection.execute(
+                f"DELETE FROM images WHERE id IN ({placeholders})", unique_ids
+            )
+        return paths
+
+    def archive_photos(
+        self, image_ids: list[int], archive_path: Path, library_root: Path
+    ) -> list[Path]:
+        """Move selected photos into an atomically replaced ZIP archive."""
+        unique_ids = list(dict.fromkeys(int(value) for value in image_ids))
+        if not unique_ids:
+            raise ValueError("Select at least one photo.")
+        placeholders = ",".join("?" for _ in unique_ids)
+        rows = self.connection.execute(
+            f"SELECT id, path FROM images WHERE id IN ({placeholders})", unique_ids
+        ).fetchall()
+        found = {int(image_id): Path(path) for image_id, path in rows}
+        if len(found) != len(unique_ids):
+            raise ValueError("One or more selected photos were not found in the catalog.")
+        paths = [found[image_id] for image_id in unique_ids]
+        missing = [path for path in paths if not path.is_file()]
+        if missing:
+            raise FileNotFoundError(f"Photo no longer exists: {missing[0]}")
+        archive_path.parent.mkdir(parents=True, exist_ok=True)
+        temporary = archive_path.with_name(f"{archive_path.name}.tmp")
+        if temporary.exists():
+            temporary.unlink()
+        existing_names: set[str] = set()
+        try:
+            if archive_path.is_file():
+                shutil.copy2(archive_path, temporary)
+            mode = "a" if temporary.exists() else "w"
+            with zipfile.ZipFile(temporary, mode, zipfile.ZIP_DEFLATED, compresslevel=6) as archive:
+                existing_names.update(archive.namelist())
+                for image_id, path in zip(unique_ids, paths):
+                    try:
+                        member = path.resolve().relative_to(library_root.resolve()).as_posix()
+                    except ValueError:
+                        member = f"Archived/{image_id}-{path.name}"
+                    original = member
+                    suffix = 2
+                    while member in existing_names:
+                        candidate = Path(original)
+                        member = str(
+                            candidate.with_name(f"{candidate.stem}-{suffix}{candidate.suffix}")
+                        ).replace("\\", "/")
+                        suffix += 1
+                    archive.write(path, member)
+                    existing_names.add(member)
+            temporary.replace(archive_path)
+        except Exception:
+            if temporary.exists():
+                temporary.unlink()
+            raise
+        with self.connection:
+            for path in paths:
+                path.unlink()
+            self.connection.execute(
+                f"DELETE FROM images WHERE id IN ({placeholders})", unique_ids
+            )
+        return paths
 
     def update_gallery_metadata(
         self, image_id: int, title: str, description: str, tags: str, rating: int,

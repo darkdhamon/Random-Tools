@@ -25,7 +25,8 @@ A private, local desktop tool that recursively scans a folder and finds photos l
 - reduces shirtless-person false positives with deduplicated findings, class-specific thresholds, and male/female face context;
 - combines a whole-image Falconsai ViT classifier with NudeNet evidence, hiding only agreed high-confidence results and routing disagreements to **Needs NSFW review**;
 - detects screenshots and document/receipt-style images locally, with independent hide filters, type searches, and manual corrections;
-- presents the web gallery as a chronological year timeline and automatically saves metadata edits after typing pauses;
+- presents the web gallery as a newest-first year/month/day timeline and automatically saves metadata edits after typing pauses;
+- supports multi-select deletion with a danger confirmation and moves selected photos into `Hidden Pictures/GeneralArchive.zip` when archived;
 - extracts EXIF GPS coordinates, supports editable place names and coordinates, and shows an offline map preview with an explicit OpenStreetMap link;
 - searches by a previously learned person from the **Known person** list without requiring another reference photo;
 - autocompletes identity names case-insensitively while still allowing new names;

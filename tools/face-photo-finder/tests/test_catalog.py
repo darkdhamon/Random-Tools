@@ -1,6 +1,7 @@
 from pathlib import Path
 import tempfile
 import unittest
+import zipfile
 
 import numpy as np
 
@@ -220,6 +221,36 @@ class CatalogTests(unittest.TestCase):
             self.assertFalse(image.exists())
             self.assertIsNone(catalog.gallery_photo(stored.image_id))
             self.assertEqual(catalog.faces_for_image(stored.image_id), [])
+            catalog.close()
+
+    def test_archive_photos_moves_sources_into_zip_and_removes_catalog_rows(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            library = root / "Pictures"
+            first = library / "Timeline" / "2025" / "first.jpg"
+            second = library / "MISC" / "second.jpg"
+            first.parent.mkdir(parents=True)
+            second.parent.mkdir(parents=True)
+            first.write_bytes(b"first image")
+            second.write_bytes(b"second image")
+            catalog = FaceCatalog(root / "catalog.sqlite3")
+            first_id = catalog.store_scan(first, [], []).image_id
+            second_id = catalog.store_scan(second, [], []).image_id
+            archive = library / "Hidden Pictures" / "GeneralArchive.zip"
+
+            archived = catalog.archive_photos([first_id, second_id], archive, library)
+
+            self.assertEqual(archived, [first, second])
+            self.assertFalse(first.exists())
+            self.assertFalse(second.exists())
+            self.assertIsNone(catalog.gallery_photo(first_id))
+            self.assertIsNone(catalog.gallery_photo(second_id))
+            with zipfile.ZipFile(archive) as zipped:
+                self.assertEqual(
+                    set(zipped.namelist()),
+                    {"Timeline/2025/first.jpg", "MISC/second.jpg"},
+                )
+                self.assertEqual(zipped.read("Timeline/2025/first.jpg"), b"first image")
             catalog.close()
 
     def test_blurry_assigned_face_is_not_used_as_profile_sample(self) -> None:
