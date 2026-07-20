@@ -32,6 +32,7 @@ from .catalog import (
     image_capture_year,
 )
 from .models import ensure_age_model, ensure_models
+from .nsfw import NsfwDetector
 from .prefetch import DetectionPrefetcher
 from .scanner import (
     AgeEstimator,
@@ -569,6 +570,7 @@ class FaceFinderApp(tk.Tk):
             skip_unknowns = False
             offered_unknown_groups: set[int] = set()
             new_unknown_photos: dict[int, set[Path]] = {}
+            nsfw_detector: NsfwDetector | None = None
             for index, path in enumerate(files, start=1):
                 if self.cancel_event.is_set():
                     break
@@ -576,6 +578,17 @@ class FaceFinderApp(tk.Tk):
                 match: MatchResult | None = None
                 try:
                     cached = catalog.cached_image(path)
+                    nsfw_score = catalog.nsfw_score_for_path(path)
+                    if nsfw_score is None:
+                        try:
+                            if nsfw_detector is None:
+                                self.events.put(("status", "Loading local NSFW detector…"))
+                                nsfw_detector = NsfwDetector()
+                            nsfw_score = nsfw_detector.score(path)
+                            if cached:
+                                catalog.set_nsfw_score(cached.image_id, nsfw_score)
+                        except Exception as exc:
+                            self.events.put(("status", f"NSFW classification skipped for {path.name}: {exc}"))
                     capture_year = cached.capture_year if cached else image_capture_year(path)
                     if selected_identity:
                         references = list(identity_embeddings_for_year(selected_identity, capture_year))
@@ -887,6 +900,8 @@ class FaceFinderApp(tk.Tk):
                             profile_eligible_flags,
                             art_flags,
                         )
+                        if nsfw_score is not None:
+                            catalog.set_nsfw_score(stored.image_id, nsfw_score)
                         candidate_embeddings = [face.embedding for face in detected]
                         score = best_similarity(references, candidate_embeddings) if references else -1.0
                         if target_identity_id is not None and score >= threshold:
