@@ -35,6 +35,7 @@ A private, local desktop tool that recursively scans a folder and finds photos l
 - clusters biometrically similar anonymous groups for review and can retroactively assign an entire cluster to a known identity;
 - lets recognized and unidentified reference thumbnails be marked **Not a face**, removing false detections from biometric matching and catalog counts;
 - provides a type-to-search face assignment picker that can create a new identity, ranks people seen on the photo's capture day first, and orders both same-day and remaining identities by biometric similarity;
+- numbers unidentified faces consistently between the photo and assignment list; clicking a reticle focuses its picker, while focusing a picker highlights its reticle in cyan;
 - extracts EXIF GPS coordinates, supports editable place names and coordinates, and shows an offline map preview with an explicit OpenStreetMap link;
 - searches by a previously learned person from the **Known person** list without requiring another reference photo;
 - autocompletes identity names case-insensitively while still allowing new names;
