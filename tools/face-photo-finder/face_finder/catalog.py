@@ -1243,6 +1243,21 @@ class FaceCatalog:
             })
         return summaries
 
+    def photo_location_points(self) -> list[dict[str, object]]:
+        """Return current coordinates for photos rendered on the location overview map."""
+        return [
+            {"id": int(row[0]), "latitude": float(row[1]), "longitude": float(row[2])}
+            for row in self.connection.execute(
+                """SELECT images.id, COALESCE(metadata.latitude, images.gps_latitude),
+                          COALESCE(metadata.longitude, images.gps_longitude)
+                   FROM images LEFT JOIN image_metadata metadata ON metadata.image_id=images.id
+                   WHERE images.missing_since IS NULL
+                     AND COALESCE(metadata.latitude, images.gps_latitude) IS NOT NULL
+                     AND COALESCE(metadata.longitude, images.gps_longitude) IS NOT NULL
+                   ORDER BY images.id DESC"""
+            )
+        ]
+
     def pending_art_faces(self, model_version: int, limit: int = 500) -> list[tuple[int, bytes]]:
         rows = self.connection.execute(
             """SELECT id, preview FROM faces

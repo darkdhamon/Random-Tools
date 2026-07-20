@@ -102,20 +102,24 @@ let identityManagementRows = [], unidentifiedManagementRows = [], identityKind =
 function showAppTab(tabName, preservePersonFilter=false) {
   const identityActive = tabName === 'identity';
   const locationActive = tabName === 'locations';
-  const timelineActive = !identityActive && !locationActive;
+  const settingsActive = tabName === 'settings';
+  const timelineActive = !identityActive && !locationActive && !settingsActive;
   if (timelineActive && !preservePersonFilter) { unknownGroupFilter = ''; locationFilter = ''; suggestionDateFilter = ''; }
   timelineTabButton.classList.toggle('active', timelineActive);
   identityTabButton.classList.toggle('active', identityActive);
   locationTabButton.classList.toggle('active', locationActive);
+  settingsTabButton.classList.toggle('active', settingsActive);
   timelineHeader.style.display = timelineActive ? '' : 'none';
   timeline.style.display = timelineActive ? '' : 'none';
   timelineMore.style.display = timelineActive ? '' : 'none';
   identityView.style.display = identityActive ? 'block' : 'none';
   locationView.style.display = locationActive ? 'block' : 'none';
+  settingsView.style.display = settingsActive ? 'block' : 'none';
   if (!timelineActive && typeof albumSuggestionBar !== 'undefined') albumSuggestionBar.style.display = 'none';
   if (timelineActive && typeof renderAlbumSuggestions === 'function') renderAlbumSuggestions();
   if (identityActive) { clearSelection(); loadIdentityTable(); }
-  if (locationActive) loadLocationGroups();
+  if (locationActive) loadLocationOverview();
+  if (settingsActive) loadLocationGroups();
 }
 async function loadIdentityTable() {
   identityStatus.textContent = 'Loading identities...';
@@ -799,10 +803,13 @@ loadAlbums().then(renderAlbumSuggestions);
 
 PAGE = PAGE.replace(
     '<button id=identityTabButton onclick="showAppTab(\'identity\')">Identity</button></nav>',
-    '<button id=identityTabButton onclick="showAppTab(\'identity\')">Identity</button><button id=locationTabButton onclick="showAppTab(\'locations\')">Locations</button></nav>',
+    '<button id=identityTabButton onclick="showAppTab(\'identity\')">Identity</button><button id=locationTabButton onclick="showAppTab(\'locations\')">Locations</button><button id=settingsTabButton onclick="showAppTab(\'settings\')">Settings</button></nav>',
 ).replace(
     '<div id=modal class=modal>',
     r'''<section id=locationView class=location-view><div class=location-toolbar><h1>Locations</h1><button onclick=loadLocationGroups()>Refresh</button></div><div class=geofence-form><h2>Create a geofence</h2><label>Name<input id=geofenceName placeholder="Home, Madison Lake, Minnesota…"></label><label>Type<select id=geofenceType><option value=custom>Custom location</option><option value=general>General location</option></select></label><label>Parent location<select id=geofenceParent><option value="">No parent</option></select></label><label>Boundary<select id=geofenceBoundary onchange=updateBoundaryEditor()><option value=radius>Radius from a point</option><option value=drawn>Draw boundary on map</option><option value=legal>Import legal boundary (GeoJSON)</option></select></label><label>Latitude / map center<input id=geofenceLatitude type=number min=-90 max=90 step=any oninput=renderBoundaryMap()></label><label>Longitude / map center<input id=geofenceLongitude type=number min=-180 max=180 step=any oninput=renderBoundaryMap()></label><label id=geofenceRadiusLabel>Radius (kilometers)<input id=geofenceRadius type=number min=.001 max=20000 step=any value=1></label><div id=boundaryEditor class=boundary-editor><div class=boundary-map-controls><label>Map span (km)<input id=geofenceMapSpan type=number min=.1 max=2000 value=10 oninput=renderBoundaryMap()></label><button onclick=undoBoundaryPoint()>Undo point</button><button onclick=clearBoundaryPoints()>Clear drawing</button></div><svg id=geofenceMap viewBox="0 0 800 360" role=img aria-label="Local geofence drawing map" onclick=addBoundaryPoint(event)></svg><p id=boundaryHelp class=muted></p><label id=legalBoundaryLabel>Legal boundary GeoJSON<textarea id=legalBoundaryGeojson rows=5 placeholder='Paste a GeoJSON Polygon, MultiPolygon, or Feature' oninput=previewLegalBoundary()></textarea></label></div><button onclick=createGeofence()>Create geofence</button><div id=locationStatus class=identity-status></div></div><div id=locationGroups class=location-groups></div></section><div id=modal class=modal>''',
+).replace(
+    '<section id=locationView class=location-view><div class=location-toolbar><h1>Locations</h1><button onclick=loadLocationGroups()>Refresh</button></div><div class=geofence-form>',
+    '<section id=locationView class=location-view><div class=location-toolbar><h1>Photo locations</h1><button onclick=loadLocationOverview()>Refresh</button></div><div id=locationOverviewMapFrame class=location-overview-map><div id=locationOverviewTiles class=geofence-tiles aria-hidden=true></div><svg id=locationOverviewMarkers viewBox="0 0 1200 650" preserveAspectRatio="none" role=img aria-label="Map of all geotagged photos"></svg><div class=map-attribution>Tiles: OpenStreetMap contributors</div></div><div id=locationOverviewStatus class=identity-status></div></section><section id=settingsView class=location-view><div class=location-toolbar><h1>Location settings</h1></div><div class=geofence-form>',
 ).replace(
     '<div class=geofence-form><h2>Create a geofence</h2>',
     '<div class=geofence-form><h2 id=geofenceFormTitle>Create a geofence</h2>',
@@ -877,6 +884,7 @@ async function createGeofence() {
 }
 function editGeofence(id) {
   const item=managedLocations.find(location=>location.id===id);if(!item||item.read_only)return;
+  showAppTab('settings');
   editingLocationId=id;geofenceName.value=item.name;geofenceType.value=item.type;geofenceBoundary.value=item.boundary_type;
   geofenceLatitude.value=item.latitude;geofenceLongitude.value=item.longitude;geofenceRadius.value=item.radius_meters/1000;
   drawnBoundaryPoints=item.boundary_type==='drawn'&&item.geometry?.coordinates?.[0]?[...item.geometry.coordinates[0].slice(0,-1)]:[];
@@ -899,7 +907,7 @@ async function savePhotoLocations() {
 }
 function newGeofenceFromPhoto() {
   if(current.latitude==null||current.longitude==null){saveState.textContent='Add latitude and longitude to this photo first.';return}
-  geofenceLatitude.value=current.latitude;geofenceLongitude.value=current.longitude;closePhotoViewer();showAppTab('locations');geofenceName.focus();
+  geofenceLatitude.value=current.latitude;geofenceLongitude.value=current.longitude;closePhotoViewer();showAppTab('settings');geofenceName.focus();
 }
 const openPhotoWithLocations=openPhoto;
 openPhoto=async function(id){await openPhotoWithLocations(id);if(!managedLocations.length)managedLocations=await api('/api/locations');renderPhotoLocations()};
@@ -919,8 +927,37 @@ PAGE = PAGE.replace(
     '</style>',
     r'''.boundary-map-controls .map-layer-toggle{flex-direction:row;align-items:center;padding-bottom:8px}.map-layer-toggle input{width:auto;margin:0}.geofence-map-frame{position:relative;width:100%;aspect-ratio:20/9;max-height:52vh;min-height:260px;overflow:hidden;border:1px solid #5a7c83;border-radius:8px;background:#173039;touch-action:none;outline:none}.geofence-map-frame:focus{border-color:#60ddea;box-shadow:0 0 0 2px #60ddea66}.geofence-tiles,.geofence-map-frame>svg{position:absolute!important;inset:0;width:100%!important;height:100%!important;max-height:none!important;border:0!important;border-radius:0!important;background:none!important}.geofence-tiles{overflow:hidden;background:#173039}.geofence-tile{position:absolute;width:256px;height:256px;max-width:none;user-select:none;pointer-events:none}.map-controls-help,.map-attribution{position:absolute;bottom:3px;background:#111c;color:#ddd;font-size:10px;padding:2px 4px;pointer-events:none}.map-controls-help{left:4px}.map-attribution{right:4px}.geofence-map-frame.dragging{cursor:grabbing}.geofence-map-frame.dragging>svg{cursor:grabbing!important}</style>''',
 ).replace(
+    '</style>',
+    r'''.location-overview-map{position:relative;width:100%;height:min(72vh,760px);min-height:420px;overflow:hidden;border:1px solid #5a7c83;border-radius:9px;background:#173039}.location-overview-map>svg{position:absolute;inset:0;width:100%;height:100%}.location-map-cluster{fill:#0b7085;stroke:#b8f7ff;stroke-width:3}.location-map-count{fill:white;font-weight:800;font-size:14px;text-anchor:middle;dominant-baseline:central;pointer-events:none}</style>''',
+).replace(
     '</body>',
     r'''<script>
+let locationOverviewPoints=[];
+function overviewWorldPoint(latitude,longitude,zoom){
+  const world=256*2**zoom,lat=Math.max(-85.0511,Math.min(85.0511,latitude)),sin=Math.sin(lat*Math.PI/180);
+  return {x:(longitude+180)/360*world,y:(.5-Math.log((1+sin)/(1-sin))/(4*Math.PI))*world};
+}
+function renderLocationOverview(){
+  const width=locationOverviewMapFrame.clientWidth||1200,height=locationOverviewMapFrame.clientHeight||650;
+  if(!locationOverviewPoints.length){locationOverviewTiles.innerHTML='';locationOverviewMarkers.innerHTML='';locationOverviewStatus.textContent='No geotagged photos found.';return}
+  const normalized=locationOverviewPoints.map(point=>overviewWorldPoint(point.latitude,point.longitude,0));
+  const minX=Math.min(...normalized.map(point=>point.x)),maxX=Math.max(...normalized.map(point=>point.x));
+  const minY=Math.min(...normalized.map(point=>point.y)),maxY=Math.max(...normalized.map(point=>point.y));
+  let zoom=1;for(let candidate=18;candidate>=1;candidate--){const scale=2**candidate;if((maxX-minX)*scale<=width-100&&(maxY-minY)*scale<=height-100){zoom=candidate;break}}
+  if(locationOverviewPoints.length===1)zoom=12;
+  const world=256*2**zoom,centerX=(minX+maxX)/2*2**zoom,centerY=(minY+maxY)/2*2**zoom;
+  const firstX=Math.floor((centerX-width/2)/256),lastX=Math.floor((centerX+width/2)/256),firstY=Math.floor((centerY-height/2)/256),lastY=Math.floor((centerY+height/2)/256),count=2**zoom;let tiles='';
+  for(let ty=firstY;ty<=lastY;ty++)for(let tx=firstX;tx<=lastX;tx++){if(ty<0||ty>=count)continue;const wrappedX=((tx%count)+count)%count;tiles+=`<img class="geofence-tile" alt="" src="${mapTileUrl('road',zoom,wrappedX,ty)}" style="left:${tx*256-(centerX-width/2)}px;top:${ty*256-(centerY-height/2)}px">`}
+  locationOverviewTiles.innerHTML=tiles;
+  const clusters=new Map();for(const point of locationOverviewPoints){const projected=overviewWorldPoint(point.latitude,point.longitude,zoom),x=projected.x-(centerX-width/2),y=projected.y-(centerY-height/2),key=`${Math.floor(x/58)}:${Math.floor(y/58)}`,cluster=clusters.get(key)||{x:0,y:0,count:0};cluster.x+=x;cluster.y+=y;cluster.count++;clusters.set(key,cluster)}
+  locationOverviewMarkers.setAttribute('viewBox',`0 0 ${width} ${height}`);
+  locationOverviewMarkers.innerHTML=[...clusters.values()].map(cluster=>{const x=cluster.x/cluster.count,y=cluster.y/cluster.count,r=cluster.count>99?24:cluster.count>9?21:18;return `<g><title>${cluster.count} photo${cluster.count===1?'':'s'} in this area</title><circle class="location-map-cluster" cx="${x}" cy="${y}" r="${r}"></circle><text class="location-map-count" x="${x}" y="${y}">${cluster.count}</text></g>`}).join('');
+  locationOverviewStatus.textContent=`${locationOverviewPoints.length.toLocaleString()} geotagged photos · ${clusters.size.toLocaleString()} map areas · automatically fitted to all locations`;
+}
+async function loadLocationOverview(){
+  locationOverviewStatus.textContent='Loading photo locations…';
+  try{locationOverviewPoints=await api('/api/location-points');renderLocationOverview()}catch(error){locationOverviewStatus.textContent='Map failed: '+error.message}
+}
 function mapTileUrl(layer,z,x,y){
   if(layer==='road')return `https://tile.openstreetmap.org/${z}/${x}/${y}.png`;
   const service=layer==='satellite'?'World_Imagery':layer==='roads'?'Reference/World_Transportation':'Reference/World_Boundaries_and_Places';
@@ -985,11 +1022,11 @@ function endMapDrag(){mapDragStart=null;geofenceMapFrame.classList.remove('dragg
 geofenceMapFrame.addEventListener('pointerup',endMapDrag);geofenceMapFrame.addEventListener('pointercancel',endMapDrag);
 geofenceMapFrame.addEventListener('wheel',event=>{event.preventDefault();zoomBoundaryMap(event.deltaY<0?.8:1.25)},{passive:false});
 geofenceMapFrame.addEventListener('keydown',event=>{const key=event.key.toLowerCase();if(!'wasdqe'.includes(key))return;event.preventDefault();if(key==='q'||key==='e')zoomBoundaryMap(key==='q'?1.25:.8);else panBoundaryMap(key==='a'?-.2:key==='d'?.2:0,key==='w'?.2:key==='s'?-.2:0)});
-window.addEventListener('resize',()=>requestAnimationFrame(renderBoundaryMap));
+window.addEventListener('resize',()=>requestAnimationFrame(()=>{renderBoundaryMap();if(locationView.style.display==='block')renderLocationOverview()}));
 const renderBoundaryOverlay=renderBoundaryMap;
 renderBoundaryMap=function(){renderMapTiles();renderBoundaryOverlay()};
 const showAppTabWithoutDeviceLocation=showAppTab;
-showAppTab=function(tabName,preservePersonFilter=false){showAppTabWithoutDeviceLocation(tabName,preservePersonFilter);updateTimelineLocationScope();if(tabName==='locations')useDeviceLocation(false)};
+showAppTab=function(tabName,preservePersonFilter=false){showAppTabWithoutDeviceLocation(tabName,preservePersonFilter);updateTimelineLocationScope();if(tabName==='settings')useDeviceLocation(false)};
 requestAnimationFrame(renderBoundaryMap);
 </script></body>''',
 )
@@ -1077,6 +1114,8 @@ class GalleryHandler(BaseHTTPRequestHandler):
                 self._json(catalog.album_suggestions())
             elif parsed.path == "/api/locations":
                 self._json(catalog.location_summaries())
+            elif parsed.path == "/api/location-points":
+                self._json(catalog.photo_location_points())
             elif parsed.path == "/media":
                 path = catalog.image_path(int(query["id"][0]))
                 if path is None: self.send_error(404); return

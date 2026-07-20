@@ -427,6 +427,8 @@ class CatalogTests(unittest.TestCase):
             self.assertEqual(updated["name"], "New Home")
             self.assertEqual(updated["radius_meters"], 250)
             self.assertFalse(updated["read_only"])
+            points = catalog.photo_location_points()
+            self.assertEqual(points, [{"id": near_id, "latitude": 44.2, "longitude": -93.81}])
             with self.assertRaisesRegex(ValueError, "read-only"):
                 catalog.update_location(
                     legal, "Changed", "general", 0, 0, 1, country, "drawn",
