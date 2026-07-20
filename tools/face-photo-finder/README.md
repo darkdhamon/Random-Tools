@@ -33,6 +33,7 @@ A private, local desktop tool that recursively scans a folder and finds photos l
 - orders each identity's biometric reference thumbnails from the most recent capture date to the oldest;
 - sorts recognized and unidentified identities by date last seen, name/group label, or number of photos and displays the last-seen date;
 - clusters biometrically similar anonymous groups for review and can retroactively assign an entire cluster to a known identity;
+- lets recognized and unidentified reference thumbnails be marked **Not a face**, removing false detections from biometric matching and catalog counts;
 - extracts EXIF GPS coordinates, supports editable place names and coordinates, and shows an offline map preview with an explicit OpenStreetMap link;
 - searches by a previously learned person from the **Known person** list without requiring another reference photo;
 - autocompletes identity names case-insensitively while still allowing new names;

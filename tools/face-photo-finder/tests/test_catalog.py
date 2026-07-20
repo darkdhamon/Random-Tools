@@ -477,6 +477,24 @@ class CatalogTests(unittest.TestCase):
             self.assertTrue(all(face.identity_id is None for face in faces))
             reopened.close()
 
+    def test_removing_false_unknown_reference_cleans_up_empty_group(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            image = root / "false-face.jpg"; image.write_bytes(b"false")
+            catalog = FaceCatalog(root / "catalog.sqlite3")
+            group_id = catalog.create_unknown_group()
+            stored = catalog.store_scan(
+                image, [np.array([1.0, 0.0], dtype=np.float32)], [None],
+                intentionally_unknown=[True], unknown_group_ids=[group_id],
+                previews=[np.frombuffer(b"preview", dtype=np.uint8)],
+            )
+            face_id = catalog.faces_for_image(stored.image_id)[0].face_id
+            catalog.remove_face(face_id)
+            self.assertEqual(catalog.cached_image(image).face_count, 0)  # type: ignore[union-attr]
+            self.assertEqual(catalog.unidentified_summaries(), [])
+            self.assertEqual(catalog.unknown_groups(), [])
+            catalog.close()
+
     def test_intentionally_unknown_face_is_persisted_and_can_later_be_identified(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

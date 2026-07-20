@@ -1468,7 +1468,9 @@ class FaceCatalog:
     def remove_face(self, face_id: int) -> None:
         """Mark a detector false-positive by removing it and refreshing image counts."""
         with self.connection:
-            image_row = self.connection.execute("SELECT image_id FROM faces WHERE id = ?", (face_id,)).fetchone()
+            image_row = self.connection.execute(
+                "SELECT image_id, unknown_group_id FROM faces WHERE id = ?", (face_id,)
+            ).fetchone()
             if not image_row:
                 return
             image_id = int(image_row[0])
@@ -1480,6 +1482,12 @@ class FaceCatalog:
                    WHERE id = ?""",
                 (image_id,),
             )
+            if image_row[1] is not None:
+                self.connection.execute(
+                    """DELETE FROM unknown_groups WHERE id = ?
+                       AND NOT EXISTS (SELECT 1 FROM faces WHERE unknown_group_id = ?)""",
+                    (image_row[1], image_row[1]),
+                )
 
 
 def best_known_identity(

@@ -138,6 +138,7 @@ function renderIdentityTable() {
     const referenceStrip = document.createElement('div');
     referenceStrip.className = 'reference-strip';
     for (const faceId of identity.reference_face_ids || []) {
+      const referenceItem = document.createElement('div'); referenceItem.className = 'reference-item';
       const previewButton = document.createElement('button');
       previewButton.className = 'reference-thumb';
       previewButton.title = `Open reference for ${identity.name}`;
@@ -147,7 +148,10 @@ function renderIdentityTable() {
       preview.src = `/api/identity-reference?id=${faceId}`;
       previewButton.append(preview);
       previewButton.onclick = () => openReferencePreview(faceId, identity.name);
-      referenceStrip.append(previewButton);
+      const removeButton = document.createElement('button'); removeButton.className = 'reference-not-face';
+      removeButton.textContent = 'Not a face'; removeButton.title = `Remove this false face detection from ${identity.name}`;
+      removeButton.onclick = event => { event.stopPropagation(); removeReferenceFace(faceId, identity.name); };
+      referenceItem.append(previewButton, removeButton); referenceStrip.append(referenceItem);
     }
     if (!referenceStrip.children.length) referenceStrip.textContent = 'No eligible references';
     referenceCell.append(referenceStrip);
@@ -217,10 +221,14 @@ function renderUnidentifiedTable() {
     const referenceCell = row.insertCell();
     const strip = document.createElement('div'); strip.className = 'reference-strip';
     for (const faceId of group.reference_face_ids || []) {
+      const referenceItem = document.createElement('div'); referenceItem.className = 'reference-item';
       const button = document.createElement('button'); button.className = 'reference-thumb';
       const preview = document.createElement('img'); preview.loading = 'lazy'; preview.alt = group.label;
       preview.src = `/api/unidentified-reference?id=${faceId}`; button.append(preview);
-      button.onclick = () => openUnidentifiedPreview(faceId, group.label); strip.append(button);
+      button.onclick = () => openUnidentifiedPreview(faceId, group.label);
+      const removeButton = document.createElement('button'); removeButton.className = 'reference-not-face'; removeButton.textContent = 'Not a face';
+      removeButton.onclick = event => { event.stopPropagation(); removeReferenceFace(faceId, group.label); };
+      referenceItem.append(button, removeButton); strip.append(referenceItem);
     }
     referenceCell.append(strip);
     row.insertCell().textContent = group.photo_count;
@@ -273,6 +281,11 @@ function closeReferencePreview() {
   referenceFull.removeAttribute('src');
 }
 function openUnidentifiedPreview(faceId, label) { referenceTitle.textContent = label; referenceFull.src = `/api/unidentified-reference?id=${faceId}`; referenceDialog.classList.add('open'); }
+async function removeReferenceFace(faceId, label) {
+  if (!confirm(`Mark this ${label} reference as not a face? It will be removed from the catalog and biometric matching.`)) return;
+  try { await post('/api/face',{face_id:faceId,action:'remove'}); closeReferencePreview(); await loadIdentityTable(); identityStatus.textContent = 'False reference face removed'; }
+  catch (error) { identityStatus.textContent = 'Removal failed: ' + error.message; }
+}
 </script></body>''',
 )
 PAGE = PAGE.replace(
@@ -615,6 +628,9 @@ PAGE = PAGE.replace(
 ).replace(
     '<th>Anonymous group</th><th>Appearances</th>',
     '<th>Anonymous group</th><th>Last seen</th><th>Appearances</th>',
+).replace(
+    '</style>',
+    r'''.reference-item{display:flex;flex-direction:column;flex:0 0 auto;width:64px}.reference-item .reference-thumb{width:64px}.reference-not-face{padding:3px 2px;margin-top:3px;background:#72242a;border-color:#b84b54;color:#fff;font-size:10px;white-space:normal}.reference-not-face:hover{background:#a72b35}</style>''',
 )
 
 
