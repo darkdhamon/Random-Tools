@@ -342,7 +342,8 @@ class CatalogTests(unittest.TestCase):
             catalog = FaceCatalog(root / "catalog.sqlite3")
             stored = catalog.store_scan(image, [], [])
             catalog.update_gallery_metadata(
-                stored.image_id, "Summer trip", "At the lake", "family, vacation", 5, 2018, 1
+                stored.image_id, "Summer trip", "At the lake", "family, vacation", 5, 2018, 1,
+                "document",
             )
             photo = catalog.gallery_photo(stored.image_id)
             self.assertIsNotNone(photo)
@@ -350,10 +351,16 @@ class CatalogTests(unittest.TestCase):
             self.assertEqual(photo["year"], 2018)  # type: ignore[index]
             self.assertEqual(photo["rating"], 5)  # type: ignore[index]
             self.assertTrue(photo["is_nsfw"])  # type: ignore[index]
+            self.assertEqual(photo["media_kind"], "document")  # type: ignore[index]
             self.assertEqual([item["id"] for item in catalog.gallery_photos(search="vacation")], [stored.image_id])
             self.assertEqual([item["id"] for item in catalog.gallery_photos(year=2018)], [stored.image_id])
             self.assertEqual([item["id"] for item in catalog.gallery_photos(nsfw_filter="nsfw")], [stored.image_id])
             self.assertEqual(catalog.gallery_photos(nsfw_filter="safe"), [])
+            self.assertEqual(catalog.gallery_photos(excluded_kinds=("document",)), [])
+            self.assertEqual(
+                [item["id"] for item in catalog.gallery_photos(media_kind="document")],
+                [stored.image_id],
+            )
             catalog.close()
 
     def test_best_known_identity_applies_threshold(self) -> None:

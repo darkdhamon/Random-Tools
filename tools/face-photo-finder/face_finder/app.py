@@ -32,6 +32,7 @@ from .catalog import (
     image_capture_year,
 )
 from .models import ensure_age_model, ensure_models
+from .media_kind import classify_media_kind, filename_media_kind
 from .nsfw import NsfwDetector
 from .prefetch import DetectionPrefetcher
 from .scanner import (
@@ -549,7 +550,7 @@ class FaceFinderApp(tk.Tk):
                 references = []
                 self.events.put(("status", "Cataloging every photo that contains a face…"))
 
-            files = image_files(folder)
+            files = image_files(folder, skip_screenshots=False)
             reconciliation = catalog.reconcile_files(files)
             if reconciliation.relocated or reconciliation.newly_missing:
                 self.events.put((
@@ -557,7 +558,10 @@ class FaceFinderApp(tk.Tk):
                     f"Catalog paths updated: {reconciliation.relocated} relocated, "
                     f"{reconciliation.newly_missing} newly missing.",
                 ))
-            uncached_paths = [path for path in files if catalog.cached_image(path) is None]
+            uncached_paths = [
+                path for path in files
+                if catalog.cached_image(path) is None and filename_media_kind(path) != "screenshot"
+            ]
             self.prefetcher = DetectionPrefetcher(
                 uncached_paths,
                 lambda: FaceEngine(detector, recognizer),
@@ -578,6 +582,10 @@ class FaceFinderApp(tk.Tk):
                 match: MatchResult | None = None
                 try:
                     cached = catalog.cached_image(path)
+                    stored_media_kind = catalog.media_kind_for_path(path)
+                    media_kind = stored_media_kind or classify_media_kind(path)
+                    if cached and stored_media_kind is None:
+                        catalog.set_media_kind(cached.image_id, media_kind)
                     nsfw_score = catalog.nsfw_score_for_path(path)
                     if nsfw_score is None:
                         try:
@@ -698,7 +706,7 @@ class FaceFinderApp(tk.Tk):
                                 path, score, refreshed.face_count, refreshed.identified_count, cached=True
                             )
                     else:
-                        detected = self.prefetcher.get(path)
+                        detected = [] if media_kind == "screenshot" else self.prefetcher.get(path)
                         accepted_faces: list[DetectedFace] = []
                         assignments: list[int | None] = []
                         unknown_statuses: list[bool] = []
@@ -902,6 +910,7 @@ class FaceFinderApp(tk.Tk):
                         )
                         if nsfw_score is not None:
                             catalog.set_nsfw_score(stored.image_id, nsfw_score)
+                        catalog.set_media_kind(stored.image_id, media_kind)
                         candidate_embeddings = [face.embedding for face in detected]
                         score = best_similarity(references, candidate_embeddings) if references else -1.0
                         if target_identity_id is not None and score >= threshold:

@@ -139,13 +139,15 @@ def read_image(path: Path) -> np.ndarray:
     return image
 
 
-def image_files(folder: Path, excluded_roots: Iterable[Path] = ()) -> list[Path]:
+def image_files(
+    folder: Path, excluded_roots: Iterable[Path] = (), skip_screenshots: bool = True
+) -> list[Path]:
     excluded = [root.resolve() for root in excluded_roots]
     files: list[Path] = []
     for path in folder.rglob("*"):
         if not path.is_file() or path.suffix.lower() not in IMAGE_EXTENSIONS:
             continue
-        if "screenshot" in path.name.casefold():
+        if skip_screenshots and "screenshot" in path.name.casefold():
             continue
         resolved = path.resolve()
         if any(resolved == root or root in resolved.parents for root in excluded):

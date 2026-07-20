@@ -135,7 +135,8 @@ class FaceCatalog:
                 description TEXT NOT NULL DEFAULT '',
                 tags TEXT NOT NULL DEFAULT '',
                 rating INTEGER NOT NULL DEFAULT 0 CHECK(rating BETWEEN 0 AND 5),
-                nsfw_override INTEGER
+                nsfw_override INTEGER,
+                media_kind_override TEXT
             );
             """
         )
@@ -156,9 +157,13 @@ class FaceCatalog:
             self.connection.execute("ALTER TABLE images ADD COLUMN nsfw_score REAL")
         if "nsfw_scanned_at" not in image_columns:
             self.connection.execute("ALTER TABLE images ADD COLUMN nsfw_scanned_at TEXT")
+        if "media_kind" not in image_columns:
+            self.connection.execute("ALTER TABLE images ADD COLUMN media_kind TEXT")
         metadata_columns = {row[1] for row in self.connection.execute("PRAGMA table_info(image_metadata)")}
         if "nsfw_override" not in metadata_columns:
             self.connection.execute("ALTER TABLE image_metadata ADD COLUMN nsfw_override INTEGER")
+        if "media_kind_override" not in metadata_columns:
+            self.connection.execute("ALTER TABLE image_metadata ADD COLUMN media_kind_override TEXT")
         if "preview" not in columns:
             self.connection.execute("ALTER TABLE faces ADD COLUMN preview BLOB")
         if "intentionally_unknown" not in columns:
@@ -221,6 +226,7 @@ class FaceCatalog:
     def gallery_photos(
         self, search: str = "", identity_id: int | None = None, year: int | None = None,
         limit: int = 100, offset: int = 0, nsfw_filter: str = "all",
+        excluded_kinds: tuple[str, ...] = (), media_kind: str | None = None,
     ) -> list[dict[str, object]]:
         clauses = ["images.missing_since IS NULL"]
         values: list[object] = []
@@ -239,6 +245,14 @@ class FaceCatalog:
             clauses.append(f"{effective_nsfw} = 0")
         elif nsfw_filter == "nsfw":
             clauses.append(f"{effective_nsfw} = 1")
+        effective_kind = "COALESCE(metadata.media_kind_override, images.media_kind, 'photo')"
+        if media_kind:
+            clauses.append(f"{effective_kind} = ?")
+            values.append(media_kind)
+        elif excluded_kinds:
+            placeholders = ",".join("?" for _ in excluded_kinds)
+            clauses.append(f"{effective_kind} NOT IN ({placeholders})")
+            values.extend(excluded_kinds)
         values.extend((max(1, min(limit, 250)), max(0, offset)))
         rows = self.connection.execute(
             f"""SELECT images.id, images.path, images.face_count, images.identified_count,
@@ -246,7 +260,9 @@ class FaceCatalog:
                        COALESCE(metadata.title, ''), COALESCE(metadata.description, ''),
                        COALESCE(metadata.tags, ''), COALESCE(metadata.rating, 0),
                        images.nsfw_score, metadata.nsfw_override,
-                       COALESCE(metadata.nsfw_override, images.nsfw_score >= 0.45, 0)
+                       COALESCE(metadata.nsfw_override, images.nsfw_score >= 0.45, 0),
+                       COALESCE(metadata.media_kind_override, images.media_kind, 'photo'),
+                       metadata.media_kind_override
                 FROM images LEFT JOIN image_metadata metadata ON metadata.image_id = images.id
                 WHERE {' AND '.join(clauses)}
                 ORDER BY COALESCE(images.capture_year_override, images.capture_year) DESC, images.path
@@ -259,6 +275,7 @@ class FaceCatalog:
                 "face_count": int(row[2]), "identified_count": int(row[3]), "year": row[4],
                 "title": row[5], "description": row[6], "tags": row[7], "rating": int(row[8]),
                 "nsfw_score": row[9], "nsfw_override": row[10], "is_nsfw": bool(row[11]),
+                "media_kind": row[12], "media_kind_override": row[13],
             }
             for row in rows
         ]
@@ -270,7 +287,9 @@ class FaceCatalog:
                       COALESCE(metadata.title, ''), COALESCE(metadata.description, ''),
                       COALESCE(metadata.tags, ''), COALESCE(metadata.rating, 0),
                       images.nsfw_score, metadata.nsfw_override,
-                      COALESCE(metadata.nsfw_override, images.nsfw_score >= 0.45, 0)
+                      COALESCE(metadata.nsfw_override, images.nsfw_score >= 0.45, 0),
+                      COALESCE(metadata.media_kind_override, images.media_kind, 'photo'),
+                      metadata.media_kind_override
                FROM images LEFT JOIN image_metadata metadata ON metadata.image_id = images.id
                WHERE images.id = ? AND images.missing_since IS NULL""",
             (image_id,),
@@ -282,6 +301,7 @@ class FaceCatalog:
             "face_count": int(row[1]), "identified_count": int(row[2]), "year": row[3],
             "title": row[4], "description": row[5], "tags": row[6], "rating": int(row[7]),
             "nsfw_score": row[8], "nsfw_override": row[9], "is_nsfw": bool(row[10]),
+            "media_kind": row[11], "media_kind_override": row[12],
         }
         faces = self.connection.execute(
             """SELECT faces.id, identities.name, faces.intentionally_unknown, faces.is_art,
@@ -307,6 +327,7 @@ class FaceCatalog:
     def update_gallery_metadata(
         self, image_id: int, title: str, description: str, tags: str, rating: int,
         capture_year: int | None, nsfw_override: int | None = None,
+        media_kind_override: str | None = None,
     ) -> None:
         if rating not in range(6):
             raise ValueError("Rating must be between 0 and 5.")
@@ -314,14 +335,19 @@ class FaceCatalog:
             raise ValueError("Capture year must be between 1900 and the current year.")
         if nsfw_override not in (None, 0, 1):
             raise ValueError("NSFW override must be automatic, safe, or NSFW.")
+        if media_kind_override not in (None, "photo", "screenshot", "document"):
+            raise ValueError("Content type must be automatic, photo, screenshot, or document.")
         with self.connection:
             self.connection.execute(
-                """INSERT INTO image_metadata(image_id, title, description, tags, rating, nsfw_override)
-                   VALUES (?, ?, ?, ?, ?, ?)
+                """INSERT INTO image_metadata(image_id, title, description, tags, rating, nsfw_override,
+                                               media_kind_override)
+                   VALUES (?, ?, ?, ?, ?, ?, ?)
                    ON CONFLICT(image_id) DO UPDATE SET title=excluded.title,
                        description=excluded.description, tags=excluded.tags, rating=excluded.rating,
-                       nsfw_override=excluded.nsfw_override""",
-                (image_id, title.strip(), description.strip(), tags.strip(), rating, nsfw_override),
+                       nsfw_override=excluded.nsfw_override,
+                       media_kind_override=excluded.media_kind_override""",
+                (image_id, title.strip(), description.strip(), tags.strip(), rating, nsfw_override,
+                 media_kind_override),
             )
             self.connection.execute(
                 "UPDATE images SET capture_year_override = ? WHERE id = ?", (capture_year, image_id)
@@ -341,6 +367,18 @@ class FaceCatalog:
                 "UPDATE images SET nsfw_score = ?, nsfw_scanned_at = ? WHERE id = ?",
                 (score, datetime.now(timezone.utc).isoformat(), image_id),
             )
+
+    def media_kind_for_path(self, path: Path) -> str | None:
+        row = self.connection.execute(
+            "SELECT media_kind FROM images WHERE path = ?", (str(path.resolve()),)
+        ).fetchone()
+        return row[0] if row else None
+
+    def set_media_kind(self, image_id: int, media_kind: str) -> None:
+        if media_kind not in ("photo", "screenshot", "document"):
+            raise ValueError("Invalid content type.")
+        with self.connection:
+            self.connection.execute("UPDATE images SET media_kind = ? WHERE id = ?", (media_kind, image_id))
 
     def identities(self) -> list[KnownIdentity]:
         rows = self.connection.execute(

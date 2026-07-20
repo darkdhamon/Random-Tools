@@ -21,6 +21,7 @@ A private, local desktop tool that recursively scans a folder and finds photos l
 - asks again when a new photo matches a previously anonymous person, with an option to update every earlier match;
 - supports an hourly per-user background catalog task that stays hidden unless the same unidentified person appears in at least three distinct new photos;
 - classifies explicit nudity locally with NudeNet and lets the web gallery hide, search, or manually correct NSFW results;
+- detects screenshots and document/receipt-style images locally, with independent hide filters, type searches, and manual corrections;
 - searches by a previously learned person from the **Known person** list without requiring another reference photo;
 - autocompletes identity names case-insensitively while still allowing new names;
 - shows up to three closest named-profile buttons with match percentages when automatic recognition is uncertain;
