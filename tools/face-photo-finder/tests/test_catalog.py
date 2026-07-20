@@ -374,6 +374,34 @@ class CatalogTests(unittest.TestCase):
             self.assertEqual(catalog.album_suggestions(), [])
             catalog.close()
 
+    def test_nested_geofences_and_manual_locations_can_overlap(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            catalog = FaceCatalog(root / "catalog.sqlite3")
+            near = root / "near.jpg"; near.write_bytes(b"near")
+            manual = root / "manual.jpg"; manual.write_bytes(b"manual")
+            near_id = catalog.store_scan(near, [], []).image_id
+            manual_id = catalog.store_scan(manual, [], []).image_id
+            with catalog.connection:
+                catalog.connection.execute(
+                    "UPDATE images SET gps_latitude = 44.20, gps_longitude = -93.81 WHERE id = ?",
+                    (near_id,),
+                )
+            country = catalog.create_location("United States", "general", 44.20, -93.81, 500_000)
+            city = catalog.create_location("Madison Lake", "general", 44.20, -93.81, 20_000, country)
+            home = catalog.create_location("Home", "custom", 44.20, -93.81, 100, city)
+            catalog.set_photo_locations(manual_id, [home])
+
+            near_locations = {item["name"] for item in catalog.locations_for_image(near_id)}
+            manual_locations = {item["name"] for item in catalog.locations_for_image(manual_id)}
+            self.assertEqual(near_locations, {"Home", "Madison Lake", "United States"})
+            self.assertEqual(manual_locations, {"Home", "Madison Lake", "United States"})
+            self.assertEqual({item["id"] for item in catalog.gallery_photos(location_id=country)}, {near_id, manual_id})
+            summary = next(item for item in catalog.location_summaries() if item["id"] == home)
+            self.assertEqual(summary["path"], "United States → Madison Lake → Home")
+            self.assertEqual(summary["photo_count"], 2)
+            catalog.close()
+
     def test_reset_removes_all_catalog_data_without_deleting_source_image(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

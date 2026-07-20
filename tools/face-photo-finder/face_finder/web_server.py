@@ -101,16 +101,21 @@ PAGE = PAGE.replace(
 let identityManagementRows = [], unidentifiedManagementRows = [], identityKind = 'recognized', unknownGroupFilter = '', selectedIdentityIds = new Set();
 function showAppTab(tabName, preservePersonFilter=false) {
   const identityActive = tabName === 'identity';
-  if (!identityActive && !preservePersonFilter) unknownGroupFilter = '';
-  timelineTabButton.classList.toggle('active', !identityActive);
+  const locationActive = tabName === 'locations';
+  const timelineActive = !identityActive && !locationActive;
+  if (timelineActive && !preservePersonFilter) { unknownGroupFilter = ''; locationFilter = ''; }
+  timelineTabButton.classList.toggle('active', timelineActive);
   identityTabButton.classList.toggle('active', identityActive);
-  timelineHeader.style.display = identityActive ? 'none' : '';
-  timeline.style.display = identityActive ? 'none' : '';
-  timelineMore.style.display = identityActive ? 'none' : '';
+  locationTabButton.classList.toggle('active', locationActive);
+  timelineHeader.style.display = timelineActive ? '' : 'none';
+  timeline.style.display = timelineActive ? '' : 'none';
+  timelineMore.style.display = timelineActive ? '' : 'none';
   identityView.style.display = identityActive ? 'block' : 'none';
-  if (identityActive && typeof albumSuggestionBar !== 'undefined') albumSuggestionBar.style.display = 'none';
-  if (!identityActive && typeof renderAlbumSuggestions === 'function') renderAlbumSuggestions();
+  locationView.style.display = locationActive ? 'block' : 'none';
+  if (!timelineActive && typeof albumSuggestionBar !== 'undefined') albumSuggestionBar.style.display = 'none';
+  if (timelineActive && typeof renderAlbumSuggestions === 'function') renderAlbumSuggestions();
   if (identityActive) { clearSelection(); loadIdentityTable(); }
+  if (locationActive) loadLocationGroups();
 }
 async function loadIdentityTable() {
   identityStatus.textContent = 'Loading identities...';
@@ -786,6 +791,57 @@ loadAlbums().then(renderAlbumSuggestions);
 </script></body>''',
 )
 
+PAGE = PAGE.replace(
+    '<button id=identityTabButton onclick="showAppTab(\'identity\')">Identity</button></nav>',
+    '<button id=identityTabButton onclick="showAppTab(\'identity\')">Identity</button><button id=locationTabButton onclick="showAppTab(\'locations\')">Locations</button></nav>',
+).replace(
+    '<div id=modal class=modal>',
+    r'''<section id=locationView class=location-view><div class=location-toolbar><h1>Locations</h1><button onclick=loadLocationGroups()>Refresh</button></div><div class=geofence-form><h2>Create a geofence</h2><label>Name<input id=geofenceName placeholder="Home, Madison Lake, Minnesota…"></label><label>Type<select id=geofenceType><option value=custom>Custom location</option><option value=general>General location</option></select></label><label>Parent location<select id=geofenceParent><option value="">No parent</option></select></label><label>Latitude<input id=geofenceLatitude type=number min=-90 max=90 step=any></label><label>Longitude<input id=geofenceLongitude type=number min=-180 max=180 step=any></label><label>Radius (kilometers)<input id=geofenceRadius type=number min=.001 max=20000 step=any value=1></label><button onclick=createGeofence()>Create geofence</button><div id=locationStatus class=identity-status></div></div><div id=locationGroups class=location-groups></div></section><div id=modal class=modal>''',
+).replace(
+    "album_id:albumFilter.value,limit:100,offset",
+    "album_id:albumFilter.value,location_id:locationFilter,limit:100,offset",
+).replace(
+    "</style>",
+    r'''.location-view{display:none;padding:22px;max-width:1500px;margin:auto}.location-toolbar{display:flex;align-items:center;gap:12px}.geofence-form{display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:10px;align-items:end;background:#192326;border:1px solid #3d5960;border-radius:9px;padding:14px;margin-bottom:18px}.geofence-form h2{grid-column:1/-1;margin:0}.geofence-form label{display:flex;flex-direction:column;gap:4px}.location-groups{display:grid;grid-template-columns:repeat(auto-fit,minmax(340px,1fr));gap:14px}.location-card{background:#1c2224;border:1px solid #3d555a;border-radius:9px;padding:12px}.location-card h2{margin:0 0 4px}.location-previews{display:grid;grid-template-columns:repeat(6,1fr);gap:4px;margin:9px 0}.location-previews img{width:100%;aspect-ratio:1;object-fit:cover;border-radius:4px}.photo-locations{margin:8px 0 16px;padding:10px;background:#182326;border:1px solid #3e555a;border-radius:7px}.photo-location-options{display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:6px;margin:8px 0}.photo-location-options label{display:flex;align-items:center;gap:6px}.photo-location-options input{width:auto!important;margin:0!important}@media(max-width:750px){.location-view{padding:12px}.location-groups{grid-template-columns:1fr}.location-previews{grid-template-columns:repeat(4,1fr)}}</style>''',
+).replace(
+    "</body>",
+    r'''<script>
+let managedLocations=[], locationFilter='';
+async function loadLocationGroups() {
+  locationStatus.textContent='Loading locations…';
+  try {
+    managedLocations=await api('/api/locations');
+    geofenceParent.innerHTML='<option value="">No parent</option>'+managedLocations.map(item=>`<option value="${item.id}">${esc(item.path)}</option>`).join('');
+    locationGroups.innerHTML=managedLocations.length?managedLocations.map(item=>`<article class="location-card"><h2>${esc(item.name)}</h2><div class="muted">${esc(item.path)} · ${item.type} · ${(item.radius_meters/1000).toLocaleString()} km · ${item.photo_count} photos</div><div class="location-previews">${item.preview_photo_ids.map(id=>`<img loading="lazy" src="/media?id=${id}&thumb=1" alt="">`).join('')}</div><button onclick="viewLocationTimeline(${item.id})">View photos</button></article>`).join(''):'<p>No locations yet. Create a broad general location or a custom geofence above.</p>';
+    locationStatus.textContent=`${managedLocations.length} locations`;
+  } catch(error) { locationStatus.textContent='Load failed: '+error.message; }
+}
+async function createGeofence() {
+  try {
+    await post('/api/locations',{name:geofenceName.value,location_type:geofenceType.value,parent_id:geofenceParent.value||null,latitude:+geofenceLatitude.value,longitude:+geofenceLongitude.value,radius_meters:+geofenceRadius.value*1000});
+    geofenceName.value=''; await loadLocationGroups(); locationStatus.textContent='Geofence created';
+  } catch(error) { locationStatus.textContent='Create failed: '+error.message; }
+}
+function viewLocationTimeline(id) { locationFilter=String(id); person.value=''; albumFilter.value=''; showAppTab('timeline',true); load(true); }
+function renderPhotoLocations() {
+  let box=document.getElementById('photoLocations');
+  if(!box){box=document.createElement('section');box.id='photoLocations';box.className='photo-locations';photoAlbums.insertAdjacentElement('afterend',box)}
+  const manual=new Set(current.manual_location_ids||[]), matched=current.locations||[];
+  box.innerHTML='<strong>Locations</strong><div class="muted">Matched: '+(matched.length?matched.map(item=>esc(item.path)+(item.inherited?' (inherited)':item.manual?' (manual)':'')).join(', '):'None')+'</div><div class="photo-location-options">'+(managedLocations.length?managedLocations.map(item=>`<label><input type="checkbox" value="${item.id}" ${manual.has(item.id)?'checked':''} onchange="savePhotoLocations()">${esc(item.path)}</label>`).join(''):'<span class="muted">No saved locations.</span>')+'</div><button onclick="newGeofenceFromPhoto()">New geofence here…</button>';
+}
+async function savePhotoLocations() {
+  const ids=[...document.querySelectorAll('#photoLocations input:checked')].map(input=>+input.value);
+  await post('/api/photo-locations',{image_id:current.id,location_ids:ids}); saveState.textContent='Location assignments saved automatically'; await openPhoto(current.id);
+}
+function newGeofenceFromPhoto() {
+  if(current.latitude==null||current.longitude==null){saveState.textContent='Add latitude and longitude to this photo first.';return}
+  geofenceLatitude.value=current.latitude;geofenceLongitude.value=current.longitude;closePhotoViewer();showAppTab('locations');geofenceName.focus();
+}
+const openPhotoWithLocations=openPhoto;
+openPhoto=async function(id){await openPhotoWithLocations(id);if(!managedLocations.length)managedLocations=await api('/api/locations');renderPhotoLocations()};
+</script></body>''',
+)
+
 
 class GalleryHandler(BaseHTTPRequestHandler):
     token = secrets.token_urlsafe(24)
@@ -822,6 +878,7 @@ class GalleryHandler(BaseHTTPRequestHandler):
                 )
                 year = query.get("year", [""])[0]
                 album = query.get("album_id", [""])[0]
+                location = query.get("location_id", [""])[0]
                 self._json(catalog.gallery_photos(
                     query.get("q", [""])[0], int(identity) if identity else None,
                     int(year) if year else None, int(query.get("limit", ["100"])[0]),
@@ -830,6 +887,7 @@ class GalleryHandler(BaseHTTPRequestHandler):
                     query.get("media_kind", [""])[0] or None,
                     unknown_group_ids=unknown_groups,
                     album_id=int(album) if album else None,
+                    location_id=int(location) if location else None,
                 ))
             elif parsed.path == "/api/photo":
                 photo = catalog.gallery_photo(int(query["id"][0]))
@@ -863,6 +921,8 @@ class GalleryHandler(BaseHTTPRequestHandler):
                 self._json(catalog.albums())
             elif parsed.path == "/api/album-suggestions":
                 self._json(catalog.album_suggestions())
+            elif parsed.path == "/api/locations":
+                self._json(catalog.location_summaries())
             elif parsed.path == "/media":
                 path = catalog.image_path(int(query["id"][0]))
                 if path is None: self.send_error(404); return
@@ -920,6 +980,25 @@ class GalleryHandler(BaseHTTPRequestHandler):
             elif self.path == "/api/dismiss-album-suggestion":
                 catalog = self._catalog()
                 try: catalog.dismiss_album_suggestion(str(body.get("capture_date", "")))
+                finally: catalog.close()
+                self._json({"ok": True})
+            elif self.path == "/api/locations":
+                catalog = self._catalog()
+                try:
+                    parent = body.get("parent_id")
+                    location_id = catalog.create_location(
+                        str(body.get("name", "")), str(body.get("location_type", "custom")),
+                        float(body["latitude"]), float(body["longitude"]),
+                        float(body["radius_meters"]), int(parent) if parent not in (None, "") else None,
+                    )
+                finally: catalog.close()
+                self._json({"ok": True, "id": location_id})
+            elif self.path == "/api/photo-locations":
+                catalog = self._catalog()
+                try:
+                    catalog.set_photo_locations(
+                        int(body["image_id"]), [int(value) for value in body.get("location_ids", [])]
+                    )
                 finally: catalog.close()
                 self._json({"ok": True})
             elif self.path == "/api/face":

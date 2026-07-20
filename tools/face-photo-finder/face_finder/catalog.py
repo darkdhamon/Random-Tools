@@ -5,6 +5,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 import hashlib
 import json
+import math
 import re
 import shutil
 import sqlite3
@@ -211,6 +212,24 @@ class FaceCatalog:
                 capture_date TEXT PRIMARY KEY,
                 dismissed_at TEXT NOT NULL
             );
+            CREATE TABLE IF NOT EXISTS locations (
+                id INTEGER PRIMARY KEY,
+                name TEXT NOT NULL COLLATE NOCASE,
+                location_type TEXT NOT NULL CHECK(location_type IN ('general', 'custom')),
+                parent_id INTEGER REFERENCES locations(id) ON DELETE SET NULL,
+                latitude REAL NOT NULL,
+                longitude REAL NOT NULL,
+                radius_meters REAL NOT NULL CHECK(radius_meters > 0),
+                created_at TEXT NOT NULL
+            );
+            CREATE UNIQUE INDEX IF NOT EXISTS locations_name_parent_idx
+                ON locations(name, COALESCE(parent_id, -1));
+            CREATE TABLE IF NOT EXISTS photo_location_assignments (
+                image_id INTEGER NOT NULL REFERENCES images(id) ON DELETE CASCADE,
+                location_id INTEGER NOT NULL REFERENCES locations(id) ON DELETE CASCADE,
+                created_at TEXT NOT NULL,
+                PRIMARY KEY(image_id, location_id)
+            );
             """
         )
         identity_indexes = self.connection.execute("PRAGMA index_list(identities)").fetchall()
@@ -364,6 +383,7 @@ class FaceCatalog:
             self.connection.execute("DELETE FROM unknown_groups")
             self.connection.execute("DELETE FROM albums")
             self.connection.execute("DELETE FROM dismissed_album_suggestions")
+            self.connection.execute("DELETE FROM locations")
         self.connection.execute("VACUUM")
 
     def gallery_photos(
@@ -373,6 +393,7 @@ class FaceCatalog:
         unknown_group_id: int | None = None,
         unknown_group_ids: tuple[int, ...] = (),
         album_id: int | None = None,
+        location_id: int | None = None,
     ) -> list[dict[str, object]]:
         clauses = ["images.missing_since IS NULL"]
         values: list[object] = []
@@ -391,6 +412,14 @@ class FaceCatalog:
                 "EXISTS (SELECT 1 FROM album_photos WHERE album_photos.image_id = images.id AND album_photos.album_id = ?)"
             )
             values.append(album_id)
+        if location_id is not None:
+            matching_ids = sorted(self.image_ids_for_location(location_id))
+            if matching_ids:
+                placeholders = ",".join("?" for _ in matching_ids)
+                clauses.append(f"images.id IN ({placeholders})")
+                values.extend(matching_ids)
+            else:
+                clauses.append("0")
         selected_unknown_groups = tuple(dict.fromkeys(
             (*unknown_group_ids, *((unknown_group_id,) if unknown_group_id is not None else ()))
         ))
@@ -540,6 +569,13 @@ class FaceCatalog:
                 (image_id,),
             )
         ]
+        photo["locations"] = self.locations_for_image(image_id)
+        photo["manual_location_ids"] = [
+            int(row[0]) for row in self.connection.execute(
+                "SELECT location_id FROM photo_location_assignments WHERE image_id = ?",
+                (image_id,),
+            )
+        ]
         return photo
 
     def albums(self) -> list[dict[str, object]]:
@@ -629,6 +665,160 @@ class FaceCatalog:
                 "INSERT OR REPLACE INTO dismissed_album_suggestions(capture_date, dismissed_at) VALUES (?, ?)",
                 (capture_date, datetime.now(timezone.utc).isoformat()),
             )
+
+    @staticmethod
+    def _distance_meters(
+        latitude: float, longitude: float, center_latitude: float, center_longitude: float
+    ) -> float:
+        lat1, lat2 = math.radians(latitude), math.radians(center_latitude)
+        delta_lat = lat2 - lat1
+        delta_lon = math.radians(center_longitude - longitude)
+        value = (
+            math.sin(delta_lat / 2) ** 2
+            + math.cos(lat1) * math.cos(lat2) * math.sin(delta_lon / 2) ** 2
+        )
+        return 6_371_000.0 * 2 * math.atan2(math.sqrt(value), math.sqrt(max(0.0, 1 - value)))
+
+    def _location_rows(self) -> list[tuple[int, str, str, int | None, float, float, float]]:
+        return [
+            (int(row[0]), row[1], row[2], int(row[3]) if row[3] is not None else None,
+             float(row[4]), float(row[5]), float(row[6]))
+            for row in self.connection.execute(
+                """SELECT id, name, location_type, parent_id, latitude, longitude, radius_meters
+                   FROM locations ORDER BY name COLLATE NOCASE, id"""
+            )
+        ]
+
+    @staticmethod
+    def _with_location_ancestors(
+        direct_ids: set[int], parents: dict[int, int | None]
+    ) -> set[int]:
+        matched = set(direct_ids)
+        for location_id in tuple(direct_ids):
+            visited = {location_id}
+            parent = parents.get(location_id)
+            while parent is not None and parent not in visited:
+                matched.add(parent)
+                visited.add(parent)
+                parent = parents.get(parent)
+        return matched
+
+    def create_location(
+        self, name: str, location_type: str, latitude: float, longitude: float,
+        radius_meters: float, parent_id: int | None = None,
+    ) -> int:
+        normalized = " ".join(name.strip().split())
+        if not normalized:
+            raise ValueError("A location name is required.")
+        if location_type not in {"general", "custom"}:
+            raise ValueError("Location type must be general or custom.")
+        if not -90 <= latitude <= 90 or not -180 <= longitude <= 180:
+            raise ValueError("Location coordinates are out of range.")
+        if not 1 <= radius_meters <= 20_000_000:
+            raise ValueError("Geofence radius must be between 1 meter and 20,000 kilometers.")
+        if parent_id is not None and self.connection.execute(
+            "SELECT 1 FROM locations WHERE id = ?", (parent_id,)
+        ).fetchone() is None:
+            raise ValueError("The selected parent location no longer exists.")
+        with self.connection:
+            cursor = self.connection.execute(
+                """INSERT INTO locations(
+                       name, location_type, parent_id, latitude, longitude, radius_meters, created_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                (normalized, location_type, parent_id, latitude, longitude, radius_meters,
+                 datetime.now(timezone.utc).isoformat()),
+            )
+        return int(cursor.lastrowid)
+
+    def set_photo_locations(self, image_id: int, location_ids: list[int]) -> None:
+        selected = sorted(set(int(value) for value in location_ids))
+        if selected:
+            placeholders = ",".join("?" for _ in selected)
+            found = self.connection.execute(
+                f"SELECT COUNT(*) FROM locations WHERE id IN ({placeholders})", selected
+            ).fetchone()[0]
+            if int(found) != len(selected):
+                raise ValueError("One or more selected locations no longer exist.")
+        timestamp = datetime.now(timezone.utc).isoformat()
+        with self.connection:
+            self.connection.execute(
+                "DELETE FROM photo_location_assignments WHERE image_id = ?", (image_id,)
+            )
+            self.connection.executemany(
+                """INSERT INTO photo_location_assignments(image_id, location_id, created_at)
+                   VALUES (?, ?, ?)""",
+                [(image_id, location_id, timestamp) for location_id in selected],
+            )
+
+    def locations_for_image(self, image_id: int) -> list[dict[str, object]]:
+        coordinate = self.connection.execute(
+            """SELECT COALESCE(metadata.latitude, images.gps_latitude),
+                      COALESCE(metadata.longitude, images.gps_longitude)
+               FROM images LEFT JOIN image_metadata metadata ON metadata.image_id = images.id
+               WHERE images.id = ?""",
+            (image_id,),
+        ).fetchone()
+        manual = {
+            int(row[0]) for row in self.connection.execute(
+                "SELECT location_id FROM photo_location_assignments WHERE image_id = ?", (image_id,)
+            )
+        }
+        rows = self._location_rows()
+        direct = set(manual)
+        if coordinate and coordinate[0] is not None and coordinate[1] is not None:
+            for location_id, _name, _kind, _parent, lat, lon, radius in rows:
+                if self._distance_meters(float(coordinate[0]), float(coordinate[1]), lat, lon) <= radius:
+                    direct.add(location_id)
+        parents = {row[0]: row[3] for row in rows}
+        matched = self._with_location_ancestors(direct, parents)
+        by_id = {row[0]: row for row in rows}
+
+        def path_for(location_id: int) -> str:
+            names, visited = [], set()
+            current: int | None = location_id
+            while current is not None and current not in visited and current in by_id:
+                visited.add(current); names.append(by_id[current][1]); current = by_id[current][3]
+            return " → ".join(reversed(names))
+
+        return [
+            {"id": location_id, "name": by_id[location_id][1], "type": by_id[location_id][2],
+             "path": path_for(location_id), "manual": location_id in manual,
+             "inherited": location_id in matched and location_id not in direct}
+            for location_id in sorted(matched, key=lambda value: path_for(value).casefold())
+            if location_id in by_id
+        ]
+
+    def image_ids_for_location(self, location_id: int) -> set[int]:
+        if self.connection.execute("SELECT 1 FROM locations WHERE id = ?", (location_id,)).fetchone() is None:
+            return set()
+        return {
+            int(row[0]) for row in self.connection.execute(
+                "SELECT id FROM images WHERE missing_since IS NULL"
+            )
+            if any(item["id"] == location_id for item in self.locations_for_image(int(row[0])))
+        }
+
+    def location_summaries(self) -> list[dict[str, object]]:
+        rows = self._location_rows()
+        by_id = {row[0]: row for row in rows}
+
+        def path_for(location_id: int) -> str:
+            names, visited = [], set()
+            current: int | None = location_id
+            while current is not None and current not in visited and current in by_id:
+                visited.add(current); names.append(by_id[current][1]); current = by_id[current][3]
+            return " → ".join(reversed(names))
+
+        summaries = []
+        for row in rows:
+            photo_ids = sorted(self.image_ids_for_location(row[0]), reverse=True)
+            summaries.append({
+                "id": row[0], "name": row[1], "type": row[2], "parent_id": row[3],
+                "latitude": row[4], "longitude": row[5], "radius_meters": row[6],
+                "path": path_for(row[0]), "photo_count": len(photo_ids),
+                "preview_photo_ids": photo_ids[:12],
+            })
+        return summaries
 
     def pending_art_faces(self, model_version: int, limit: int = 500) -> list[tuple[int, bytes]]:
         rows = self.connection.execute(
