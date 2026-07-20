@@ -661,14 +661,34 @@ class FaceCatalog:
         return photo
 
     def albums(self) -> list[dict[str, object]]:
-        return [
-            {"id": int(row[0]), "name": row[1], "photo_count": int(row[2])}
-            for row in self.connection.execute(
-                """SELECT albums.id, albums.name, COUNT(album_photos.image_id)
-                   FROM albums LEFT JOIN album_photos ON album_photos.album_id = albums.id
-                   GROUP BY albums.id ORDER BY albums.name COLLATE NOCASE"""
-            )
-        ]
+        rows = self.connection.execute(
+            """SELECT albums.id, albums.name, COUNT(images.id),
+                      MIN(substr(images.capture_date, 1, 10)),
+                      MAX(substr(images.capture_date, 1, 10))
+               FROM albums
+               LEFT JOIN album_photos ON album_photos.album_id = albums.id
+               LEFT JOIN images ON images.id = album_photos.image_id
+                               AND images.missing_since IS NULL
+               GROUP BY albums.id ORDER BY albums.name COLLATE NOCASE"""
+        ).fetchall()
+        result: list[dict[str, object]] = []
+        for row in rows:
+            previews = [
+                int(preview[0])
+                for preview in self.connection.execute(
+                    """SELECT images.id FROM album_photos
+                       JOIN images ON images.id = album_photos.image_id
+                       WHERE album_photos.album_id = ? AND images.missing_since IS NULL
+                       ORDER BY images.capture_date DESC, images.id DESC LIMIT 8""",
+                    (int(row[0]),),
+                )
+            ]
+            result.append({
+                "id": int(row[0]), "name": row[1], "photo_count": int(row[2]),
+                "capture_start": row[3], "capture_end": row[4],
+                "preview_photo_ids": previews,
+            })
+        return result
 
     def create_album(self, name: str) -> int:
         normalized = " ".join(name.strip().split())
@@ -680,6 +700,20 @@ class FaceCatalog:
                 (normalized, datetime.now(timezone.utc).isoformat()),
             )
         return int(cursor.lastrowid)
+
+    def update_album(self, album_id: int, name: str) -> None:
+        normalized = " ".join(name.strip().split())
+        if not normalized:
+            raise ValueError("An album name is required.")
+        try:
+            with self.connection:
+                cursor = self.connection.execute(
+                    "UPDATE albums SET name = ? WHERE id = ?", (normalized, album_id)
+                )
+        except sqlite3.IntegrityError as exc:
+            raise ValueError("An album with that name already exists.") from exc
+        if cursor.rowcount == 0:
+            raise ValueError("That album no longer exists.")
 
     def set_photo_albums(self, image_id: int, album_ids: list[int]) -> None:
         selected = sorted(set(int(value) for value in album_ids))

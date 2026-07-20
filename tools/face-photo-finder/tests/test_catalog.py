@@ -371,12 +371,21 @@ class CatalogTests(unittest.TestCase):
             first_album = catalog.create_album("July Fourth")
             second_album = catalog.create_album("Favorites")
             catalog.set_photo_albums(image_ids[0], [first_album, second_album])
+            album = next(item for item in catalog.albums() if item["id"] == first_album)
+            self.assertEqual(album["preview_photo_ids"], [image_ids[0]])
+            self.assertEqual(album["capture_start"], "2026-07-04")
+            self.assertEqual(album["capture_end"], "2026-07-04")
+            catalog.update_album(first_album, "Independence Day")
+            self.assertEqual(
+                next(item for item in catalog.albums() if item["id"] == first_album)["name"],
+                "Independence Day",
+            )
             self.assertEqual(
                 len(catalog.gallery_photos(suggested_album_date="2026-07-04")), 20
             )
             self.assertEqual(
                 [item["name"] for item in catalog.gallery_photo(image_ids[0])["albums"]],  # type: ignore[index]
-                ["Favorites", "July Fourth"],
+                ["Favorites", "Independence Day"],
             )
 
             catalog.dismiss_album_suggestion("2026-07-04")

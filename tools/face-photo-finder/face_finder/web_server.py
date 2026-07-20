@@ -101,24 +101,28 @@ PAGE = PAGE.replace(
 let identityManagementRows = [], unidentifiedManagementRows = [], identityKind = 'recognized', unknownGroupFilter = '', selectedIdentityIds = new Set();
 function showAppTab(tabName, preservePersonFilter=false) {
   const identityActive = tabName === 'identity';
+  const albumActive = tabName === 'albums';
   const locationActive = tabName === 'locations';
   const settingsActive = tabName === 'settings';
-  const timelineActive = !identityActive && !locationActive && !settingsActive;
+  const timelineActive = !identityActive && !albumActive && !locationActive && !settingsActive;
   if (timelineActive && !preservePersonFilter) { unknownGroupFilter = ''; locationFilter = ''; suggestionDateFilter = ''; }
   timelineTabButton.classList.toggle('active', timelineActive);
   identityTabButton.classList.toggle('active', identityActive);
+  albumTabButton.classList.toggle('active', albumActive);
   locationTabButton.classList.toggle('active', locationActive);
   settingsTabButton.classList.toggle('active', settingsActive);
   timelineHeader.style.display = timelineActive ? '' : 'none';
   timeline.style.display = timelineActive ? '' : 'none';
   timelineMore.style.display = timelineActive ? '' : 'none';
   identityView.style.display = identityActive ? 'block' : 'none';
+  albumView.style.display = albumActive ? 'block' : 'none';
   locationView.style.display = locationActive ? 'block' : 'none';
   settingsView.style.display = settingsActive ? 'block' : 'none';
   if (!locationActive && typeof closeLocationPhotoPanel === 'function') closeLocationPhotoPanel();
   if (!timelineActive && typeof albumSuggestionBar !== 'undefined') albumSuggestionBar.style.display = 'none';
   if (timelineActive && typeof renderAlbumSuggestions === 'function') renderAlbumSuggestions();
   if (identityActive) { clearSelection(); loadIdentityTable(); }
+  if (albumActive) loadAlbumManagement();
   if (locationActive) loadLocationOverview();
   if (settingsActive) loadLocationGroups();
 }
@@ -815,7 +819,7 @@ loadAlbums().then(renderAlbumSuggestions);
 
 PAGE = PAGE.replace(
     '<button id=identityTabButton onclick="showAppTab(\'identity\')">Identity</button></nav>',
-    '<button id=identityTabButton onclick="showAppTab(\'identity\')">Identity</button><button id=locationTabButton onclick="showAppTab(\'locations\')">Locations</button><button id=settingsTabButton onclick="showAppTab(\'settings\')">Settings</button></nav>',
+    '<button id=identityTabButton onclick="showAppTab(\'identity\')">Identity</button><button id=albumTabButton onclick="showAppTab(\'albums\')">Albums</button><button id=locationTabButton onclick="showAppTab(\'locations\')">Locations</button><button id=settingsTabButton onclick="showAppTab(\'settings\')">Settings</button></nav>',
 ).replace(
     '<div id=modal class=modal>',
     r'''<section id=locationView class=location-view><div class=location-toolbar><h1>Locations</h1><button onclick=loadLocationGroups()>Refresh</button></div><div class=geofence-form><h2>Create a geofence</h2><label>Name<input id=geofenceName placeholder="Home, Madison Lake, Minnesota…"></label><label>Type<select id=geofenceType><option value=custom>Custom location</option><option value=general>General location</option></select></label><label>Parent location<select id=geofenceParent><option value="">No parent</option></select></label><label>Boundary<select id=geofenceBoundary onchange=updateBoundaryEditor()><option value=radius>Radius from a point</option><option value=drawn>Draw boundary on map</option><option value=legal>Import legal boundary (GeoJSON)</option></select></label><label>Latitude / map center<input id=geofenceLatitude type=number min=-90 max=90 step=any oninput=renderBoundaryMap()></label><label>Longitude / map center<input id=geofenceLongitude type=number min=-180 max=180 step=any oninput=renderBoundaryMap()></label><label id=geofenceRadiusLabel>Radius (kilometers)<input id=geofenceRadius type=number min=.001 max=20000 step=any value=1></label><div id=boundaryEditor class=boundary-editor><div class=boundary-map-controls><label>Map span (km)<input id=geofenceMapSpan type=number min=.1 max=2000 value=10 oninput=renderBoundaryMap()></label><button onclick=undoBoundaryPoint()>Undo point</button><button onclick=clearBoundaryPoints()>Clear drawing</button></div><svg id=geofenceMap viewBox="0 0 800 360" role=img aria-label="Local geofence drawing map" onclick=addBoundaryPoint(event)></svg><p id=boundaryHelp class=muted></p><label id=legalBoundaryLabel>Legal boundary GeoJSON<textarea id=legalBoundaryGeojson rows=5 placeholder='Paste a GeoJSON Polygon, MultiPolygon, or Feature' oninput=previewLegalBoundary()></textarea></label></div><button onclick=createGeofence()>Create geofence</button><div id=locationStatus class=identity-status></div></div><div id=locationGroups class=location-groups></div></section><div id=modal class=modal>''',
@@ -1079,6 +1083,32 @@ requestAnimationFrame(renderBoundaryMap);
 </script></body>''',
 )
 
+PAGE = PAGE.replace(
+    '<section id=locationView class=location-view>',
+    r'''<section id=albumView class=album-view><div class=album-management-toolbar><h1>Albums</h1><button onclick=createManagedAlbum()>New album...</button><button onclick=loadAlbumManagement()>Refresh</button></div><p class=muted>Album names save automatically. Open an album in the Timeline to add or remove photos.</p><div id=albumManagementStatus class=identity-status></div><div id=albumManagementGrid class=album-management-grid></div></section><section id=locationView class=location-view>''',
+    1,
+).replace(
+    '</style>',
+    r'''.album-view{display:none;padding:22px;max-width:1500px;margin:auto}.album-management-toolbar{display:flex;align-items:center;gap:10px;flex-wrap:wrap}.album-management-toolbar h1{margin-right:auto}.album-management-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:14px}.album-management-card{background:#1c2528;border:1px solid #3d5960;border-radius:9px;padding:12px}.album-management-card input{font-size:1.15rem;font-weight:700;width:100%;box-sizing:border-box}.album-management-previews{display:grid;grid-template-columns:repeat(4,1fr);gap:4px;margin:10px 0}.album-management-previews img{width:100%;aspect-ratio:1;object-fit:cover;border-radius:4px}.album-management-actions{display:flex;align-items:center;gap:8px;flex-wrap:wrap}.album-management-save{min-height:1.3em;color:#8fdce7}@media(max-width:650px){.album-view{padding:12px}.album-management-grid{grid-template-columns:1fr}}</style>''',
+    1,
+).replace(
+    '</body>',
+    r'''<script>
+const albumNameTimers=new Map();
+function albumDateRange(album){if(!album.capture_start)return 'No photos';if(album.capture_start===album.capture_end)return album.capture_start;return `${album.capture_start} - ${album.capture_end}`}
+function renderAlbumManagement(){
+  albumManagementStatus.textContent=`${albums.length} album${albums.length===1?'':'s'}`;
+  albumManagementGrid.innerHTML=albums.length?albums.map(album=>`<article class="album-management-card"><input aria-label="Album name" value="${esc(album.name)}" oninput="queueAlbumNameSave(${album.id},this)"><div id="albumSave-${album.id}" class="album-management-save"></div><div class="muted">${album.photo_count} photo${album.photo_count===1?'':'s'} | ${esc(albumDateRange(album))}</div><div class="album-management-previews">${album.preview_photo_ids.map(id=>`<img loading="lazy" src="/media?id=${id}&thumb=1" alt="">`).join('')}</div><div class="album-management-actions"><button onclick="viewAlbumTimeline(${album.id})">View and edit photos</button></div></article>`).join(''):'<p>No albums yet. Create one to start organizing photos.</p>';
+}
+async function loadAlbumManagement(){albumManagementStatus.textContent='Loading albums...';try{await loadAlbums();renderAlbumManagement()}catch(error){albumManagementStatus.textContent='Load failed: '+error.message}}
+function queueAlbumNameSave(albumId,input){const status=document.getElementById(`albumSave-${albumId}`);status.textContent='Saving...';clearTimeout(albumNameTimers.get(albumId));albumNameTimers.set(albumId,setTimeout(()=>saveAlbumName(albumId,input),500))}
+async function saveAlbumName(albumId,input){const status=document.getElementById(`albumSave-${albumId}`),name=input.value.trim();if(!name){status.textContent='A name is required.';return}try{await post('/api/albums',{id:albumId,name});const album=albums.find(item=>item.id===albumId);if(album)album.name=name;status.textContent='Saved';await loadAlbums()}catch(error){status.textContent='Save failed: '+error.message}}
+async function createManagedAlbum(){const name=prompt('New album name:');if(!name||!name.trim())return;try{await post('/api/albums',{name});await loadAlbumManagement()}catch(error){albumManagementStatus.textContent='Create failed: '+error.message}}
+function viewAlbumTimeline(albumId){person.value='';locationFilter='';suggestionDateFilter='';albumFilter.value=String(albumId);showAppTab('timeline',true);load(true)}
+</script></body>''',
+    1,
+)
+
 
 class GalleryHandler(BaseHTTPRequestHandler):
     token = secrets.token_urlsafe(24)
@@ -1199,7 +1229,12 @@ class GalleryHandler(BaseHTTPRequestHandler):
                 self._json({"ok": True})
             elif self.path == "/api/albums":
                 catalog = self._catalog()
-                try: album_id = catalog.create_album(str(body.get("name", "")))
+                try:
+                    if body.get("id") in (None, ""):
+                        album_id = catalog.create_album(str(body.get("name", "")))
+                    else:
+                        album_id = int(body["id"])
+                        catalog.update_album(album_id, str(body.get("name", "")))
                 finally: catalog.close()
                 self._json({"ok": True, "id": album_id})
             elif self.path == "/api/photo-albums":
