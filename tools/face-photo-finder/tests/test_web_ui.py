@@ -99,6 +99,12 @@ class WebGalleryUiTests(unittest.TestCase):
         self.assertIn('full.naturalWidth', PAGE)
         self.assertIn('Manual person tags', PAGE)
         self.assertIn("post('/api/photo-identity-tag'", PAGE)
+        self.assertIn('assignment_suggestions', PAGE)
+        self.assertIn('Type or choose an identity', PAGE)
+        self.assertIn('Same day · ', PAGE)
+        self.assertIn('% match', PAGE)
+        self.assertIn('assignFaceFromInput', PAGE)
+        self.assertIn("post('/api/create-identity'", PAGE)
         self.assertNotIn("current = null;\n    await load();", PAGE)
         self.assertNotIn('>Save metadata</button>', PAGE)
 

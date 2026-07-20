@@ -503,15 +503,35 @@ async function executeBulkAction() {
 
 PAGE = PAGE.replace(
     "</style>",
-    r'''.face-entry,.person-tag{display:grid;grid-template-columns:1fr auto;gap:7px;align-items:center}.face-entry select{grid-column:1/2;margin:0!important}.face-entry .remove-face,.person-tag button{grid-column:2;background:#70242a;border-color:#bd5058}.add-person-tag{display:flex;gap:7px;margin-top:9px}.add-person-tag select{margin:0!important;flex:1}.empty-faces{padding:8px 0;color:#aaa}</style>''',
+    r'''.face-entry,.person-tag{display:grid;grid-template-columns:1fr auto;gap:7px;align-items:center}.face-assignment{grid-column:1/2;display:flex;gap:7px}.face-assignment input{margin:0!important;min-width:0;flex:1}.face-assignment button{white-space:nowrap}.face-entry .remove-face,.person-tag button{grid-column:2;background:#70242a;border-color:#bd5058}.add-person-tag{display:flex;gap:7px;margin-top:9px}.add-person-tag select{margin:0!important;flex:1}.empty-faces{padding:8px 0;color:#aaa}</style>''',
 ).replace(
     "</body>",
     r'''<script>
 const openPhotoWithFaceTags = openPhoto;
 openPhoto = async function(id) { await openPhotoWithFaceTags(id); renderFaceTagControls(); };
+function assignmentBaseLabel(suggestion) { return `${suggestion.name} (#${suggestion.id})`; }
+function assignmentMatchLabel(suggestion) { return `${suggestion.same_day?'Same day · ':''}${suggestion.match_score==null?'No biometric profile':`${(suggestion.match_score*100).toFixed(1)}% match`}`; }
+function htmlAttribute(value) { return esc(value).replaceAll('"','&quot;'); }
+function renderFaceAssignment(face) {
+  const inputId = `faceAssignment${face.id}`;
+  const suggestions = face.assignment_suggestions || identities.map(identity => ({...identity,same_day:false,match_score:null}));
+  return `<div class="face-assignment"><input id="${inputId}" list="${inputId}Options" placeholder="Type or choose an identity" onkeydown="if(event.key==='Enter'){event.preventDefault();assignFaceFromInput(${face.id},'${inputId}')}" aria-label="Assign detected face"><datalist id="${inputId}Options">${suggestions.map(suggestion=>`<option value="${htmlAttribute(assignmentBaseLabel(suggestion))}" label="${htmlAttribute(assignmentMatchLabel(suggestion))}"></option>`).join('')}</datalist><button onclick="assignFaceFromInput(${face.id},'${inputId}')">Assign</button></div>`;
+}
+async function assignFaceFromInput(faceId, inputId) {
+  const input = document.getElementById(inputId); const value = input.value.trim(); if (!value) return;
+  const face = (current.faces || []).find(item => item.id === faceId); const suggestions = face?.assignment_suggestions || [];
+  let identity = suggestions.find(item => assignmentBaseLabel(item).toLocaleLowerCase() === value.toLocaleLowerCase());
+  if (!identity) { const matches = identities.filter(item => item.name.toLocaleLowerCase() === value.toLocaleLowerCase()); if (matches.length === 1) identity = matches[0]; }
+  let identityId = identity?.id;
+  if (!identityId) {
+    if (!confirm(`Create a new identity named "${value}" and assign this face to it?`)) return;
+    const created = await post('/api/create-identity',{name:value}); identityId = created.id; await people(true);
+  }
+  await assignFace(faceId, identityId);
+}
 function renderFaceTagControls() {
   const detected = current.faces || [];
-  faces.innerHTML = detected.length ? detected.map(face => `<div class="face-entry"><span>${esc(face.name||(face.unknown?'Unknown person':'Unprocessed'))}${face.art?' · artwork':''}${face.estimated_age!=null?' · age '+face.estimated_age:''}</span><select aria-label="Assign detected face" onchange="assignFace(${face.id},this.value)"><option value="">${face.name?'Reassign…':'Assign person…'}</option>${identities.map(person=>`<option value="${person.id}">${esc(person.name)}</option>`).join('')}</select><button class="remove-face" onclick="removeDetectedFace(${face.id})">Not a face / remove</button></div>`).join('') : '<div class="empty-faces">No faces detected.</div>';
+  faces.innerHTML = detected.length ? detected.map(face => `<div class="face-entry"><span>${esc(face.name||(face.unknown?'Unknown person':'Unprocessed'))}${face.art?' · artwork':''}${face.estimated_age!=null?' · age '+face.estimated_age:''}</span>${renderFaceAssignment(face)}<button class="remove-face" onclick="removeDetectedFace(${face.id})">Not a face / remove</button></div>`).join('') : '<div class="empty-faces">No faces detected.</div>';
   faces.insertAdjacentHTML('beforeend', `<button id="showFaceTagsButton" class="show-tags-button" onclick="toggleFaceTags()" ${detected.some(face=>face.bbox)?'':'disabled'}>${faceTagsVisible?'Hide tags':'Show tags'}</button>`);
   let tagBox = document.getElementById('personTags');
   if (!tagBox) { tagBox = document.createElement('div'); tagBox.id = 'personTags'; faces.insertAdjacentElement('afterend', tagBox); }

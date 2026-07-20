@@ -443,7 +443,8 @@ class FaceCatalog:
         photo["faces"] = [
             {"id": int(row[0]), "name": row[1], "unknown": bool(row[2]), "art": bool(row[3]),
              "estimated_age": row[4], "unknown_group_id": row[5],
-             "bbox": [int(value) for value in row[6:10]] if row[6] is not None else None}
+             "bbox": [int(value) for value in row[6:10]] if row[6] is not None else None,
+             "assignment_suggestions": self.face_assignment_suggestions(int(row[0]))}
             for row in faces
         ]
         photo["face_tags"] = [
@@ -457,6 +458,50 @@ class FaceCatalog:
             ).fetchall()
         ]
         return photo
+
+    def face_assignment_suggestions(self, face_id: int) -> list[dict[str, object]]:
+        """Rank identities by same-day presence, then biometric similarity."""
+        row = self.connection.execute(
+            """SELECT faces.embedding, COALESCE(images.capture_year_override, images.capture_year),
+                      CASE WHEN images.capture_year_override IS NULL
+                                OR CAST(substr(images.capture_date, 1, 4) AS INTEGER)
+                                   = images.capture_year_override
+                           THEN NULLIF(substr(images.capture_date, 1, 10), '') END
+               FROM faces JOIN images ON images.id = faces.image_id WHERE faces.id = ?""",
+            (face_id,),
+        ).fetchone()
+        if row is None:
+            return []
+        embedding = np.frombuffer(row[0], dtype=np.float32).copy()
+        capture_year, capture_day = row[1], row[2]
+        same_day_ids: set[int] = set()
+        if capture_day:
+            same_day_ids = {
+                int(item[0]) for item in self.connection.execute(
+                    """SELECT DISTINCT faces.identity_id
+                       FROM faces JOIN images ON images.id = faces.image_id
+                       WHERE faces.identity_id IS NOT NULL AND images.missing_since IS NULL
+                             AND substr(images.capture_date, 1, 10) = ?""",
+                    (capture_day,),
+                )
+            }
+        suggestions: list[dict[str, object]] = []
+        for identity in self.identities():
+            samples = identity_embeddings_for_year(identity, capture_year)
+            if not samples:
+                samples = fallback_identity_embeddings_for_year(identity, capture_year)
+            score = max((float(np.dot(embedding, known)) for known in samples), default=-1.0)
+            suggestions.append({
+                "id": identity.identity_id, "name": identity.name,
+                "same_day": identity.identity_id in same_day_ids,
+                "match_score": None if score < 0 else max(0.0, min(1.0, score)),
+            })
+        suggestions.sort(key=lambda item: (
+            not bool(item["same_day"]),
+            -(float(item["match_score"]) if item["match_score"] is not None else -1.0),
+            str(item["name"]).casefold(), int(item["id"]),
+        ))
+        return suggestions
 
     def image_path(self, image_id: int) -> Path | None:
         row = self.connection.execute(
