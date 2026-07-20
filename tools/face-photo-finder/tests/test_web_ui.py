@@ -16,6 +16,9 @@ class WebGalleryUiTests(unittest.TestCase):
         self.assertIn('contributes to NSFW score', PAGE)
         self.assertIn('Needs NSFW review', PAGE)
         self.assertIn('Models disagree', PAGE)
+        self.assertIn('Danger: permanently delete photo?', PAGE)
+        self.assertIn('This action cannot be undone.', PAGE)
+        self.assertIn("post('/api/delete-photo'", PAGE)
         self.assertNotIn('>Save metadata</button>', PAGE)
 
 

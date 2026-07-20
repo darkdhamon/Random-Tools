@@ -61,6 +61,50 @@ PAGE = PAGE.replace(
     "let filter=contentFilter.value==='nsfw'?'nsfw':",
     "let filter=['nsfw','review'].includes(contentFilter.value)?contentFilter.value:",
 )
+PAGE = PAGE.replace(
+    "</style>",
+    r'''.danger-zone{border-top:1px solid #633;margin-top:22px;padding-top:16px}.danger-button{background:#9d1c25;border-color:#ef5963;font-weight:700}.danger-button:hover{background:#c32632}.danger-dialog{position:fixed;inset:0;z-index:20;display:none;align-items:center;justify-content:center;background:#000c;padding:20px}.danger-dialog.open{display:flex}.danger-box{width:min(480px,100%);background:#251b1c;border:2px solid #e04450;border-radius:10px;padding:20px;box-shadow:0 12px 45px #000}.danger-box h2{color:#ff7b84;margin-top:0}.danger-actions{display:flex;justify-content:flex-end;gap:10px;margin-top:18px}</style>''',
+).replace(
+    "</body>",
+    r'''<div id=deleteDialog class=danger-dialog role=dialog aria-modal=true aria-labelledby=deleteTitle><div class=danger-box><h2 id=deleteTitle>Danger: permanently delete photo?</h2><p>This will permanently delete <strong id=deleteName></strong> from your computer and remove it from the catalog.</p><p><strong>This action cannot be undone.</strong></p><div id=deleteError class=save-state></div><div class=danger-actions><button onclick=cancelDelete()>Cancel</button><button id=confirmDeleteButton class=danger-button onclick=confirmDelete()>Delete permanently</button></div></div></div><script>
+const openPhotoWithDelete = openPhoto;
+openPhoto = async function(id) {
+  await openPhotoWithDelete(id);
+  let zone = document.getElementById('dangerZone');
+  if (!zone) {
+    zone = document.createElement('div');
+    zone.id = 'dangerZone';
+    zone.className = 'danger-zone';
+    zone.innerHTML = '<h3>Danger zone</h3><button class="danger-button" onclick="requestDelete()">Delete this photo...</button>';
+    document.querySelector('.editor').append(zone);
+  }
+};
+function requestDelete() {
+  if (!current) return;
+  clearTimeout(saveTimer);
+  deleteName.textContent = current.name;
+  deleteError.textContent = '';
+  confirmDeleteButton.disabled = false;
+  deleteDialog.classList.add('open');
+}
+function cancelDelete() { deleteDialog.classList.remove('open'); }
+async function confirmDelete() {
+  if (!current) return;
+  confirmDeleteButton.disabled = true;
+  deleteError.textContent = 'Deleting...';
+  try {
+    await post('/api/delete-photo', {id: current.id});
+    deleteDialog.classList.remove('open');
+    modal.style.display = 'none';
+    current = null;
+    await load();
+  } catch (error) {
+    deleteError.textContent = 'Delete failed: ' + error.message;
+    confirmDeleteButton.disabled = false;
+  }
+}
+</script></body>''',
+)
 
 
 class GalleryHandler(BaseHTTPRequestHandler):
@@ -143,6 +187,11 @@ class GalleryHandler(BaseHTTPRequestHandler):
                 try: catalog.assign_face(int(body["face_id"]), int(body["identity_id"]))
                 finally: catalog.close()
                 self._json({"ok": True})
+            elif self.path == "/api/delete-photo":
+                catalog = self._catalog()
+                try: deleted = catalog.delete_photo(int(body["id"]))
+                finally: catalog.close()
+                self._json({"ok": True, "deleted": deleted.name})
             elif self.path == "/api/scan":
                 subprocess.run(["schtasks", "/Run", "/TN", "Face Photo Finder Background Catalog"], check=True, creationflags=subprocess.CREATE_NO_WINDOW)
                 self._json({"ok": True, "message": "Background catalog scan started."})

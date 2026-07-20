@@ -180,6 +180,24 @@ class CatalogTests(unittest.TestCase):
             self.assertTrue(image.exists())
             catalog.close()
 
+    def test_delete_photo_removes_source_and_catalog_records(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            image = root / "delete-me.jpg"
+            image.write_bytes(b"source image")
+            catalog = FaceCatalog(root / "catalog.sqlite3")
+            stored = catalog.store_scan(
+                image, [np.array([1.0, 0.0], dtype=np.float32)], [None]
+            )
+
+            deleted = catalog.delete_photo(stored.image_id)
+
+            self.assertEqual(deleted, image)
+            self.assertFalse(image.exists())
+            self.assertIsNone(catalog.gallery_photo(stored.image_id))
+            self.assertEqual(catalog.faces_for_image(stored.image_id), [])
+            catalog.close()
+
     def test_blurry_assigned_face_is_not_used_as_profile_sample(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

@@ -384,6 +384,21 @@ class FaceCatalog:
         path = Path(row[0]) if row else None
         return path if path and path.is_file() else None
 
+    def delete_photo(self, image_id: int) -> Path:
+        """Permanently delete a source photo and its cascading catalog records."""
+        row = self.connection.execute(
+            "SELECT path FROM images WHERE id = ?", (image_id,)
+        ).fetchone()
+        if row is None:
+            raise ValueError("Photo was not found in the catalog.")
+        path = Path(row[0])
+        if not path.is_file():
+            raise FileNotFoundError(f"Photo no longer exists: {path}")
+        with self.connection:
+            path.unlink()
+            self.connection.execute("DELETE FROM images WHERE id = ?", (image_id,))
+        return path
+
     def update_gallery_metadata(
         self, image_id: int, title: str, description: str, tags: str, rating: int,
         capture_year: int | None, nsfw_override: int | None = None,
