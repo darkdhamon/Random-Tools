@@ -38,6 +38,23 @@ class CatalogTests(unittest.TestCase):
             image.touch()
             self.assertEqual(image_capture_date(image), "2026-07-13")
 
+    def test_gallery_orders_capture_dates_most_recent_first(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            older = root / "PXL_20260102_120000.jpg"
+            newer = root / "PXL_20261230_120000.jpg"
+            older.touch()
+            newer.touch()
+            catalog = FaceCatalog(root / "catalog.sqlite3")
+            catalog.store_scan(older, [], [])
+            catalog.store_scan(newer, [], [])
+
+            photos = catalog.gallery_photos()
+
+            self.assertEqual([photo["name"] for photo in photos], [newer.name, older.name])
+            self.assertEqual([photo["capture_date"] for photo in photos], ["2026-12-30", "2026-01-02"])
+            catalog.close()
+
     def test_birth_year_and_capture_year_round_trip(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

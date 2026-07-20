@@ -123,6 +123,7 @@ class FaceCatalog:
                 scanned_at TEXT NOT NULL,
                 capture_year INTEGER,
                 capture_year_override INTEGER,
+                capture_date TEXT,
                 content_hash TEXT,
                 missing_since TEXT
             );
@@ -173,6 +174,8 @@ class FaceCatalog:
             self.connection.execute("ALTER TABLE images ADD COLUMN capture_year INTEGER")
         if "capture_year_override" not in image_columns:
             self.connection.execute("ALTER TABLE images ADD COLUMN capture_year_override INTEGER")
+        if "capture_date" not in image_columns:
+            self.connection.execute("ALTER TABLE images ADD COLUMN capture_date TEXT")
         if "content_hash" not in image_columns:
             self.connection.execute("ALTER TABLE images ADD COLUMN content_hash TEXT")
         if "missing_since" not in image_columns:
@@ -294,6 +297,9 @@ class FaceCatalog:
         elif nsfw_filter == "review":
             clauses.append("images.nsfw_review_required = 1")
         effective_kind = "COALESCE(metadata.media_kind_override, images.media_kind, 'photo')"
+        effective_date = """CASE WHEN images.capture_year_override IS NULL
+                              OR CAST(substr(images.capture_date, 1, 4) AS INTEGER) = images.capture_year_override
+                            THEN NULLIF(images.capture_date, '') END"""
         if media_kind:
             clauses.append(f"{effective_kind} = ?")
             values.append(media_kind)
@@ -314,20 +320,17 @@ class FaceCatalog:
                        COALESCE(metadata.latitude, images.gps_latitude),
                        COALESCE(metadata.longitude, images.gps_longitude), images.nsfw_details,
                        images.nsfw_vit_score, images.nsfw_review_required,
-                       images.capture_year_override
+                       images.capture_year_override, {effective_date}
                 FROM images LEFT JOIN image_metadata metadata ON metadata.image_id = images.id
                 WHERE {' AND '.join(clauses)}
-                ORDER BY COALESCE(images.capture_year_override, images.capture_year) DESC, images.path
+                ORDER BY COALESCE(images.capture_year_override, images.capture_year) DESC,
+                         {effective_date} IS NULL, {effective_date} DESC, images.path DESC
                 LIMIT ? OFFSET ?""",
             values,
         ).fetchall()
         photos = []
         for row in rows:
-            capture_date = image_capture_date(Path(row[1]))
-            if row[20] is not None and (
-                capture_date is None or int(capture_date[:4]) != int(row[20])
-            ):
-                capture_date = None
+            capture_date = row[21]
             photos.append({
                 "id": int(row[0]), "path": row[1], "name": Path(row[1]).name,
                 "face_count": int(row[2]), "identified_count": int(row[3]), "year": row[4],
@@ -354,18 +357,17 @@ class FaceCatalog:
                       COALESCE(metadata.latitude, images.gps_latitude),
                       COALESCE(metadata.longitude, images.gps_longitude), images.nsfw_details,
                       images.nsfw_vit_score, images.nsfw_review_required,
-                      images.capture_year_override
+                      images.capture_year_override,
+                      CASE WHEN images.capture_year_override IS NULL
+                              OR CAST(substr(images.capture_date, 1, 4) AS INTEGER) = images.capture_year_override
+                           THEN NULLIF(images.capture_date, '') END
                FROM images LEFT JOIN image_metadata metadata ON metadata.image_id = images.id
                WHERE images.id = ? AND images.missing_since IS NULL""",
             (image_id,),
         ).fetchone()
         if row is None:
             return None
-        capture_date = image_capture_date(Path(row[0]))
-        if row[19] is not None and (
-            capture_date is None or int(capture_date[:4]) != int(row[19])
-        ):
-            capture_date = None
+        capture_date = row[20]
         photo: dict[str, object] = {
             "id": image_id, "path": row[0], "name": Path(row[0]).name,
             "face_count": int(row[1]), "identified_count": int(row[2]), "year": row[3],
@@ -397,6 +399,22 @@ class FaceCatalog:
         ).fetchone()
         path = Path(row[0]) if row else None
         return path if path and path.is_file() else None
+
+    def backfill_capture_dates(self) -> tuple[int, int]:
+        """Persist capture dates for legacy rows so timeline ordering is stable and fast."""
+        rows = self.connection.execute(
+            "SELECT id, path FROM images WHERE capture_date IS NULL AND missing_since IS NULL"
+        ).fetchall()
+        dated = 0
+        with self.connection:
+            for image_id, path_value in rows:
+                capture_date = image_capture_date(Path(path_value))
+                self.connection.execute(
+                    "UPDATE images SET capture_date = ? WHERE id = ?",
+                    (capture_date or "", image_id),
+                )
+                dated += capture_date is not None
+        return len(rows), dated
 
     def delete_photo(self, image_id: int) -> Path:
         """Permanently delete a source photo and its cascading catalog records."""
@@ -856,19 +874,22 @@ class FaceCatalog:
         resolved = path.resolve()
         stat = resolved.stat()
         capture_year = image_capture_year(resolved)
+        capture_date = image_capture_date(resolved)
         identified_count = sum(value is not None for value in identities)
         with self.connection:
             self.connection.execute(
                 """INSERT INTO images(path, size, modified_ns, face_count, identified_count, scanned_at,
-                                      capture_year, content_hash, missing_since)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL)
+                                      capture_year, capture_date, content_hash, missing_since)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)
                    ON CONFLICT(path) DO UPDATE SET size=excluded.size, modified_ns=excluded.modified_ns,
                    face_count=excluded.face_count, identified_count=excluded.identified_count,
                    scanned_at=excluded.scanned_at, capture_year=excluded.capture_year,
+                   capture_date=excluded.capture_date,
                    content_hash=excluded.content_hash, missing_since=NULL""",
                 (
                     str(resolved), stat.st_size, stat.st_mtime_ns, len(embeddings), identified_count,
-                    datetime.now(timezone.utc).isoformat(), capture_year, file_content_hash(resolved),
+                    datetime.now(timezone.utc).isoformat(), capture_year, capture_date or "",
+                    file_content_hash(resolved),
                 ),
             )
             image_id = int(self.connection.execute("SELECT id FROM images WHERE path = ?", (str(resolved),)).fetchone()[0])
