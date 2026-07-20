@@ -124,6 +124,29 @@ class CatalogTests(unittest.TestCase):
                 catalog.update_identity(identity_id, "", 1985)
             catalog.close()
 
+    def test_identity_reference_images_are_newest_first(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            older = root / "PXL_20200102_120000.jpg"; older.write_bytes(b"older")
+            newer = root / "PXL_20251231_120000.jpg"; newer.write_bytes(b"newer")
+            catalog = FaceCatalog(root / "catalog.sqlite3")
+            identity_id = catalog.get_or_create_identity("Dated references")
+            old_scan = catalog.store_scan(
+                older, [np.array([1.0, 0.0], dtype=np.float32)], [identity_id],
+                previews=[np.frombuffer(b"old-preview", dtype=np.uint8)],
+            )
+            new_scan = catalog.store_scan(
+                newer, [np.array([0.0, 1.0], dtype=np.float32)], [identity_id],
+                previews=[np.frombuffer(b"new-preview", dtype=np.uint8)],
+            )
+            old_face_id = catalog.faces_for_image(old_scan.image_id)[0].face_id
+            new_face_id = catalog.faces_for_image(new_scan.image_id)[0].face_id
+            self.assertEqual(
+                catalog.identity_summaries()[0]["reference_face_ids"],
+                [new_face_id, old_face_id],
+            )
+            catalog.close()
+
     def test_visual_age_and_capture_year_override_persist(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

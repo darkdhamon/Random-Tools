@@ -754,23 +754,28 @@ class FaceCatalog:
         ).fetchall()
         reference_rows = self.connection.execute(
             """SELECT faces.identity_id, faces.id, faces.embedding,
-                      COALESCE(images.capture_year_override, images.capture_year)
+                      COALESCE(images.capture_year_override, images.capture_year),
+                      CASE WHEN images.capture_year_override IS NULL
+                                  OR CAST(substr(images.capture_date, 1, 4) AS INTEGER)
+                                     = images.capture_year_override
+                           THEN NULLIF(images.capture_date, '') END
                FROM faces JOIN images ON images.id = faces.image_id
                WHERE faces.identity_id IS NOT NULL AND faces.profile_eligible = 1
                      AND faces.preview IS NOT NULL AND images.missing_since IS NULL
                ORDER BY faces.identity_id, faces.id"""
         ).fetchall()
-        references: dict[int, list[tuple[int, np.ndarray, int | None]]] = {}
-        for identity_id, face_id, embedding, capture_year in reference_rows:
+        references: dict[int, list[tuple[int, np.ndarray, int | None, str | None]]] = {}
+        for identity_id, face_id, embedding, capture_year, capture_date in reference_rows:
             references.setdefault(int(identity_id), []).append(
-                (int(face_id), np.frombuffer(embedding, dtype=np.float32).copy(), capture_year)
+                (int(face_id), np.frombuffer(embedding, dtype=np.float32).copy(),
+                 capture_year, capture_date)
             )
 
         def selected_face_ids(identity_id: int) -> list[int]:
             records = sorted(
                 references.get(identity_id, []), key=lambda item: (item[2] is None, item[2] or 0)
             )
-            selected: list[tuple[int, np.ndarray, int | None]] = []
+            selected: list[tuple[int, np.ndarray, int | None, str | None]] = []
             for record in records:
                 if selected and max(
                     float(np.dot(record[1], known[1])) for known in selected
@@ -778,15 +783,23 @@ class FaceCatalog:
                     continue
                 selected.append(record)
             if len(selected) > PROFILE_MAX_SAMPLES:
-                buckets: dict[int | None, list[tuple[int, np.ndarray, int | None]]] = {}
+                buckets: dict[int | None, list[tuple[int, np.ndarray, int | None, str | None]]] = {}
                 for record in selected:
                     buckets.setdefault(record[2], []).append(record)
-                balanced: list[tuple[int, np.ndarray, int | None]] = []
+                balanced: list[tuple[int, np.ndarray, int | None, str | None]] = []
                 while len(balanced) < PROFILE_MAX_SAMPLES and any(buckets.values()):
                     for year in sorted(buckets, key=lambda value: (value is None, value or 0)):
                         if buckets[year] and len(balanced) < PROFILE_MAX_SAMPLES:
                             balanced.append(buckets[year].pop(0))
                 selected = balanced
+            selected.sort(
+                key=lambda record: (
+                    record[3] or (f"{record[2]:04d}" if record[2] is not None else ""),
+                    record[2] or 0,
+                    record[0],
+                ),
+                reverse=True,
+            )
             return [record[0] for record in selected]
 
         current_year = datetime.now().year
