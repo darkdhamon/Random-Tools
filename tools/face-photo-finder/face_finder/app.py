@@ -497,7 +497,8 @@ class FaceFinderApp(tk.Tk):
         if not folder.is_dir():
             messagebox.showerror("Folder required", "Choose an existing folder to scan.")
             return
-        self._save_settings()
+        if not self.background_mode:
+            self._save_settings()
         self.matches.clear()
         self.result_photos.clear()
         self.gallery_photos.clear()
