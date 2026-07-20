@@ -565,6 +565,29 @@ window.addEventListener('resize', renderFaceReticles);
 </script></body>''',
 )
 
+PAGE = PAGE.replace(
+    '<input id=identitySearch placeholder="Search identities or IDs" oninput=renderIdentityTable()>',
+    '<input id=identitySearch placeholder="Search identities or IDs" oninput=renderIdentityTable()><label id=identitySortLabel>Sort <select id=identitySort onchange=renderIdentityTable()><option value=last_seen>Date last seen</option><option value=name>Name</option><option value=photo_count>Number of photos</option></select></label>',
+).replace(
+    '<th>Name</th><th>Reference images</th>',
+    '<th>Name</th><th>Last seen</th><th>Reference images</th>',
+).replace(
+    "for (const identity of identityManagementRows.filter(item => item.name.toLowerCase().includes(query) || String(item.id).includes(query))) {",
+    """const sortedIdentities = identityManagementRows.filter(item => item.name.toLowerCase().includes(query) || String(item.id).includes(query));
+  sortedIdentities.sort((left,right) => identitySort.value === 'name'
+    ? left.name.localeCompare(right.name,undefined,{sensitivity:'base'}) || left.id-right.id
+    : identitySort.value === 'photo_count'
+      ? right.photo_count-left.photo_count || left.name.localeCompare(right.name) || left.id-right.id
+      : (right.last_seen||'').localeCompare(left.last_seen||'') || left.name.localeCompare(right.name) || left.id-right.id);
+  for (const identity of sortedIdentities) {""",
+).replace(
+    "nameCell.append(nameInput);\n    const referenceCell",
+    "nameCell.append(nameInput);\n    row.insertCell().textContent = identity.last_seen || 'Unknown';\n    const referenceCell",
+).replace(
+    "mergeIdentityButton.style.display = kind === 'recognized' ? '' : 'none';",
+    "mergeIdentityButton.style.display = kind === 'recognized' ? '' : 'none';\n  identitySortLabel.style.display = kind === 'recognized' ? '' : 'none';",
+)
+
 
 class GalleryHandler(BaseHTTPRequestHandler):
     token = secrets.token_urlsafe(24)

@@ -145,6 +145,7 @@ class CatalogTests(unittest.TestCase):
                 catalog.identity_summaries()[0]["reference_face_ids"],
                 [new_face_id, old_face_id],
             )
+            self.assertEqual(catalog.identity_summaries()[0]["last_seen"], "2025-12-31")
             catalog.close()
 
     def test_visual_age_and_capture_year_override_persist(self) -> None:

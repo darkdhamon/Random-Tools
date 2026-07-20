@@ -31,6 +31,7 @@ A private, local desktop tool that recursively scans a folder and finds photos l
 - includes Timeline and Identity web tabs, with separate recognized and unidentified people views, searchable identity statistics, biometric or anonymous-group thumbnails and an in-app viewer, inline name/birth-year editing, person-filtered timeline navigation, removable false face detections, searchable non-biometric manual person tags, and a **Show tags** overlay with labeled face reticles;
 - gives every identity a permanent numeric ID, permits duplicate display names, and supports danger-confirmed multi-profile merges into a selected surviving identity;
 - orders each identity's biometric reference thumbnails from the most recent capture date to the oldest;
+- sorts recognized identities by date last seen, name, or number of photos and displays the last-seen date;
 - extracts EXIF GPS coordinates, supports editable place names and coordinates, and shows an offline map preview with an explicit OpenStreetMap link;
 - searches by a previously learned person from the **Known person** list without requiring another reference photo;
 - autocompletes identity names case-insensitively while still allowing new names;

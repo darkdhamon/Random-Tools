@@ -745,7 +745,15 @@ class FaceCatalog:
                       COUNT(CASE WHEN images.missing_since IS NULL THEN faces.id END),
                       COUNT(DISTINCT CASE WHEN images.missing_since IS NULL THEN faces.image_id END),
                       COALESCE(SUM(CASE WHEN images.missing_since IS NULL
-                                            AND faces.profile_eligible = 1 THEN 1 ELSE 0 END), 0)
+                                            AND faces.profile_eligible = 1 THEN 1 ELSE 0 END), 0),
+                      MAX(CASE WHEN images.missing_since IS NULL THEN
+                            CASE WHEN images.capture_year_override IS NULL
+                                       OR CAST(substr(images.capture_date, 1, 4) AS INTEGER)
+                                          = images.capture_year_override
+                                 THEN COALESCE(NULLIF(images.capture_date, ''),
+                                               CAST(images.capture_year AS TEXT))
+                                 ELSE CAST(images.capture_year_override AS TEXT) END
+                          END)
                FROM identities
                LEFT JOIN faces ON faces.identity_id = identities.id
                LEFT JOIN images ON images.id = faces.image_id
@@ -811,6 +819,7 @@ class FaceCatalog:
                 "age": current_year - int(row[2]) if row[2] is not None else None,
                 "face_count": int(row[3]), "photo_count": int(row[4]),
                 "profile_sample_count": int(row[5]),
+                "last_seen": row[6],
                 "reference_face_ids": selected_face_ids(identity_id),
             })
         return summaries
