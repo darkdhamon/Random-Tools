@@ -30,7 +30,7 @@ A private, local desktop tool that recursively scans a folder and finds photos l
 - applies **Mark safe** or **Mark NSFW** decisions to multiple selected gallery photos at once;
 - includes Timeline and Identity web tabs, with separate recognized and unidentified people views, searchable identity statistics, biometric or anonymous-group thumbnails and an in-app viewer, inline name/birth-year editing, person-filtered timeline navigation, removable false face detections, searchable non-biometric manual person tags, and a **Show tags** overlay with labeled face reticles;
 - supports zero-or-more albums per photo, automatic assignment saving, album-filtered browsing, and dismissible album suggestions for days containing at least 21 ungrouped photos;
-- includes a Locations tab with local circular geofences, hierarchical parent locations, grouped photo previews, location-filtered browsing, and optional manual multi-location assignments for photos without suitable GPS data;
+- includes a Locations tab with local radius, hand-drawn polygon, and imported legal-boundary GeoJSON geofences, hierarchical parent locations, grouped photo previews, location-filtered browsing, and optional manual multi-location assignments for photos without suitable GPS data;
 - gives every identity a permanent numeric ID, permits duplicate display names, and supports danger-confirmed multi-profile merges into a selected surviving identity;
 - orders each identity's biometric reference thumbnails from the most recent capture date to the oldest;
 - sorts recognized and unidentified identities by date last seen, name/group label, or number of photos and displays the last-seen date;

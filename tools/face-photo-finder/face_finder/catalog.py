@@ -220,6 +220,9 @@ class FaceCatalog:
                 latitude REAL NOT NULL,
                 longitude REAL NOT NULL,
                 radius_meters REAL NOT NULL CHECK(radius_meters > 0),
+                boundary_type TEXT NOT NULL DEFAULT 'radius'
+                    CHECK(boundary_type IN ('radius', 'drawn', 'legal')),
+                geometry_json TEXT,
                 created_at TEXT NOT NULL
             );
             CREATE UNIQUE INDEX IF NOT EXISTS locations_name_parent_idx
@@ -260,6 +263,13 @@ class FaceCatalog:
         columns = {row[1] for row in self.connection.execute("PRAGMA table_info(faces)")}
         identity_columns = {row[1] for row in self.connection.execute("PRAGMA table_info(identities)")}
         image_columns = {row[1] for row in self.connection.execute("PRAGMA table_info(images)")}
+        location_columns = {row[1] for row in self.connection.execute("PRAGMA table_info(locations)")}
+        if "boundary_type" not in location_columns:
+            self.connection.execute(
+                "ALTER TABLE locations ADD COLUMN boundary_type TEXT NOT NULL DEFAULT 'radius'"
+            )
+        if "geometry_json" not in location_columns:
+            self.connection.execute("ALTER TABLE locations ADD COLUMN geometry_json TEXT")
         if "birth_year" not in identity_columns:
             self.connection.execute("ALTER TABLE identities ADD COLUMN birth_year INTEGER")
         if "capture_year" not in image_columns:
@@ -690,15 +700,83 @@ class FaceCatalog:
         )
         return 6_371_000.0 * 2 * math.atan2(math.sqrt(value), math.sqrt(max(0.0, 1 - value)))
 
-    def _location_rows(self) -> list[tuple[int, str, str, int | None, float, float, float]]:
+    def _location_rows(self) -> list[tuple[int, str, str, int | None, float, float, float, str, str | None]]:
         return [
             (int(row[0]), row[1], row[2], int(row[3]) if row[3] is not None else None,
-             float(row[4]), float(row[5]), float(row[6]))
+             float(row[4]), float(row[5]), float(row[6]), row[7], row[8])
             for row in self.connection.execute(
-                """SELECT id, name, location_type, parent_id, latitude, longitude, radius_meters
+                """SELECT id, name, location_type, parent_id, latitude, longitude, radius_meters,
+                          boundary_type, geometry_json
                    FROM locations ORDER BY name COLLATE NOCASE, id"""
             )
         ]
+
+    @staticmethod
+    def _normalize_boundary_geometry(value: object) -> str:
+        geometry = value
+        if isinstance(geometry, str):
+            try: geometry = json.loads(geometry)
+            except json.JSONDecodeError as exc: raise ValueError("Boundary GeoJSON is not valid JSON.") from exc
+        if not isinstance(geometry, dict):
+            raise ValueError("Boundary must be a GeoJSON Polygon or MultiPolygon.")
+        if geometry.get("type") == "Feature":
+            geometry = geometry.get("geometry")
+        if not isinstance(geometry, dict) or geometry.get("type") not in {"Polygon", "MultiPolygon"}:
+            raise ValueError("Boundary must be a GeoJSON Polygon or MultiPolygon.")
+        coordinates = geometry.get("coordinates")
+        polygons = coordinates if geometry["type"] == "MultiPolygon" else [coordinates]
+        if not isinstance(polygons, list) or not polygons:
+            raise ValueError("Boundary does not contain any polygons.")
+        normalized_polygons = []
+        for polygon in polygons:
+            if not isinstance(polygon, list) or not polygon:
+                raise ValueError("Every polygon must contain an outer ring.")
+            normalized_rings = []
+            for ring in polygon:
+                if not isinstance(ring, list) or len(ring) < 3:
+                    raise ValueError("Every boundary ring requires at least three points.")
+                normalized_ring = []
+                for point in ring:
+                    if not isinstance(point, list) or len(point) < 2:
+                        raise ValueError("Boundary points must contain longitude and latitude.")
+                    longitude, latitude = float(point[0]), float(point[1])
+                    if not -180 <= longitude <= 180 or not -90 <= latitude <= 90:
+                        raise ValueError("Boundary coordinates are out of range.")
+                    normalized_ring.append([longitude, latitude])
+                if normalized_ring[0] != normalized_ring[-1]:
+                    normalized_ring.append(normalized_ring[0])
+                normalized_rings.append(normalized_ring)
+            normalized_polygons.append(normalized_rings)
+        result = {
+            "type": geometry["type"],
+            "coordinates": normalized_polygons if geometry["type"] == "MultiPolygon"
+            else normalized_polygons[0],
+        }
+        return json.dumps(result, separators=(",", ":"))
+
+    @staticmethod
+    def _point_in_ring(latitude: float, longitude: float, ring: list[list[float]]) -> bool:
+        inside = False
+        previous = ring[-1]
+        for current in ring:
+            x1, y1 = previous[0], previous[1]
+            x2, y2 = current[0], current[1]
+            if ((y1 > latitude) != (y2 > latitude)) and (
+                longitude < (x2 - x1) * (latitude - y1) / (y2 - y1) + x1
+            ):
+                inside = not inside
+            previous = current
+        return inside
+
+    @classmethod
+    def _point_in_geometry(cls, latitude: float, longitude: float, geometry_json: str) -> bool:
+        geometry = json.loads(geometry_json)
+        polygons = geometry["coordinates"] if geometry["type"] == "MultiPolygon" else [geometry["coordinates"]]
+        return any(
+            polygon and cls._point_in_ring(latitude, longitude, polygon[0])
+            and not any(cls._point_in_ring(latitude, longitude, hole) for hole in polygon[1:])
+            for polygon in polygons
+        )
 
     @staticmethod
     def _with_location_ancestors(
@@ -717,6 +795,7 @@ class FaceCatalog:
     def create_location(
         self, name: str, location_type: str, latitude: float, longitude: float,
         radius_meters: float, parent_id: int | None = None,
+        boundary_type: str = "radius", geometry: object = None,
     ) -> int:
         normalized = " ".join(name.strip().split())
         if not normalized:
@@ -727,6 +806,11 @@ class FaceCatalog:
             raise ValueError("Location coordinates are out of range.")
         if not 1 <= radius_meters <= 20_000_000:
             raise ValueError("Geofence radius must be between 1 meter and 20,000 kilometers.")
+        if boundary_type not in {"radius", "drawn", "legal"}:
+            raise ValueError("Boundary type must be radius, drawn, or legal.")
+        geometry_json = None
+        if boundary_type != "radius":
+            geometry_json = self._normalize_boundary_geometry(geometry)
         if parent_id is not None and self.connection.execute(
             "SELECT 1 FROM locations WHERE id = ?", (parent_id,)
         ).fetchone() is None:
@@ -734,9 +818,11 @@ class FaceCatalog:
         with self.connection:
             cursor = self.connection.execute(
                 """INSERT INTO locations(
-                       name, location_type, parent_id, latitude, longitude, radius_meters, created_at)
-                   VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                       name, location_type, parent_id, latitude, longitude, radius_meters,
+                       boundary_type, geometry_json, created_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (normalized, location_type, parent_id, latitude, longitude, radius_meters,
+                 boundary_type, geometry_json,
                  datetime.now(timezone.utc).isoformat()),
             )
         return int(cursor.lastrowid)
@@ -777,8 +863,13 @@ class FaceCatalog:
         rows = self._location_rows()
         direct = set(manual)
         if coordinate and coordinate[0] is not None and coordinate[1] is not None:
-            for location_id, _name, _kind, _parent, lat, lon, radius in rows:
-                if self._distance_meters(float(coordinate[0]), float(coordinate[1]), lat, lon) <= radius:
+            for location_id, _name, _kind, _parent, lat, lon, radius, boundary, geometry in rows:
+                matches = (
+                    self._distance_meters(float(coordinate[0]), float(coordinate[1]), lat, lon) <= radius
+                    if boundary == "radius" or not geometry
+                    else self._point_in_geometry(float(coordinate[0]), float(coordinate[1]), geometry)
+                )
+                if matches:
                     direct.add(location_id)
         parents = {row[0]: row[3] for row in rows}
         matched = self._with_location_ancestors(direct, parents)
@@ -826,6 +917,7 @@ class FaceCatalog:
             summaries.append({
                 "id": row[0], "name": row[1], "type": row[2], "parent_id": row[3],
                 "latitude": row[4], "longitude": row[5], "radius_meters": row[6],
+                "boundary_type": row[7], "geometry": json.loads(row[8]) if row[8] else None,
                 "path": path_for(row[0]), "photo_count": len(photo_ids),
                 "preview_photo_ids": photo_ids[:12],
             })

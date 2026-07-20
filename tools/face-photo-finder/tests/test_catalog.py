@@ -396,16 +396,28 @@ class CatalogTests(unittest.TestCase):
             country = catalog.create_location("United States", "general", 44.20, -93.81, 500_000)
             city = catalog.create_location("Madison Lake", "general", 44.20, -93.81, 20_000, country)
             home = catalog.create_location("Home", "custom", 44.20, -93.81, 100, city)
+            legal = catalog.create_location(
+                "Legal district", "general", 0, 0, 1, country, "legal",
+                {"type": "Polygon", "coordinates": [[
+                    [-93.82, 44.19], [-93.80, 44.19], [-93.80, 44.21],
+                    [-93.82, 44.21], [-93.82, 44.19],
+                ]]},
+            )
             catalog.set_photo_locations(manual_id, [home])
 
             near_locations = {item["name"] for item in catalog.locations_for_image(near_id)}
             manual_locations = {item["name"] for item in catalog.locations_for_image(manual_id)}
-            self.assertEqual(near_locations, {"Home", "Madison Lake", "United States"})
+            self.assertEqual(
+                near_locations, {"Home", "Legal district", "Madison Lake", "United States"}
+            )
             self.assertEqual(manual_locations, {"Home", "Madison Lake", "United States"})
             self.assertEqual({item["id"] for item in catalog.gallery_photos(location_id=country)}, {near_id, manual_id})
             summary = next(item for item in catalog.location_summaries() if item["id"] == home)
             self.assertEqual(summary["path"], "United States → Madison Lake → Home")
             self.assertEqual(summary["photo_count"], 2)
+            legal_summary = next(item for item in catalog.location_summaries() if item["id"] == legal)
+            self.assertEqual(legal_summary["boundary_type"], "legal")
+            self.assertEqual(legal_summary["photo_count"], 1)
             catalog.close()
 
     def test_reset_removes_all_catalog_data_without_deleting_source_image(self) -> None:

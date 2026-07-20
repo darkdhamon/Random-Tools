@@ -799,30 +799,65 @@ PAGE = PAGE.replace(
     '<button id=identityTabButton onclick="showAppTab(\'identity\')">Identity</button><button id=locationTabButton onclick="showAppTab(\'locations\')">Locations</button></nav>',
 ).replace(
     '<div id=modal class=modal>',
-    r'''<section id=locationView class=location-view><div class=location-toolbar><h1>Locations</h1><button onclick=loadLocationGroups()>Refresh</button></div><div class=geofence-form><h2>Create a geofence</h2><label>Name<input id=geofenceName placeholder="Home, Madison Lake, Minnesota…"></label><label>Type<select id=geofenceType><option value=custom>Custom location</option><option value=general>General location</option></select></label><label>Parent location<select id=geofenceParent><option value="">No parent</option></select></label><label>Latitude<input id=geofenceLatitude type=number min=-90 max=90 step=any></label><label>Longitude<input id=geofenceLongitude type=number min=-180 max=180 step=any></label><label>Radius (kilometers)<input id=geofenceRadius type=number min=.001 max=20000 step=any value=1></label><button onclick=createGeofence()>Create geofence</button><div id=locationStatus class=identity-status></div></div><div id=locationGroups class=location-groups></div></section><div id=modal class=modal>''',
+    r'''<section id=locationView class=location-view><div class=location-toolbar><h1>Locations</h1><button onclick=loadLocationGroups()>Refresh</button></div><div class=geofence-form><h2>Create a geofence</h2><label>Name<input id=geofenceName placeholder="Home, Madison Lake, Minnesota…"></label><label>Type<select id=geofenceType><option value=custom>Custom location</option><option value=general>General location</option></select></label><label>Parent location<select id=geofenceParent><option value="">No parent</option></select></label><label>Boundary<select id=geofenceBoundary onchange=updateBoundaryEditor()><option value=radius>Radius from a point</option><option value=drawn>Draw boundary on map</option><option value=legal>Import legal boundary (GeoJSON)</option></select></label><label>Latitude / map center<input id=geofenceLatitude type=number min=-90 max=90 step=any oninput=renderBoundaryMap()></label><label>Longitude / map center<input id=geofenceLongitude type=number min=-180 max=180 step=any oninput=renderBoundaryMap()></label><label id=geofenceRadiusLabel>Radius (kilometers)<input id=geofenceRadius type=number min=.001 max=20000 step=any value=1></label><div id=boundaryEditor class=boundary-editor><div class=boundary-map-controls><label>Map span (km)<input id=geofenceMapSpan type=number min=.1 max=2000 value=10 oninput=renderBoundaryMap()></label><button onclick=undoBoundaryPoint()>Undo point</button><button onclick=clearBoundaryPoints()>Clear drawing</button></div><svg id=geofenceMap viewBox="0 0 800 360" role=img aria-label="Local geofence drawing map" onclick=addBoundaryPoint(event)></svg><p id=boundaryHelp class=muted></p><label id=legalBoundaryLabel>Legal boundary GeoJSON<textarea id=legalBoundaryGeojson rows=5 placeholder='Paste a GeoJSON Polygon, MultiPolygon, or Feature' oninput=previewLegalBoundary()></textarea></label></div><button onclick=createGeofence()>Create geofence</button><div id=locationStatus class=identity-status></div></div><div id=locationGroups class=location-groups></div></section><div id=modal class=modal>''',
 ).replace(
     "album_id:albumFilter.value,limit:100,offset",
     "album_id:albumFilter.value,location_id:locationFilter,suggested_album_date:suggestionDateFilter,limit:100,offset",
 ).replace(
     "</style>",
-    r'''.location-view{display:none;padding:22px;max-width:1500px;margin:auto}.location-toolbar{display:flex;align-items:center;gap:12px}.geofence-form{display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:10px;align-items:end;background:#192326;border:1px solid #3d5960;border-radius:9px;padding:14px;margin-bottom:18px}.geofence-form h2{grid-column:1/-1;margin:0}.geofence-form label{display:flex;flex-direction:column;gap:4px}.location-groups{display:grid;grid-template-columns:repeat(auto-fit,minmax(340px,1fr));gap:14px}.location-card{background:#1c2224;border:1px solid #3d555a;border-radius:9px;padding:12px}.location-card h2{margin:0 0 4px}.location-previews{display:grid;grid-template-columns:repeat(6,1fr);gap:4px;margin:9px 0}.location-previews img{width:100%;aspect-ratio:1;object-fit:cover;border-radius:4px}.photo-locations{margin:8px 0 16px;padding:10px;background:#182326;border:1px solid #3e555a;border-radius:7px}.photo-location-options{display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:6px;margin:8px 0}.photo-location-options label{display:flex;align-items:center;gap:6px}.photo-location-options input{width:auto!important;margin:0!important}@media(max-width:750px){.location-view{padding:12px}.location-groups{grid-template-columns:1fr}.location-previews{grid-template-columns:repeat(4,1fr)}}</style>''',
+    r'''.location-view{display:none;padding:22px;max-width:1500px;margin:auto}.location-toolbar{display:flex;align-items:center;gap:12px}.geofence-form{display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:10px;align-items:end;background:#192326;border:1px solid #3d5960;border-radius:9px;padding:14px;margin-bottom:18px}.geofence-form h2{grid-column:1/-1;margin:0}.geofence-form label{display:flex;flex-direction:column;gap:4px}.boundary-editor{display:none;grid-column:1/-1}.boundary-map-controls{display:flex;align-items:end;gap:8px;flex-wrap:wrap;margin-bottom:8px}.boundary-map-controls label{max-width:180px}.boundary-editor svg{display:block;width:100%;max-height:52vh;background-color:#173039;background-image:linear-gradient(#ffffff18 1px,transparent 1px),linear-gradient(90deg,#ffffff18 1px,transparent 1px);background-size:10% 20%;border:1px solid #5a7c83;border-radius:8px;cursor:crosshair}.boundary-editor polyline,.boundary-editor polygon{fill:#32c8dd33;stroke:#4be2f2;stroke-width:3}.boundary-editor circle{fill:#ffdc69;stroke:#202020;stroke-width:2}.boundary-editor textarea{width:100%;box-sizing:border-box}.location-groups{display:grid;grid-template-columns:repeat(auto-fit,minmax(340px,1fr));gap:14px}.location-card{background:#1c2224;border:1px solid #3d555a;border-radius:9px;padding:12px}.location-card h2{margin:0 0 4px}.location-previews{display:grid;grid-template-columns:repeat(6,1fr);gap:4px;margin:9px 0}.location-previews img{width:100%;aspect-ratio:1;object-fit:cover;border-radius:4px}.photo-locations{margin:8px 0 16px;padding:10px;background:#182326;border:1px solid #3e555a;border-radius:7px}.photo-location-options{display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:6px;margin:8px 0}.photo-location-options label{display:flex;align-items:center;gap:6px}.photo-location-options input{width:auto!important;margin:0!important}@media(max-width:750px){.location-view{padding:12px}.location-groups{grid-template-columns:1fr}.location-previews{grid-template-columns:repeat(4,1fr)}}</style>''',
 ).replace(
     "</body>",
     r'''<script>
-let managedLocations=[], locationFilter='';
+let managedLocations=[], locationFilter='', drawnBoundaryPoints=[];
+function boundaryMapBounds() {
+  const centerLat=Number(geofenceLatitude.value)||0,centerLon=Number(geofenceLongitude.value)||0,spanKm=Math.max(.1,Number(geofenceMapSpan.value)||10);
+  const latSpan=spanKm/111,lonSpan=spanKm/(111*Math.max(.15,Math.cos(centerLat*Math.PI/180)));
+  return {centerLat,centerLon,latSpan,lonSpan};
+}
+function projectBoundaryPoint(point,bounds) { return [400+(point[0]-bounds.centerLon)/bounds.lonSpan*400,180-(point[1]-bounds.centerLat)/bounds.latSpan*180]; }
+function legalBoundaryGeometry() { const parsed=JSON.parse(legalBoundaryGeojson.value); return parsed.type==='Feature'?parsed.geometry:parsed; }
+function boundaryRingsForPreview() {
+  if(geofenceBoundary.value==='drawn')return drawnBoundaryPoints.length?[drawnBoundaryPoints]:[];
+  if(geofenceBoundary.value!=='legal'||!legalBoundaryGeojson.value.trim())return [];
+  try{const geometry=legalBoundaryGeometry();return geometry.type==='MultiPolygon'?geometry.coordinates.flat():geometry.type==='Polygon'?geometry.coordinates:[]}catch{return []}
+}
+function renderBoundaryMap() {
+  const bounds=boundaryMapBounds(),rings=boundaryRingsForPreview();let shapes='';
+  if(geofenceBoundary.value==='radius'){
+    const radiusKm=Math.max(.001,Number(geofenceRadius.value)||1),radiusPixels=Math.min(350,radiusKm/(Number(geofenceMapSpan.value)||10)*400);
+    shapes=`<circle cx="400" cy="180" r="${radiusPixels}" style="fill:#32c8dd33;stroke:#4be2f2;stroke-width:3"></circle><circle cx="400" cy="180" r="6"></circle>`;
+  }else shapes=rings.map(ring=>`<polygon points="${ring.map(point=>projectBoundaryPoint(point,bounds).join(',')).join(' ')}"></polygon>`).join('')+(geofenceBoundary.value==='drawn'?drawnBoundaryPoints.map(point=>{const p=projectBoundaryPoint(point,bounds);return `<circle cx="${p[0]}" cy="${p[1]}" r="5"></circle>`}).join(''):'');
+  geofenceMap.innerHTML=shapes;
+}
+function updateBoundaryEditor() {
+  boundaryEditor.style.display='block';geofenceRadiusLabel.style.display=geofenceBoundary.value==='radius'?'flex':'none';legalBoundaryLabel.style.display=geofenceBoundary.value==='legal'?'flex':'none';
+  boundaryHelp.textContent=geofenceBoundary.value==='radius'?'Enter a center and radius. Clicking the map moves the center.':geofenceBoundary.value==='drawn'?'Click at least three map points to trace the boundary.':'Paste an official GeoJSON Polygon or MultiPolygon to use its exact legal boundary.';renderBoundaryMap();
+}
+function addBoundaryPoint(event) {
+  const rect=geofenceMap.getBoundingClientRect(),bounds=boundaryMapBounds(),x=(event.clientX-rect.left)/rect.width,y=(event.clientY-rect.top)/rect.height;
+  const lon=bounds.centerLon+(x-.5)*2*bounds.lonSpan,lat=bounds.centerLat+(.5-y)*2*bounds.latSpan;
+  if(geofenceBoundary.value==='radius'){geofenceLatitude.value=lat.toFixed(7);geofenceLongitude.value=lon.toFixed(7)}else if(geofenceBoundary.value==='drawn')drawnBoundaryPoints.push([lon,lat]);renderBoundaryMap();
+}
+function undoBoundaryPoint(){drawnBoundaryPoints.pop();renderBoundaryMap()}
+function clearBoundaryPoints(){drawnBoundaryPoints=[];renderBoundaryMap()}
+function previewLegalBoundary(){try{const geometry=legalBoundaryGeometry(),coordinates=geometry.type==='MultiPolygon'?geometry.coordinates.flat(2):geometry.coordinates.flat(1);if(coordinates.length){geofenceLongitude.value=coordinates.reduce((sum,p)=>sum+p[0],0)/coordinates.length;geofenceLatitude.value=coordinates.reduce((sum,p)=>sum+p[1],0)/coordinates.length}boundaryHelp.textContent='Legal boundary loaded.'}catch{boundaryHelp.textContent='Paste valid Polygon or MultiPolygon GeoJSON.'}renderBoundaryMap()}
 async function loadLocationGroups() {
   locationStatus.textContent='Loading locations…';
   try {
     managedLocations=await api('/api/locations');
     geofenceParent.innerHTML='<option value="">No parent</option>'+managedLocations.map(item=>`<option value="${item.id}">${esc(item.path)}</option>`).join('');
-    locationGroups.innerHTML=managedLocations.length?managedLocations.map(item=>`<article class="location-card"><h2>${esc(item.name)}</h2><div class="muted">${esc(item.path)} · ${item.type} · ${(item.radius_meters/1000).toLocaleString()} km · ${item.photo_count} photos</div><div class="location-previews">${item.preview_photo_ids.map(id=>`<img loading="lazy" src="/media?id=${id}&thumb=1" alt="">`).join('')}</div><button onclick="viewLocationTimeline(${item.id})">View photos</button></article>`).join(''):'<p>No locations yet. Create a broad general location or a custom geofence above.</p>';
+    locationGroups.innerHTML=managedLocations.length?managedLocations.map(item=>`<article class="location-card"><h2>${esc(item.name)}</h2><div class="muted">${esc(item.path)} · ${item.type} · ${item.boundary_type==='radius'?(item.radius_meters/1000).toLocaleString()+' km radius':item.boundary_type+' boundary'} · ${item.photo_count} photos</div><div class="location-previews">${item.preview_photo_ids.map(id=>`<img loading="lazy" src="/media?id=${id}&thumb=1" alt="">`).join('')}</div><button onclick="viewLocationTimeline(${item.id})">View photos</button></article>`).join(''):'<p>No locations yet. Create a broad general location or a custom geofence above.</p>';
     locationStatus.textContent=`${managedLocations.length} locations`;
   } catch(error) { locationStatus.textContent='Load failed: '+error.message; }
 }
 async function createGeofence() {
   try {
-    await post('/api/locations',{name:geofenceName.value,location_type:geofenceType.value,parent_id:geofenceParent.value||null,latitude:+geofenceLatitude.value,longitude:+geofenceLongitude.value,radius_meters:+geofenceRadius.value*1000});
-    geofenceName.value=''; await loadLocationGroups(); locationStatus.textContent='Geofence created';
+    const boundaryType=geofenceBoundary.value;let geometry=null;
+    if(boundaryType==='drawn'){if(drawnBoundaryPoints.length<3)throw Error('Draw at least three boundary points.');geometry={type:'Polygon',coordinates:[[...drawnBoundaryPoints,drawnBoundaryPoints[0]]]}}
+    if(boundaryType==='legal')geometry=legalBoundaryGeometry();
+    await post('/api/locations',{name:geofenceName.value,location_type:geofenceType.value,parent_id:geofenceParent.value||null,latitude:+geofenceLatitude.value,longitude:+geofenceLongitude.value,radius_meters:boundaryType==='radius'?+geofenceRadius.value*1000:1,boundary_type:boundaryType,geometry});
+    geofenceName.value='';drawnBoundaryPoints=[];legalBoundaryGeojson.value='';await loadLocationGroups();updateBoundaryEditor();locationStatus.textContent='Geofence created';
   } catch(error) { locationStatus.textContent='Create failed: '+error.message; }
 }
 function viewLocationTimeline(id) { locationFilter=String(id); person.value=''; albumFilter.value=''; showAppTab('timeline',true); load(true); }
@@ -842,6 +877,7 @@ function newGeofenceFromPhoto() {
 }
 const openPhotoWithLocations=openPhoto;
 openPhoto=async function(id){await openPhotoWithLocations(id);if(!managedLocations.length)managedLocations=await api('/api/locations');renderPhotoLocations()};
+updateBoundaryEditor();
 </script></body>''',
 )
 
@@ -995,6 +1031,7 @@ class GalleryHandler(BaseHTTPRequestHandler):
                         str(body.get("name", "")), str(body.get("location_type", "custom")),
                         float(body["latitude"]), float(body["longitude"]),
                         float(body["radius_meters"]), int(parent) if parent not in (None, "") else None,
+                        str(body.get("boundary_type", "radius")), body.get("geometry"),
                     )
                 finally: catalog.close()
                 self._json({"ok": True, "id": location_id})
