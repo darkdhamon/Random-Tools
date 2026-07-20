@@ -115,6 +115,7 @@ function showAppTab(tabName, preservePersonFilter=false) {
   identityView.style.display = identityActive ? 'block' : 'none';
   locationView.style.display = locationActive ? 'block' : 'none';
   settingsView.style.display = settingsActive ? 'block' : 'none';
+  if (!locationActive && typeof closeLocationPhotoPanel === 'function') closeLocationPhotoPanel();
   if (!timelineActive && typeof albumSuggestionBar !== 'undefined') albumSuggestionBar.style.display = 'none';
   if (timelineActive && typeof renderAlbumSuggestions === 'function') renderAlbumSuggestions();
   if (identityActive) { clearSelection(); loadIdentityTable(); }
@@ -820,7 +821,7 @@ PAGE = PAGE.replace(
     '<section id=locationView class=location-view><div class=location-toolbar><h1>Photo locations</h1><button onclick=loadLocationOverview()>Refresh</button></div><div id=locationOverviewMapFrame class=location-overview-map><div id=locationOverviewTiles class=geofence-tiles aria-hidden=true></div><svg id=locationOverviewMarkers viewBox="0 0 1200 650" preserveAspectRatio="none" role=img aria-label="Map of all geotagged photos"></svg><div class=map-attribution>Tiles: OpenStreetMap contributors</div></div><div id=locationOverviewStatus class=identity-status></div></section><section id=settingsView class=location-view><div class=location-toolbar><h1>Location settings</h1></div><div class=geofence-form>',
 ).replace(
     '<div id=locationOverviewStatus class=identity-status></div></section>',
-    '<div id=locationOverviewStatus class=identity-status></div><div id=locationLegalGroups class=location-groups></div></section>',
+    '<div id=locationOverviewStatus class=identity-status></div><aside id=locationPhotoPanel class=location-photo-panel aria-label="Photos at selected map location"><button class=close onclick=closeLocationPhotoPanel()>Close</button><div id=locationPhotoPanelContent></div></aside><div id=locationLegalGroups class=location-groups></div></section>',
 ).replace(
     '<div class=geofence-form><h2>Create a geofence</h2>',
     '<div class=geofence-form><h2 id=geofenceFormTitle>Create a geofence</h2>',
@@ -959,11 +960,23 @@ PAGE = PAGE.replace(
     r'''.boundary-map-controls .map-layer-toggle{flex-direction:row;align-items:center;padding-bottom:8px}.map-layer-toggle input{width:auto;margin:0}.geofence-map-frame{position:relative;width:100%;aspect-ratio:20/9;max-height:52vh;min-height:260px;overflow:hidden;border:1px solid #5a7c83;border-radius:8px;background:#173039;touch-action:none;outline:none}.geofence-map-frame:focus{border-color:#60ddea;box-shadow:0 0 0 2px #60ddea66}.geofence-tiles,.geofence-map-frame>svg{position:absolute!important;inset:0;width:100%!important;height:100%!important;max-height:none!important;border:0!important;border-radius:0!important;background:none!important}.geofence-tiles{overflow:hidden;background:#173039}.geofence-tile{position:absolute;width:256px;height:256px;max-width:none;user-select:none;pointer-events:none}.map-controls-help,.map-attribution{position:absolute;bottom:3px;background:#111c;color:#ddd;font-size:10px;padding:2px 4px;pointer-events:none}.map-controls-help{left:4px}.map-attribution{right:4px}.geofence-map-frame.dragging{cursor:grabbing}.geofence-map-frame.dragging>svg{cursor:grabbing!important}</style>''',
 ).replace(
     '</style>',
-    r'''.location-overview-map{position:relative;width:100%;height:min(72vh,760px);min-height:420px;overflow:hidden;border:1px solid #5a7c83;border-radius:9px;background:#173039}.location-overview-map>svg{position:absolute;inset:0;width:100%;height:100%}.location-map-cluster{fill:#0b7085;stroke:#b8f7ff;stroke-width:3}.location-map-count{fill:white;font-weight:800;font-size:14px;text-anchor:middle;dominant-baseline:central;pointer-events:none}</style>''',
+    r'''.location-overview-map{position:relative;width:100%;height:min(72vh,760px);min-height:420px;overflow:hidden;border:1px solid #5a7c83;border-radius:9px;background:#173039}.location-overview-map>svg{position:absolute;inset:0;width:100%;height:100%}.location-map-cluster{fill:#0b7085;stroke:#b8f7ff;stroke-width:3}.location-map-pin{cursor:pointer}.location-map-pin:hover .location-map-cluster,.location-map-pin:focus .location-map-cluster{fill:#13a6bd;stroke:white;stroke-width:4}.location-map-count{fill:white;font-weight:800;font-size:14px;text-anchor:middle;dominant-baseline:central;pointer-events:none}.location-photo-panel{position:fixed;z-index:14;right:0;top:49px;bottom:0;width:min(460px,92vw);display:none;overflow:auto;background:#182124;border-left:1px solid #5b7d84;padding:16px;box-sizing:border-box;box-shadow:-10px 0 30px #0009}.location-photo-panel.open{display:block}.location-photo-panel h2{margin-top:4px}.location-panel-single{width:100%;max-height:68vh;object-fit:contain;background:#080808;border-radius:7px}.location-panel-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:7px}.location-panel-thumb{padding:0;overflow:hidden;background:#090909}.location-panel-thumb img{display:block;width:100%;aspect-ratio:1;object-fit:cover}.location-panel-actions{display:flex;gap:8px;margin:10px 0;flex-wrap:wrap}</style>''',
 ).replace(
     '</body>',
     r'''<script>
-let locationOverviewPoints=[];
+let locationOverviewPoints=[],locationOverviewClusters=[],locationPanelClusterIndex=null,locationPanelVisibleCount=60;
+function closeLocationPhotoPanel(){locationPhotoPanel.classList.remove('open')}
+function openLocationPhotoPanel(clusterIndex){
+  const cluster=locationOverviewClusters[clusterIndex];if(!cluster)return;
+  if(cluster.ids.length===1){const id=cluster.ids[0];locationPhotoPanelContent.innerHTML=`<h2>Photo at this location</h2><img class="location-panel-single" src="/media?id=${id}" alt="Selected location photo"><div class="location-panel-actions"><button onclick="openLocationPhotoInViewer(${id})">Open full viewer</button></div>`}
+  else{locationPanelClusterIndex=clusterIndex;locationPanelVisibleCount=60;renderLocationClusterGrid()}
+  locationPhotoPanel.classList.add('open');
+}
+function renderLocationClusterGrid(){const cluster=locationOverviewClusters[locationPanelClusterIndex],visible=cluster.ids.slice(0,locationPanelVisibleCount);locationPhotoPanelContent.innerHTML=`<h2>${cluster.ids.length} photos in this area</h2><p class="muted">Select a photo to focus it in this panel. Showing ${visible.length} of ${cluster.ids.length}.</p><div class="location-panel-grid">${visible.map(id=>`<button class="location-panel-thumb" onclick="focusLocationPhoto(${id},${locationPanelClusterIndex})" aria-label="Open photo ${id}"><img loading="lazy" src="/media?id=${id}&thumb=1" alt=""></button>`).join('')}</div>${visible.length<cluster.ids.length?'<button onclick="loadMoreLocationPhotos()">Load more photos</button>':''}`}
+function loadMoreLocationPhotos(){locationPanelVisibleCount+=60;renderLocationClusterGrid()}
+function focusLocationPhoto(id,clusterIndex){locationPhotoPanelContent.innerHTML=`<button onclick="openLocationPhotoPanel(${clusterIndex})">← Back to group</button><h2>Photo at this location</h2><img class="location-panel-single" src="/media?id=${id}" alt="Selected location photo"><div class="location-panel-actions"><button onclick="openLocationPhotoInViewer(${id})">Open full viewer</button></div>`}
+function openLocationPhotoInViewer(id){closeLocationPhotoPanel();openPhoto(id)}
+document.addEventListener('keydown',event=>{if(event.key==='Escape'&&locationPhotoPanel.classList.contains('open'))closeLocationPhotoPanel()});
 function overviewWorldPoint(latitude,longitude,zoom){
   const world=256*2**zoom,lat=Math.max(-85.0511,Math.min(85.0511,latitude)),sin=Math.sin(lat*Math.PI/180);
   return {x:(longitude+180)/360*world,y:(.5-Math.log((1+sin)/(1-sin))/(4*Math.PI))*world};
@@ -980,9 +993,10 @@ function renderLocationOverview(){
   const firstX=Math.floor((centerX-width/2)/256),lastX=Math.floor((centerX+width/2)/256),firstY=Math.floor((centerY-height/2)/256),lastY=Math.floor((centerY+height/2)/256),count=2**zoom;let tiles='';
   for(let ty=firstY;ty<=lastY;ty++)for(let tx=firstX;tx<=lastX;tx++){if(ty<0||ty>=count)continue;const wrappedX=((tx%count)+count)%count;tiles+=`<img class="geofence-tile" alt="" src="${mapTileUrl('road',zoom,wrappedX,ty)}" style="left:${tx*256-(centerX-width/2)}px;top:${ty*256-(centerY-height/2)}px">`}
   locationOverviewTiles.innerHTML=tiles;
-  const clusters=new Map();for(const point of locationOverviewPoints){const projected=overviewWorldPoint(point.latitude,point.longitude,zoom),x=projected.x-(centerX-width/2),y=projected.y-(centerY-height/2),key=`${Math.floor(x/58)}:${Math.floor(y/58)}`,cluster=clusters.get(key)||{x:0,y:0,count:0};cluster.x+=x;cluster.y+=y;cluster.count++;clusters.set(key,cluster)}
+  const clusters=new Map();for(const point of locationOverviewPoints){const projected=overviewWorldPoint(point.latitude,point.longitude,zoom),x=projected.x-(centerX-width/2),y=projected.y-(centerY-height/2),key=`${Math.floor(x/58)}:${Math.floor(y/58)}`,cluster=clusters.get(key)||{x:0,y:0,count:0,ids:[]};cluster.x+=x;cluster.y+=y;cluster.count++;cluster.ids.push(point.id);clusters.set(key,cluster)}
+  locationOverviewClusters=[...clusters.values()];
   locationOverviewMarkers.setAttribute('viewBox',`0 0 ${width} ${height}`);
-  locationOverviewMarkers.innerHTML=[...clusters.values()].map(cluster=>{const x=cluster.x/cluster.count,y=cluster.y/cluster.count,r=cluster.count>99?24:cluster.count>9?21:18;return `<g><title>${cluster.count} photo${cluster.count===1?'':'s'} in this area</title><circle class="location-map-cluster" cx="${x}" cy="${y}" r="${r}"></circle><text class="location-map-count" x="${x}" y="${y}">${cluster.count}</text></g>`}).join('');
+  locationOverviewMarkers.innerHTML=locationOverviewClusters.map((cluster,index)=>{const x=cluster.x/cluster.count,y=cluster.y/cluster.count,r=cluster.count>99?24:cluster.count>9?21:18;return `<g class="location-map-pin" role="button" tabindex="0" aria-label="Open ${cluster.count} photo${cluster.count===1?'':'s'} in this area" onclick="openLocationPhotoPanel(${index})" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();openLocationPhotoPanel(${index})}"><title>${cluster.count} photo${cluster.count===1?'':'s'} in this area</title><circle class="location-map-cluster" cx="${x}" cy="${y}" r="${r}"></circle><text class="location-map-count" x="${x}" y="${y}">${cluster.count}</text></g>`}).join('');
   locationOverviewStatus.textContent=`${locationOverviewPoints.length.toLocaleString()} geotagged photos · ${clusters.size.toLocaleString()} map areas · automatically fitted to all locations`;
 }
 async function loadLocationOverview(){
