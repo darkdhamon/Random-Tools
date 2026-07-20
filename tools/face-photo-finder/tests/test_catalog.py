@@ -354,6 +354,24 @@ class CatalogTests(unittest.TestCase):
             self.assertEqual(catalog.faces_for_image(stored.image_id), [])
             catalog.close()
 
+    def test_removed_last_photo_hides_filter_identity_but_retains_biometrics(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary); image = root / "only-photo.jpg"; image.write_bytes(b"photo")
+            catalog = FaceCatalog(root / "catalog.sqlite3")
+            identity_id = catalog.get_or_create_identity("Retained Person")
+            stored = catalog.store_scan(
+                image, [np.array([1.0, 0.0], dtype=np.float32)], [identity_id]
+            )
+            self.assertIn(identity_id, catalog.gallery_identity_ids())
+
+            catalog.delete_photo(stored.image_id)
+
+            self.assertNotIn(identity_id, catalog.gallery_identity_ids())
+            retained = next(item for item in catalog.identities() if item.identity_id == identity_id)
+            self.assertEqual(len(retained.embeddings), 1)
+            np.testing.assert_allclose(retained.embeddings[0], [1.0, 0.0])
+            catalog.close()
+
     def test_archive_photos_moves_sources_into_zip_and_removes_catalog_rows(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

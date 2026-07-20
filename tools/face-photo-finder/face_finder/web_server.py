@@ -335,6 +335,7 @@ async function confirmDelete() {
     modal.style.display = 'none';
     current = null;
     removeDeletedCard(deletedId);
+    await people(true);
     requestAnimationFrame(() => window.scrollTo(0, Math.min(
       deleteScrollPosition, Math.max(0, document.documentElement.scrollHeight - window.innerHeight)
     )));
@@ -486,6 +487,7 @@ async function executeBulkAction() {
     if (action === 'archive') payload.archive_name = archiveNew.value.trim() || archiveExisting.value || 'GeneralArchive.zip';
     await post(action === 'archive' ? '/api/archive-photos' : '/api/delete-photos', payload);
     ids.forEach(removeDeletedCard);
+    await people(true);
     bulkDialog.classList.remove('open');
     pendingBulkAction = null;
     clearSelection();
@@ -592,7 +594,7 @@ PAGE = PAGE.replace(
 
 PAGE = PAGE.replace(
     "async function people(){identities=await api('/api/identities');for(let p of identities)",
-    "async function people(refresh=false){identities=await api('/api/identities');if(refresh){person.innerHTML='<option value=\"\">All people</option>'}for(let p of identities)",
+    "async function people(refresh=false){identities=await api('/api/identities');if(refresh){person.innerHTML='<option value=\"\">All people</option>'}for(let p of identities.filter(item=>item.has_library_photos))",
 ).replace(
     "o.textContent=p.name;",
     "o.textContent=`${p.name} (#${p.id})`;",
@@ -756,7 +758,10 @@ class GalleryHandler(BaseHTTPRequestHandler):
                 photo = catalog.gallery_photo(int(query["id"][0]))
                 self._json(photo if photo else {"error": "not found"}, 200 if photo else 404)
             elif parsed.path == "/api/identities":
-                self._json([{"id": x.identity_id, "name": x.name, "birth_year": x.birth_year} for x in catalog.identities()])
+                visible_ids = catalog.gallery_identity_ids()
+                self._json([{"id": x.identity_id, "name": x.name, "birth_year": x.birth_year,
+                             "has_library_photos": x.identity_id in visible_ids}
+                            for x in catalog.identities()])
             elif parsed.path == "/api/identity-summaries":
                 self._json(catalog.identity_summaries())
             elif parsed.path == "/api/unidentified-summaries":

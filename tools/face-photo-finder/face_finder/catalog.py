@@ -156,6 +156,12 @@ class FaceCatalog:
                 UNIQUE(image_id, face_index)
             );
             CREATE INDEX IF NOT EXISTS faces_identity_idx ON faces(identity_id);
+            CREATE TABLE IF NOT EXISTS retained_identity_samples (
+                source_face_id INTEGER PRIMARY KEY,
+                identity_id INTEGER NOT NULL REFERENCES identities(id) ON DELETE CASCADE,
+                embedding BLOB NOT NULL, capture_year INTEGER,
+                profile_eligible INTEGER NOT NULL DEFAULT 1
+            );
             CREATE TABLE IF NOT EXISTS photo_identity_tags (
                 image_id INTEGER NOT NULL REFERENCES images(id) ON DELETE CASCADE,
                 identity_id INTEGER NOT NULL REFERENCES identities(id) ON DELETE CASCADE,
@@ -319,6 +325,7 @@ class FaceCatalog:
         """Permanently clear all cataloged biometric and scan data."""
         with self.connection:
             self.connection.execute("DELETE FROM faces")
+            self.connection.execute("DELETE FROM retained_identity_samples")
             self.connection.execute("DELETE FROM images")
             self.connection.execute("DELETE FROM identities")
             self.connection.execute("DELETE FROM unknown_groups")
@@ -561,6 +568,7 @@ class FaceCatalog:
         if not path.is_file():
             raise FileNotFoundError(f"Photo no longer exists: {path}")
         with self.connection:
+            self._retain_identity_samples([image_id])
             path.unlink()
             self.connection.execute("DELETE FROM images WHERE id = ?", (image_id,))
         return path
@@ -583,6 +591,7 @@ class FaceCatalog:
             raise FileNotFoundError(f"Photo no longer exists: {missing_files[0]}")
         paths = [found[image_id] for image_id in unique_ids]
         with self.connection:
+            self._retain_identity_samples(unique_ids)
             for path in paths:
                 path.unlink()
             self.connection.execute(
@@ -640,6 +649,7 @@ class FaceCatalog:
                 temporary.unlink()
             raise
         with self.connection:
+            self._retain_identity_samples(unique_ids)
             for path in paths:
                 path.unlink()
             self.connection.execute(
@@ -789,6 +799,13 @@ class FaceCatalog:
                LEFT JOIN images ON images.id = faces.image_id
                ORDER BY identities.name, faces.id"""
         ).fetchall()
+        rows.extend(self.connection.execute(
+            """SELECT identities.id, identities.name, identities.birth_year,
+                      retained.embedding, retained.capture_year, retained.profile_eligible
+               FROM retained_identity_samples retained
+               JOIN identities ON identities.id = retained.identity_id
+               ORDER BY identities.name, retained.source_face_id"""
+        ).fetchall())
         grouped: dict[tuple[int, str, int | None], dict[bool, list[tuple[np.ndarray, int | None]]]] = {}
         for identity_id, name, birth_year, blob, capture_year, profile_eligible in rows:
             grouped.setdefault((identity_id, name, birth_year), {True: [], False: []})
@@ -806,6 +823,34 @@ class FaceCatalog:
                                             tuple(v[1] for v in fallback)))
         return identities
 
+    def gallery_identity_ids(self) -> set[int]:
+        """Identity IDs that still occur in at least one available library photo."""
+        return {
+            int(row[0]) for row in self.connection.execute(
+                """SELECT faces.identity_id FROM faces JOIN images ON images.id = faces.image_id
+                   WHERE faces.identity_id IS NOT NULL AND images.missing_since IS NULL
+                   UNION
+                   SELECT tags.identity_id FROM photo_identity_tags tags
+                   JOIN images ON images.id = tags.image_id WHERE images.missing_since IS NULL"""
+            )
+        }
+
+    def _retain_identity_samples(self, image_ids: list[int]) -> None:
+        if not image_ids:
+            return
+        placeholders = ",".join("?" for _ in image_ids)
+        self.connection.execute(
+            f"""INSERT OR IGNORE INTO retained_identity_samples(
+                       source_face_id, identity_id, embedding, capture_year, profile_eligible)
+                SELECT faces.id, faces.identity_id, faces.embedding,
+                       COALESCE(images.capture_year_override, images.capture_year),
+                       faces.profile_eligible
+                FROM faces JOIN images ON images.id = faces.image_id
+                WHERE faces.image_id IN ({placeholders}) AND faces.identity_id IS NOT NULL
+                      AND faces.is_art = 0 AND faces.embedding IS NOT NULL""",
+            image_ids,
+        )
+
     def set_identity_birth_year(self, identity_id: int, birth_year: int | None) -> None:
         if birth_year is not None and not 1900 <= birth_year <= datetime.now().year:
             raise ValueError("Birth year must be between 1900 and the current year.")
@@ -821,7 +866,10 @@ class FaceCatalog:
                       COUNT(CASE WHEN images.missing_since IS NULL THEN faces.id END),
                       COUNT(DISTINCT CASE WHEN images.missing_since IS NULL THEN faces.image_id END),
                       COALESCE(SUM(CASE WHEN images.missing_since IS NULL
-                                            AND faces.profile_eligible = 1 THEN 1 ELSE 0 END), 0),
+                                            AND faces.profile_eligible = 1 THEN 1 ELSE 0 END), 0)
+                      + (SELECT COUNT(*) FROM retained_identity_samples retained
+                         WHERE retained.identity_id = identities.id
+                               AND retained.profile_eligible = 1),
                       MAX(CASE WHEN images.missing_since IS NULL THEN
                             CASE WHEN images.capture_year_override IS NULL
                                        OR CAST(substr(images.capture_date, 1, 4) AS INTEGER)
@@ -1153,6 +1201,10 @@ class FaceCatalog:
                 (target_identity_id, *sources),
             )
             self.connection.execute(
+                f"UPDATE retained_identity_samples SET identity_id = ? WHERE identity_id IN ({source_placeholders})",
+                (target_identity_id, *sources),
+            )
+            self.connection.execute(
                 f"""INSERT OR IGNORE INTO photo_identity_tags(
                            image_id, identity_id, created_at, target_x, target_y)
                     SELECT image_id, ?, created_at, target_x, target_y FROM photo_identity_tags
@@ -1271,6 +1323,7 @@ class FaceCatalog:
             return 0
         placeholders = ",".join("?" for _ in image_ids)
         with self.connection:
+            self._retain_identity_samples(image_ids)
             cursor = self.connection.execute(
                 f"DELETE FROM images WHERE id IN ({placeholders})", image_ids
             )

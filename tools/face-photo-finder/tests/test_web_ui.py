@@ -80,6 +80,8 @@ class WebGalleryUiTests(unittest.TestCase):
         self.assertIn('unknown_group_id:unknownGroupFilter', PAGE)
         self.assertIn('id=identityTableBody', PAGE)
         self.assertIn("api('/api/identity-summaries')", PAGE)
+        self.assertIn('item.has_library_photos', PAGE)
+        self.assertIn('await people(true);', PAGE)
         self.assertIn("post('/api/identity'", PAGE)
         self.assertIn('View photos', PAGE)
         self.assertIn('Reference images', PAGE)
