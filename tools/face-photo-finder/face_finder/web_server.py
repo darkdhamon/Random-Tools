@@ -425,16 +425,18 @@ PAGE = PAGE.replace(
     r'''<div id=bulkBar class=bulk-bar><strong id=selectedCount>0 selected</strong><button class=safe-button onclick="bulkSetNsfw(0)">Mark safe</button><button class=danger-button onclick="bulkSetNsfw(1)">Mark NSFW</button><button class=document-button onclick=bulkSetDocuments()>Mark documents</button><button onclick=requestBulkLocation()>Set location</button><button class=archive-button onclick="requestBulkAction('archive')">Archive selected</button><button class=danger-button onclick="requestBulkAction('delete')">Delete selected</button><button onclick=clearSelection()>Done</button></div><div id=bulkDialog class=danger-dialog role=dialog aria-modal=true aria-labelledby=bulkTitle><div class=danger-box><h2 id=bulkTitle></h2><p id=bulkMessage></p><div id=archiveOptions class=archive-options><label>Existing archive<select id=archiveExisting></select></label><label>Or create a new archive<input id=archiveNew placeholder="Example: Vacation.zip"></label><div class=muted>Leave the new name blank to use the selected existing archive. The default is GeneralArchive.zip.</div></div><div id=bulkError class=save-state></div><div class=danger-actions><button onclick=cancelBulkAction()>Cancel</button><button id=bulkConfirmButton onclick=executeBulkAction()></button></div></div></div><div id=bulkLocationDialog class=danger-dialog role=dialog aria-modal=true aria-labelledby=bulkLocationTitle><div class=danger-box><h2 id=bulkLocationTitle>Set photo location</h2><p id=bulkLocationMessage></p><label>Place name<input id=bulkLocationName placeholder="Home, Madison Lake, Minnesota…"></label><div class=location-row><label>Latitude<input id=bulkLocationLatitude type=number min=-90 max=90 step=any></label><label>Longitude<input id=bulkLocationLongitude type=number min=-180 max=180 step=any></label></div><div id=bulkLocationError class=save-state></div><div class=danger-actions><button onclick=cancelBulkLocation()>Cancel</button><button onclick=executeBulkLocation()>Set location</button></div></div></div><script>
 const selectedPhotos = new Map();
 let selectionMode = false;
+let selectionAnchorId = null;
 let pendingBulkAction = null;
 let bulkLocationTarget = null;
 function attachSelection(card, photo) {
+  card.selectionPhoto = photo;
   const picker = document.createElement('button');
   picker.className = 'select-box';
   picker.textContent = '✓';
   picker.setAttribute('aria-label', `Select ${photo.name}`);
-  picker.onclick = event => { event.stopPropagation(); toggleSelected(card, photo); };
+  picker.onclick = event => { event.stopPropagation(); toggleSelected(card, photo, event.shiftKey); };
   card.prepend(picker);
-  card.onclick = () => selectionMode ? toggleSelected(card, photo) : openPhoto(photo.id);
+  card.onclick = event => selectionMode ? toggleSelected(card, photo, event.shiftKey) : openPhoto(photo.id);
 }
 function toggleSelectionMode() {
   selectionMode = !selectionMode;
@@ -442,20 +444,25 @@ function toggleSelectionMode() {
   selectModeButton.textContent = selectionMode ? 'Selecting photos' : 'Select photos';
   if (!selectionMode) clearSelection();
 }
-function toggleSelected(card, photo) {
+function toggleSelected(card, photo, extendRange=false) {
   if (!selectionMode) {
     selectionMode = true;
     document.body.classList.add('selection-mode');
     selectModeButton.textContent = 'Selecting photos';
   }
-  if (selectedPhotos.has(photo.id)) selectedPhotos.delete(photo.id);
-  else selectedPhotos.set(photo.id, photo.name);
-  card.classList.toggle('selected', selectedPhotos.has(photo.id));
+  if(extendRange && selectionAnchorId!=null){
+    const cards=[...timeline.querySelectorAll('.card')],anchorIndex=cards.findIndex(item=>Number(item.dataset.photoId)===selectionAnchorId),targetIndex=cards.indexOf(card);
+    if(anchorIndex>=0&&targetIndex>=0){for(const item of cards.slice(Math.min(anchorIndex,targetIndex),Math.max(anchorIndex,targetIndex)+1)){const itemPhoto=item.selectionPhoto;if(!itemPhoto)continue;selectedPhotos.set(itemPhoto.id,itemPhoto.name);item.classList.add('selected')}}
+    else selectSinglePhoto(card,photo);
+  }else selectSinglePhoto(card,photo);
+  selectionAnchorId=photo.id;
   updateSelectedCount();
 }
+function selectSinglePhoto(card,photo){if(selectedPhotos.has(photo.id))selectedPhotos.delete(photo.id);else selectedPhotos.set(photo.id,photo.name);card.classList.toggle('selected',selectedPhotos.has(photo.id))}
 function updateSelectedCount() { selectedCount.textContent = `${selectedPhotos.size} selected`; }
 function clearSelection() {
   selectedPhotos.clear();
+  selectionAnchorId = null;
   document.querySelectorAll('.card.selected').forEach(card => card.classList.remove('selected'));
   selectionMode = false;
   document.body.classList.remove('selection-mode');
