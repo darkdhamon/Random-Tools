@@ -1712,6 +1712,27 @@ class FaceCatalog:
             )
         return len(unique_ids)
 
+    def set_media_kind_overrides(self, image_ids: list[int], value: str | None) -> int:
+        """Apply one manual content-type decision to multiple catalog photos."""
+        if value not in (None, "photo", "screenshot", "document"):
+            raise ValueError("Content type must be automatic, photo, screenshot, or document.")
+        unique_ids = list(dict.fromkeys(int(image_id) for image_id in image_ids))
+        if not unique_ids:
+            raise ValueError("Select at least one photo.")
+        placeholders = ",".join("?" for _ in unique_ids)
+        found = int(self.connection.execute(
+            f"SELECT COUNT(*) FROM images WHERE id IN ({placeholders})", unique_ids
+        ).fetchone()[0])
+        if found != len(unique_ids):
+            raise ValueError("One or more selected photos were not found in the catalog.")
+        with self.connection:
+            self.connection.executemany(
+                """INSERT INTO image_metadata(image_id, media_kind_override) VALUES (?, ?)
+                   ON CONFLICT(image_id) DO UPDATE SET media_kind_override=excluded.media_kind_override""",
+                [(image_id, value) for image_id in unique_ids],
+            )
+        return len(unique_ids)
+
     def nsfw_score_for_path(self, path: Path) -> float | None:
         row = self.connection.execute(
             "SELECT nsfw_score FROM images WHERE path = ?", (str(path.resolve()),)

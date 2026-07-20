@@ -1014,6 +1014,8 @@ class CatalogTests(unittest.TestCase):
             )
             self.assertEqual(catalog.set_nsfw_overrides([stored.image_id], 0), 1)
             self.assertFalse(catalog.image_is_nsfw(stored.image_id))
+            self.assertEqual(catalog.set_media_kind_overrides([stored.image_id], "document"), 1)
+            self.assertEqual(catalog.gallery_photo(stored.image_id)["media_kind"], "document")  # type: ignore[index]
             self.assertEqual(catalog.gallery_photos(nsfw_filter="conflict"), [])
             self.assertEqual(catalog.gallery_photos(excluded_kinds=("document",)), [])
             self.assertEqual(
