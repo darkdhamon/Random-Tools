@@ -769,7 +769,7 @@ async function renderAlbumSuggestions() {
   const suggestions=await api('/api/album-suggestions');
   albumSuggestionBar.style.display=suggestions.length?'block':'none';
   const viewing=suggestionDateFilter?`<div class="album-suggestion-viewing"><strong>Viewing suggested album: ${esc(suggestedAlbumName(suggestionDateFilter))}</strong><button onclick="clearSuggestedAlbumView()">Show full Timeline</button></div>`:'';
-  albumSuggestionBar.innerHTML=viewing+(suggestions.length?`<details><summary>${suggestions.length} suggested albums</summary><div class="album-suggestion-list">${suggestions.map(item=>`<div class="album-suggestion"><span>${item.photo_count} ungrouped photos from ${esc(suggestedAlbumName(item.capture_date))}</span><button onclick="viewSuggestedAlbum('${item.capture_date}')">View photos</button><button onclick="createSuggestedAlbum('${item.capture_date}')">Create album</button><button onclick="dismissAlbumSuggestion('${item.capture_date}')">Dismiss</button></div>`).join('')}</div></details>`:'');
+  albumSuggestionBar.innerHTML=viewing+(suggestions.length?`<details><summary>${suggestions.length} suggested albums</summary><div class="album-suggestion-list">${suggestions.map(item=>`<div class="album-suggestion"><span>${item.photo_count} ungrouped photos from ${esc(suggestedAlbumName(item.capture_date))}</span><button onclick="viewSuggestedAlbum('${item.capture_date}')">View photos</button><button onclick="createSuggestedAlbum('${item.capture_date}')">Create album</button>${item.nearby_albums.length?`<select id="nearbyAlbum-${item.capture_date}" aria-label="Nearby album for ${esc(suggestedAlbumName(item.capture_date))}">${item.nearby_albums.map(album=>`<option value="${album.id}">${esc(album.name)} (${album.day_distance===0?'same day':album.day_distance+' day'+(album.day_distance===1?'':'s')+' away'})</option>`).join('')}</select><button onclick="addSuggestedToAlbum('${item.capture_date}')">Add to nearby album</button>`:''}<button onclick="dismissAlbumSuggestion('${item.capture_date}')">Dismiss</button></div>`).join('')}</div></details>`:'');
 }
 function viewSuggestedAlbum(date) { suggestionDateFilter=date; person.value=''; albumFilter.value=''; locationFilter=''; year.value=''; renderAlbumSuggestions(); load(true); }
 function clearSuggestedAlbumView() { suggestionDateFilter=''; renderAlbumSuggestions(); load(true); }
@@ -777,6 +777,11 @@ async function createSuggestedAlbum(date) {
   const proposed=suggestedAlbumName(date), albumName=prompt('Album name:',proposed); if(!albumName||!albumName.trim())return;
   const result=await post('/api/create-suggested-album',{capture_date:date,name:albumName});
   await loadAlbums(); await renderAlbumSuggestions(); load(true); saveState.textContent=`Created album with ${result.photo_count} photos`;
+}
+async function addSuggestedToAlbum(date) {
+  const albumId=Number(document.getElementById(`nearbyAlbum-${date}`).value),album=albums.find(item=>item.id===albumId);
+  const result=await post('/api/add-suggested-to-album',{capture_date:date,album_id:albumId});
+  await loadAlbums();await renderAlbumSuggestions();load(true);saveState.textContent=`Added ${result.photo_count} photos to ${album?.name||'the selected album'}`;
 }
 async function dismissAlbumSuggestion(date) { await post('/api/dismiss-album-suggestion',{capture_date:date}); await renderAlbumSuggestions(); }
 function renderPhotoAlbums() {
@@ -1170,6 +1175,14 @@ class GalleryHandler(BaseHTTPRequestHandler):
                     )
                 finally: catalog.close()
                 self._json({"ok": True, "id": album_id, "photo_count": photo_count})
+            elif self.path == "/api/add-suggested-to-album":
+                catalog = self._catalog()
+                try:
+                    photo_count = catalog.add_suggested_photos_to_album(
+                        str(body.get("capture_date", "")), int(body["album_id"])
+                    )
+                finally: catalog.close()
+                self._json({"ok": True, "photo_count": photo_count})
             elif self.path == "/api/dismiss-album-suggestion":
                 catalog = self._catalog()
                 try: catalog.dismiss_album_suggestion(str(body.get("capture_date", "")))

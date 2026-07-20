@@ -694,7 +694,28 @@ class FaceCatalog:
                HAVING COUNT(*) >= ? ORDER BY substr(images.capture_date, 1, 10) DESC""",
             (minimum_photos,),
         ).fetchall()
-        return [{"capture_date": row[0], "photo_count": int(row[1])} for row in rows]
+        suggestions = []
+        for row in rows:
+            nearby = [
+                {"id": int(album[0]), "name": album[1], "photo_count": int(album[2]),
+                 "day_distance": int(round(float(album[3])))}
+                for album in self.connection.execute(
+                    """SELECT albums.id, albums.name, COUNT(DISTINCT album_photos.image_id),
+                              MIN(ABS(julianday(substr(images.capture_date, 1, 10)) - julianday(?)))
+                       FROM albums JOIN album_photos ON album_photos.album_id = albums.id
+                       JOIN images ON images.id = album_photos.image_id
+                       WHERE images.missing_since IS NULL AND length(images.capture_date) >= 10
+                         AND ABS(julianday(substr(images.capture_date, 1, 10)) - julianday(?)) <= 7
+                       GROUP BY albums.id
+                       ORDER BY 4, albums.name COLLATE NOCASE""",
+                    (row[0], row[0]),
+                )
+            ]
+            suggestions.append({
+                "capture_date": row[0], "photo_count": int(row[1]),
+                "nearby_albums": nearby,
+            })
+        return suggestions
 
     def create_suggested_album(self, capture_date: str, name: str) -> tuple[int, int]:
         try:
@@ -718,6 +739,38 @@ class FaceCatalog:
                 (capture_date, timestamp),
             )
         return album_id, len(rows)
+
+    def add_suggested_photos_to_album(
+        self, capture_date: str, album_id: int
+    ) -> int:
+        try:
+            datetime.strptime(capture_date, "%Y-%m-%d")
+        except ValueError as exc:
+            raise ValueError("Album suggestion date must use YYYY-MM-DD.") from exc
+        if self.connection.execute(
+            "SELECT 1 FROM albums WHERE id = ?", (album_id,)
+        ).fetchone() is None:
+            raise ValueError("The selected album no longer exists.")
+        timestamp = datetime.now(timezone.utc).isoformat()
+        with self.connection:
+            rows = self.connection.execute(
+                """SELECT images.id FROM images
+                   WHERE images.missing_since IS NULL
+                     AND substr(images.capture_date, 1, 10) = ?
+                     AND NOT EXISTS (
+                         SELECT 1 FROM album_photos WHERE album_photos.image_id = images.id
+                     )""",
+                (capture_date,),
+            ).fetchall()
+            self.connection.executemany(
+                "INSERT OR IGNORE INTO album_photos(album_id, image_id, added_at) VALUES (?, ?, ?)",
+                [(album_id, int(row[0]), timestamp) for row in rows],
+            )
+            self.connection.execute(
+                "INSERT OR REPLACE INTO dismissed_album_suggestions(capture_date, dismissed_at) VALUES (?, ?)",
+                (capture_date, timestamp),
+            )
+        return len(rows)
 
     def dismiss_album_suggestion(self, capture_date: str) -> None:
         try:

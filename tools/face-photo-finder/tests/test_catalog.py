@@ -361,7 +361,9 @@ class CatalogTests(unittest.TestCase):
                 catalog.connection.execute("UPDATE images SET capture_date = '2026-07-04'")
 
             suggestions = catalog.album_suggestions()
-            self.assertEqual(suggestions, [{"capture_date": "2026-07-04", "photo_count": 21}])
+            self.assertEqual(suggestions, [{
+                "capture_date": "2026-07-04", "photo_count": 21, "nearby_albums": [],
+            }])
             self.assertEqual(
                 len(catalog.gallery_photos(suggested_album_date="2026-07-04")), 21
             )
@@ -378,6 +380,38 @@ class CatalogTests(unittest.TestCase):
 
             catalog.dismiss_album_suggestion("2026-07-04")
             self.assertEqual(catalog.album_suggestions(), [])
+            catalog.close()
+
+    def test_suggested_photos_can_be_added_to_a_nearby_existing_album(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            catalog = FaceCatalog(root / "catalog.sqlite3")
+            suggestion_ids = []
+            for index in range(21):
+                image = root / f"suggested-{index}.jpg"; image.write_bytes(b"photo")
+                suggestion_ids.append(catalog.store_scan(image, [], []).image_id)
+            nearby = root / "nearby.jpg"; nearby.write_bytes(b"nearby")
+            nearby_id = catalog.store_scan(nearby, [], []).image_id
+            with catalog.connection:
+                catalog.connection.execute(
+                    "UPDATE images SET capture_date='2026-07-04' WHERE id != ?", (nearby_id,)
+                )
+                catalog.connection.execute(
+                    "UPDATE images SET capture_date='2026-07-08' WHERE id = ?", (nearby_id,)
+                )
+            album_id = catalog.create_album("Summer trip")
+            catalog.set_photo_albums(nearby_id, [album_id])
+
+            suggestion = catalog.album_suggestions()[0]
+            self.assertEqual(suggestion["nearby_albums"], [{
+                "id": album_id, "name": "Summer trip", "photo_count": 1,
+                "day_distance": 4,
+            }])
+            self.assertEqual(
+                catalog.add_suggested_photos_to_album("2026-07-04", album_id), 21
+            )
+            self.assertEqual(catalog.album_suggestions(), [])
+            self.assertEqual(next(item for item in catalog.albums() if item["id"] == album_id)["photo_count"], 22)
             catalog.close()
 
     def test_nested_geofences_and_manual_locations_can_overlap(self) -> None:
