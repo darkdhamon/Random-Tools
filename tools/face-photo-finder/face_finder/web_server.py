@@ -108,6 +108,8 @@ function showAppTab(tabName, preservePersonFilter=false) {
   timeline.style.display = identityActive ? 'none' : '';
   timelineMore.style.display = identityActive ? 'none' : '';
   identityView.style.display = identityActive ? 'block' : 'none';
+  if (identityActive && typeof albumSuggestionBar !== 'undefined') albumSuggestionBar.style.display = 'none';
+  if (!identityActive && typeof renderAlbumSuggestions === 'function') renderAlbumSuggestions();
   if (identityActive) { clearSelection(); loadIdentityTable(); }
 }
 async function loadIdentityTable() {
@@ -731,6 +733,59 @@ PAGE = PAGE.replace(
     r'''.reference-item{display:flex;flex:0 0 auto;width:64px}.reference-item .reference-thumb{width:64px}.reference-actions{display:flex;justify-content:center;margin-top:16px}.reference-not-face{background:#9d1c25;border-color:#ef5963;color:#fff;font-weight:700}.reference-not-face:hover{background:#c32632}</style>''',
 )
 
+PAGE = PAGE.replace(
+    '<select id=person><option value="">All people</option></select>',
+    '<select id=person><option value="">All people</option></select><select id=albumFilter onchange="load()"><option value="">All albums</option></select>',
+).replace(
+    "exclude_kinds:excluded.join(','),limit:100,offset",
+    "exclude_kinds:excluded.join(','),album_id:albumFilter.value,limit:100,offset",
+).replace(
+    "</style>",
+    r'''.album-suggestions{display:none;padding:10px 14px;background:#19363d;border-bottom:1px solid #4ca3b0}.album-suggestions summary{cursor:pointer;font-weight:700}.album-suggestion-list{max-height:42vh;overflow:auto;padding-top:6px}.album-suggestion{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin:5px 0}.photo-albums{margin:8px 0 16px;padding:10px;background:#182326;border:1px solid #3e555a;border-radius:7px}.photo-album-options{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:6px;margin:8px 0}.photo-album-options label{display:flex;align-items:center;gap:6px}.photo-album-options input{width:auto!important;margin:0!important}</style>''',
+).replace(
+    "</body>",
+    r'''<script>
+let albums=[];
+const albumSuggestionBar=document.createElement('section'); albumSuggestionBar.className='album-suggestions'; timelineHeader.insertAdjacentElement('afterend',albumSuggestionBar);
+async function loadAlbums() {
+  const selected=albumFilter.value; albums=await api('/api/albums');
+  albumFilter.innerHTML='<option value="">All albums</option>'+albums.map(album=>`<option value="${album.id}">${esc(album.name)} (${album.photo_count})</option>`).join('');
+  albumFilter.value=albums.some(album=>String(album.id)===selected)?selected:'';
+}
+function suggestedAlbumName(date) { return new Date(date+'T12:00:00').toLocaleDateString(undefined,{year:'numeric',month:'long',day:'numeric'}); }
+async function renderAlbumSuggestions() {
+  const suggestions=await api('/api/album-suggestions');
+  albumSuggestionBar.style.display=suggestions.length?'block':'none';
+  albumSuggestionBar.innerHTML=suggestions.length?`<details><summary>${suggestions.length} suggested albums</summary><div class="album-suggestion-list">${suggestions.map(item=>`<div class="album-suggestion"><span>${item.photo_count} ungrouped photos from ${esc(suggestedAlbumName(item.capture_date))}</span><button onclick="createSuggestedAlbum('${item.capture_date}')">Create album</button><button onclick="dismissAlbumSuggestion('${item.capture_date}')">Dismiss</button></div>`).join('')}</div></details>`:'';
+}
+async function createSuggestedAlbum(date) {
+  const proposed=suggestedAlbumName(date), albumName=prompt('Album name:',proposed); if(!albumName||!albumName.trim())return;
+  const result=await post('/api/create-suggested-album',{capture_date:date,name:albumName});
+  await loadAlbums(); await renderAlbumSuggestions(); load(true); saveState.textContent=`Created album with ${result.photo_count} photos`;
+}
+async function dismissAlbumSuggestion(date) { await post('/api/dismiss-album-suggestion',{capture_date:date}); await renderAlbumSuggestions(); }
+function renderPhotoAlbums() {
+  let box=document.getElementById('photoAlbums');
+  if(!box){box=document.createElement('section');box.id='photoAlbums';box.className='photo-albums';tags.closest('label').insertAdjacentElement('afterend',box)}
+  const selected=new Set((current.albums||[]).map(album=>album.id));
+  box.innerHTML='<strong>Albums</strong><div class="photo-album-options">'+(albums.length?albums.map(album=>`<label><input type="checkbox" value="${album.id}" ${selected.has(album.id)?'checked':''} onchange="savePhotoAlbums()">${esc(album.name)}</label>`).join(''):'<span class="muted">No albums yet.</span>')+'</div><button onclick="createAlbumForPhoto()">New album…</button>';
+}
+async function savePhotoAlbums() {
+  const albumIds=[...document.querySelectorAll('#photoAlbums input:checked')].map(input=>+input.value);
+  await post('/api/photo-albums',{image_id:current.id,album_ids:albumIds}); current.albums=albums.filter(album=>albumIds.includes(album.id));
+  saveState.textContent='Album assignments saved automatically'; await loadAlbums();
+}
+async function createAlbumForPhoto() {
+  const albumName=prompt('New album name:'); if(!albumName||!albumName.trim())return;
+  const created=await post('/api/albums',{name:albumName}); await loadAlbums();
+  current.albums=[...(current.albums||[]),albums.find(album=>album.id===created.id)]; renderPhotoAlbums(); await savePhotoAlbums();
+}
+const openPhotoWithAlbums=openPhoto;
+openPhoto=async function(id){await openPhotoWithAlbums(id);renderPhotoAlbums()};
+loadAlbums().then(renderAlbumSuggestions);
+</script></body>''',
+)
+
 
 class GalleryHandler(BaseHTTPRequestHandler):
     token = secrets.token_urlsafe(24)
@@ -766,6 +821,7 @@ class GalleryHandler(BaseHTTPRequestHandler):
                     int(value) for value in unknown_group.split(",") if value.strip()
                 )
                 year = query.get("year", [""])[0]
+                album = query.get("album_id", [""])[0]
                 self._json(catalog.gallery_photos(
                     query.get("q", [""])[0], int(identity) if identity else None,
                     int(year) if year else None, int(query.get("limit", ["100"])[0]),
@@ -773,6 +829,7 @@ class GalleryHandler(BaseHTTPRequestHandler):
                     tuple(filter(None, query.get("exclude_kinds", [""])[0].split(","))),
                     query.get("media_kind", [""])[0] or None,
                     unknown_group_ids=unknown_groups,
+                    album_id=int(album) if album else None,
                 ))
             elif parsed.path == "/api/photo":
                 photo = catalog.gallery_photo(int(query["id"][0]))
@@ -802,6 +859,10 @@ class GalleryHandler(BaseHTTPRequestHandler):
                 self.end_headers(); self.wfile.write(preview)
             elif parsed.path == "/api/archives":
                 self._json(available_archives())
+            elif parsed.path == "/api/albums":
+                self._json(catalog.albums())
+            elif parsed.path == "/api/album-suggestions":
+                self._json(catalog.album_suggestions())
             elif parsed.path == "/media":
                 path = catalog.image_path(int(query["id"][0]))
                 if path is None: self.send_error(404); return
@@ -833,6 +894,32 @@ class GalleryHandler(BaseHTTPRequestHandler):
                         str(body.get("location_name", "")), body.get("latitude"),
                         body.get("longitude"),
                     )
+                finally: catalog.close()
+                self._json({"ok": True})
+            elif self.path == "/api/albums":
+                catalog = self._catalog()
+                try: album_id = catalog.create_album(str(body.get("name", "")))
+                finally: catalog.close()
+                self._json({"ok": True, "id": album_id})
+            elif self.path == "/api/photo-albums":
+                catalog = self._catalog()
+                try:
+                    catalog.set_photo_albums(
+                        int(body["image_id"]), [int(value) for value in body.get("album_ids", [])]
+                    )
+                finally: catalog.close()
+                self._json({"ok": True})
+            elif self.path == "/api/create-suggested-album":
+                catalog = self._catalog()
+                try:
+                    album_id, photo_count = catalog.create_suggested_album(
+                        str(body.get("capture_date", "")), str(body.get("name", ""))
+                    )
+                finally: catalog.close()
+                self._json({"ok": True, "id": album_id, "photo_count": photo_count})
+            elif self.path == "/api/dismiss-album-suggestion":
+                catalog = self._catalog()
+                try: catalog.dismiss_album_suggestion(str(body.get("capture_date", "")))
                 finally: catalog.close()
                 self._json({"ok": True})
             elif self.path == "/api/face":

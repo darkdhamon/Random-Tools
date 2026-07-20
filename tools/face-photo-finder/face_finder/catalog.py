@@ -195,6 +195,22 @@ class FaceCatalog:
                 latitude REAL,
                 longitude REAL
             );
+            CREATE TABLE IF NOT EXISTS albums (
+                id INTEGER PRIMARY KEY,
+                name TEXT NOT NULL COLLATE NOCASE UNIQUE,
+                created_at TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS album_photos (
+                album_id INTEGER NOT NULL REFERENCES albums(id) ON DELETE CASCADE,
+                image_id INTEGER NOT NULL REFERENCES images(id) ON DELETE CASCADE,
+                added_at TEXT NOT NULL,
+                PRIMARY KEY(album_id, image_id)
+            );
+            CREATE INDEX IF NOT EXISTS album_photos_image_idx ON album_photos(image_id);
+            CREATE TABLE IF NOT EXISTS dismissed_album_suggestions (
+                capture_date TEXT PRIMARY KEY,
+                dismissed_at TEXT NOT NULL
+            );
             """
         )
         identity_indexes = self.connection.execute("PRAGMA index_list(identities)").fetchall()
@@ -346,6 +362,8 @@ class FaceCatalog:
             self.connection.execute("DELETE FROM images")
             self.connection.execute("DELETE FROM identities")
             self.connection.execute("DELETE FROM unknown_groups")
+            self.connection.execute("DELETE FROM albums")
+            self.connection.execute("DELETE FROM dismissed_album_suggestions")
         self.connection.execute("VACUUM")
 
     def gallery_photos(
@@ -354,6 +372,7 @@ class FaceCatalog:
         excluded_kinds: tuple[str, ...] = (), media_kind: str | None = None,
         unknown_group_id: int | None = None,
         unknown_group_ids: tuple[int, ...] = (),
+        album_id: int | None = None,
     ) -> list[dict[str, object]]:
         clauses = ["images.missing_since IS NULL"]
         values: list[object] = []
@@ -367,6 +386,11 @@ class FaceCatalog:
                             OR EXISTS (SELECT 1 FROM photo_identity_tags tags
                                        WHERE tags.image_id = images.id AND tags.identity_id = ?))""")
             values.extend((identity_id, identity_id))
+        if album_id is not None:
+            clauses.append(
+                "EXISTS (SELECT 1 FROM album_photos WHERE album_photos.image_id = images.id AND album_photos.album_id = ?)"
+            )
+            values.append(album_id)
         selected_unknown_groups = tuple(dict.fromkeys(
             (*unknown_group_ids, *((unknown_group_id,) if unknown_group_id is not None else ()))
         ))
@@ -507,7 +531,104 @@ class FaceCatalog:
                    FROM pet_tags WHERE image_id = ? ORDER BY id""", (image_id,)
             )
         ]
+        photo["albums"] = [
+            {"id": int(album[0]), "name": album[1]}
+            for album in self.connection.execute(
+                """SELECT albums.id, albums.name FROM albums
+                   JOIN album_photos ON album_photos.album_id = albums.id
+                   WHERE album_photos.image_id = ? ORDER BY albums.name COLLATE NOCASE""",
+                (image_id,),
+            )
+        ]
         return photo
+
+    def albums(self) -> list[dict[str, object]]:
+        return [
+            {"id": int(row[0]), "name": row[1], "photo_count": int(row[2])}
+            for row in self.connection.execute(
+                """SELECT albums.id, albums.name, COUNT(album_photos.image_id)
+                   FROM albums LEFT JOIN album_photos ON album_photos.album_id = albums.id
+                   GROUP BY albums.id ORDER BY albums.name COLLATE NOCASE"""
+            )
+        ]
+
+    def create_album(self, name: str) -> int:
+        normalized = " ".join(name.strip().split())
+        if not normalized:
+            raise ValueError("An album name is required.")
+        with self.connection:
+            cursor = self.connection.execute(
+                "INSERT INTO albums(name, created_at) VALUES (?, ?)",
+                (normalized, datetime.now(timezone.utc).isoformat()),
+            )
+        return int(cursor.lastrowid)
+
+    def set_photo_albums(self, image_id: int, album_ids: list[int]) -> None:
+        selected = sorted(set(int(value) for value in album_ids))
+        if selected:
+            placeholders = ",".join("?" for _ in selected)
+            found = self.connection.execute(
+                f"SELECT COUNT(*) FROM albums WHERE id IN ({placeholders})", selected
+            ).fetchone()[0]
+            if int(found) != len(selected):
+                raise ValueError("One or more selected albums no longer exist.")
+        timestamp = datetime.now(timezone.utc).isoformat()
+        with self.connection:
+            self.connection.execute("DELETE FROM album_photos WHERE image_id = ?", (image_id,))
+            self.connection.executemany(
+                "INSERT INTO album_photos(album_id, image_id, added_at) VALUES (?, ?, ?)",
+                [(album_id, image_id, timestamp) for album_id in selected],
+            )
+
+    def album_suggestions(self, minimum_photos: int = 21) -> list[dict[str, object]]:
+        rows = self.connection.execute(
+            """SELECT substr(images.capture_date, 1, 10), COUNT(*)
+               FROM images
+               WHERE images.missing_since IS NULL AND length(images.capture_date) >= 10
+                 AND NOT EXISTS (SELECT 1 FROM album_photos WHERE album_photos.image_id = images.id)
+                 AND NOT EXISTS (
+                     SELECT 1 FROM dismissed_album_suggestions dismissed
+                     WHERE dismissed.capture_date = substr(images.capture_date, 1, 10)
+                 )
+               GROUP BY substr(images.capture_date, 1, 10)
+               HAVING COUNT(*) >= ? ORDER BY substr(images.capture_date, 1, 10) DESC""",
+            (minimum_photos,),
+        ).fetchall()
+        return [{"capture_date": row[0], "photo_count": int(row[1])} for row in rows]
+
+    def create_suggested_album(self, capture_date: str, name: str) -> tuple[int, int]:
+        try:
+            datetime.strptime(capture_date, "%Y-%m-%d")
+        except ValueError as exc:
+            raise ValueError("Album suggestion date must use YYYY-MM-DD.") from exc
+        album_id = self.create_album(name)
+        timestamp = datetime.now(timezone.utc).isoformat()
+        with self.connection:
+            rows = self.connection.execute(
+                """SELECT id FROM images WHERE missing_since IS NULL
+                   AND substr(capture_date, 1, 10) = ?""",
+                (capture_date,),
+            ).fetchall()
+            self.connection.executemany(
+                "INSERT OR IGNORE INTO album_photos(album_id, image_id, added_at) VALUES (?, ?, ?)",
+                [(album_id, int(row[0]), timestamp) for row in rows],
+            )
+            self.connection.execute(
+                "INSERT OR REPLACE INTO dismissed_album_suggestions(capture_date, dismissed_at) VALUES (?, ?)",
+                (capture_date, timestamp),
+            )
+        return album_id, len(rows)
+
+    def dismiss_album_suggestion(self, capture_date: str) -> None:
+        try:
+            datetime.strptime(capture_date, "%Y-%m-%d")
+        except ValueError as exc:
+            raise ValueError("Album suggestion date must use YYYY-MM-DD.") from exc
+        with self.connection:
+            self.connection.execute(
+                "INSERT OR REPLACE INTO dismissed_album_suggestions(capture_date, dismissed_at) VALUES (?, ?)",
+                (capture_date, datetime.now(timezone.utc).isoformat()),
+            )
 
     def pending_art_faces(self, model_version: int, limit: int = 500) -> list[tuple[int, bytes]]:
         rows = self.connection.execute(

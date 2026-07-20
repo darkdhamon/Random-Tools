@@ -348,6 +348,32 @@ class CatalogTests(unittest.TestCase):
             self.assertEqual(gallery_face["art_score"], 0.94)
             catalog.close()
 
+    def test_photos_can_belong_to_multiple_albums_and_busy_days_are_suggested(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            catalog = FaceCatalog(root / "catalog.sqlite3")
+            image_ids = []
+            for index in range(21):
+                image = root / f"photo-{index}.jpg"
+                image.write_bytes(f"photo {index}".encode())
+                image_ids.append(catalog.store_scan(image, [], []).image_id)
+            with catalog.connection:
+                catalog.connection.execute("UPDATE images SET capture_date = '2026-07-04'")
+
+            suggestions = catalog.album_suggestions()
+            self.assertEqual(suggestions, [{"capture_date": "2026-07-04", "photo_count": 21}])
+            first_album = catalog.create_album("July Fourth")
+            second_album = catalog.create_album("Favorites")
+            catalog.set_photo_albums(image_ids[0], [first_album, second_album])
+            self.assertEqual(
+                [item["name"] for item in catalog.gallery_photo(image_ids[0])["albums"]],  # type: ignore[index]
+                ["Favorites", "July Fourth"],
+            )
+
+            catalog.dismiss_album_suggestion("2026-07-04")
+            self.assertEqual(catalog.album_suggestions(), [])
+            catalog.close()
+
     def test_reset_removes_all_catalog_data_without_deleting_source_image(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
