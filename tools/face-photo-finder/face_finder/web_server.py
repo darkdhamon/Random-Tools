@@ -885,7 +885,7 @@ updateBoundaryEditor();
 # road, satellite, and hybrid tile layers beneath the SVG drawing surface.
 PAGE = PAGE.replace(
     '<button onclick=undoBoundaryPoint()>Undo point</button>',
-    '<label>Base map<select id=geofenceMapStyle onchange=renderBoundaryMap()><option value=hybrid>Satellite + roads</option><option value=satellite>Satellite</option><option value=road>Road map</option></select></label><label class=map-layer-toggle><input id=geofenceRoadOverlay type=checkbox checked onchange=renderBoundaryMap()> Roads overlay</label><label class=map-layer-toggle><input id=geofenceLabelOverlay type=checkbox checked onchange=renderBoundaryMap()> Place labels</label><button onclick=undoBoundaryPoint()>Undo point</button>',
+    '<label>Base map<select id=geofenceMapStyle onchange=renderBoundaryMap()><option value=hybrid>Satellite + roads</option><option value=satellite>Satellite</option><option value=road>Road map</option></select></label><label class=map-layer-toggle><input id=geofenceRoadOverlay type=checkbox checked onchange=renderBoundaryMap()> Roads overlay</label><label class=map-layer-toggle><input id=geofenceLabelOverlay type=checkbox checked onchange=renderBoundaryMap()> Place labels</label><button onclick="useDeviceLocation(true)">Use device location</button><button onclick=undoBoundaryPoint()>Undo point</button>',
 ).replace(
     '<svg id=geofenceMap viewBox="0 0 800 360" role=img aria-label="Local geofence drawing map" onclick=addBoundaryPoint(event)></svg>',
     '<div class=geofence-map-frame><div id=geofenceTiles class=geofence-tiles aria-hidden=true></div><svg id=geofenceMap viewBox="0 0 800 360" role=img aria-label="Geofence drawing map" onclick=addBoundaryPoint(event)></svg><div class=map-attribution>Tiles: Esri &amp; OpenStreetMap contributors</div></div>',
@@ -918,8 +918,29 @@ function renderMapTiles(){
   }
   geofenceTiles.innerHTML=html;
 }
+let deviceLocationRequested=false;
+function useFallbackMapLocation(){
+  geofenceLatitude.value='44.2044';geofenceLongitude.value='-93.8152';geofenceMapSpan.value='10';renderBoundaryMap();
+}
+function useDeviceLocation(force=false){
+  if(!force&&(geofenceLatitude.value.trim()||geofenceLongitude.value.trim()))return;
+  useFallbackMapLocation();
+  if(!navigator.geolocation){boundaryHelp.textContent='Device location is unavailable. Map centered on Madison Lake, Minnesota.';return}
+  if(!force&&deviceLocationRequested)return;deviceLocationRequested=true;
+  boundaryHelp.textContent='Finding device locationâ€¦';
+  navigator.geolocation.getCurrentPosition(position=>{
+    geofenceLatitude.value=position.coords.latitude.toFixed(7);
+    geofenceLongitude.value=position.coords.longitude.toFixed(7);
+    const accuracyKm=position.coords.accuracy/1000;
+    if(Number.isFinite(accuracyKm))geofenceMapSpan.value=Math.max(1,Math.min(50,accuracyKm*4)).toFixed(1);
+    renderBoundaryMap();
+    boundaryHelp.textContent=`Map centered on this device (accuracy about ${Math.round(position.coords.accuracy)} meters).`;
+  },error=>{useFallbackMapLocation();boundaryHelp.textContent=`Could not use device location (${error.message}). Map centered on Madison Lake, Minnesota.`},{enableHighAccuracy:true,timeout:10000,maximumAge:300000});
+}
 const renderBoundaryOverlay=renderBoundaryMap;
 renderBoundaryMap=function(){renderMapTiles();renderBoundaryOverlay()};
+const showAppTabWithoutDeviceLocation=showAppTab;
+showAppTab=function(tabName,preservePersonFilter=false){showAppTabWithoutDeviceLocation(tabName,preservePersonFilter);if(tabName==='locations')useDeviceLocation(false)};
 requestAnimationFrame(renderBoundaryMap);
 </script></body>''',
 )
