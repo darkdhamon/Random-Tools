@@ -941,6 +941,13 @@ function useDeviceLocation(force=false){
   },error=>{useFallbackMapLocation();boundaryHelp.textContent=`Could not use device location (${error.message}). Map centered on Madison Lake, Minnesota.`},{enableHighAccuracy:true,timeout:10000,maximumAge:300000});
 }
 let mapDragStart=null,mapDragged=false;
+function centerBoundaryMapAtPointer(event){
+  const rect=geofenceMapFrame.getBoundingClientRect(),bounds=boundaryMapBounds();
+  const x=(event.clientX-rect.left)/rect.width,y=(event.clientY-rect.top)/rect.height;
+  geofenceLongitude.value=(bounds.centerLon+(x-.5)*2*bounds.lonSpan).toFixed(7);
+  geofenceLatitude.value=(bounds.centerLat+(.5-y)*2*bounds.latSpan).toFixed(7);
+  renderBoundaryMap();boundaryHelp.textContent='Map centered on the Shift-clicked location.';
+}
 function panBoundaryMap(horizontal,vertical){
   const bounds=boundaryMapBounds();
   geofenceLongitude.value=Math.max(-180,Math.min(180,bounds.centerLon+horizontal*bounds.lonSpan)).toFixed(7);
@@ -948,7 +955,7 @@ function panBoundaryMap(horizontal,vertical){
   renderBoundaryMap();
 }
 function zoomBoundaryMap(factor){geofenceMapSpan.value=Math.max(.1,Math.min(2000,(Number(geofenceMapSpan.value)||10)*factor)).toFixed(2);renderBoundaryMap()}
-geofenceMapFrame.addEventListener('pointerdown',event=>{if(event.button!==0)return;mapDragStart={x:event.clientX,y:event.clientY,lat:Number(geofenceLatitude.value)||0,lon:Number(geofenceLongitude.value)||0};mapDragged=false;geofenceMapFrame.classList.add('dragging');geofenceMapFrame.setPointerCapture(event.pointerId);geofenceMapFrame.focus()});
+geofenceMapFrame.addEventListener('pointerdown',event=>{if(event.button!==0)return;if(event.shiftKey){event.preventDefault();centerBoundaryMapAtPointer(event);mapDragged=true;mapDragStart=null;geofenceMapFrame.focus();return}mapDragStart={x:event.clientX,y:event.clientY,lat:Number(geofenceLatitude.value)||0,lon:Number(geofenceLongitude.value)||0};mapDragged=false;geofenceMapFrame.classList.add('dragging');geofenceMapFrame.setPointerCapture(event.pointerId);geofenceMapFrame.focus()});
 geofenceMapFrame.addEventListener('pointermove',event=>{if(!mapDragStart)return;const dx=event.clientX-mapDragStart.x,dy=event.clientY-mapDragStart.y;if(Math.hypot(dx,dy)<3)return;mapDragged=true;const bounds=boundaryMapBounds();geofenceLongitude.value=Math.max(-180,Math.min(180,mapDragStart.lon-dx/geofenceMapFrame.clientWidth*2*bounds.lonSpan)).toFixed(7);geofenceLatitude.value=Math.max(-85,Math.min(85,mapDragStart.lat+dy/geofenceMapFrame.clientHeight*2*bounds.latSpan)).toFixed(7);renderBoundaryMap()});
 function endMapDrag(){mapDragStart=null;geofenceMapFrame.classList.remove('dragging')}
 geofenceMapFrame.addEventListener('pointerup',endMapDrag);geofenceMapFrame.addEventListener('pointercancel',endMapDrag);

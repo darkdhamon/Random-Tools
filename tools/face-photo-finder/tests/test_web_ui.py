@@ -148,6 +148,8 @@ class WebGalleryUiTests(unittest.TestCase):
         self.assertIn('Shift-click: center', PAGE)
         self.assertIn('if(event.shiftKey)', PAGE)
         self.assertIn('Map centered on the Shift-clicked location.', PAGE)
+        self.assertIn('centerBoundaryMapAtPointer', PAGE)
+        self.assertIn("if(event.shiftKey){event.preventDefault();centerBoundaryMapAtPointer(event)", PAGE)
         self.assertIn('.app-tabs{position:sticky;top:0;z-index:4', PAGE)
         self.assertIn('function closePhotoViewer()', PAGE)
         self.assertIn("if (modal.style.display === 'block') closePhotoViewer()", PAGE)
