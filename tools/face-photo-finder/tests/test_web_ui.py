@@ -14,6 +14,8 @@ class WebGalleryUiTests(unittest.TestCase):
         self.assertIn("'locationName','latitude','longitude'", PAGE)
         self.assertIn('Model detections', PAGE)
         self.assertIn('contributes to NSFW score', PAGE)
+        self.assertIn('Needs NSFW review', PAGE)
+        self.assertIn('Models disagree', PAGE)
         self.assertNotIn('>Save metadata</button>', PAGE)
 
 

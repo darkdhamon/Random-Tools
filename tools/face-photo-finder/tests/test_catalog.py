@@ -345,6 +345,8 @@ class CatalogTests(unittest.TestCase):
                 stored.image_id,
                 0.82,
                 [{"label": "FEMALE_BREAST_EXPOSED", "score": 0.82, "explicit": True}],
+                0.91,
+                True,
             )
             catalog.update_gallery_metadata(
                 stored.image_id, "Summer trip", "At the lake", "family, vacation", 5, 2018, 1,
@@ -361,10 +363,16 @@ class CatalogTests(unittest.TestCase):
             self.assertEqual(photo["latitude"], 43.0)  # type: ignore[index]
             self.assertEqual(photo["longitude"], -87.0)  # type: ignore[index]
             self.assertEqual(photo["nsfw_detections"][0]["label"], "FEMALE_BREAST_EXPOSED")  # type: ignore[index]
+            self.assertEqual(photo["nsfw_vit_score"], 0.91)  # type: ignore[index]
+            self.assertTrue(photo["nsfw_review_required"])  # type: ignore[index]
             self.assertEqual([item["id"] for item in catalog.gallery_photos(search="vacation")], [stored.image_id])
             self.assertEqual([item["id"] for item in catalog.gallery_photos(year=2018)], [stored.image_id])
             self.assertEqual([item["id"] for item in catalog.gallery_photos(nsfw_filter="nsfw")], [stored.image_id])
             self.assertEqual(catalog.gallery_photos(nsfw_filter="safe"), [])
+            self.assertEqual(
+                [item["id"] for item in catalog.gallery_photos(nsfw_filter="review")],
+                [stored.image_id],
+            )
             self.assertEqual(catalog.gallery_photos(excluded_kinds=("document",)), [])
             self.assertEqual(
                 [item["id"] for item in catalog.gallery_photos(media_kind="document")],

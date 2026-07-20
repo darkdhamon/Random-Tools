@@ -185,6 +185,12 @@ class FaceCatalog:
             self.connection.execute("ALTER TABLE images ADD COLUMN nsfw_details TEXT")
         if "nsfw_model_version" not in image_columns:
             self.connection.execute("ALTER TABLE images ADD COLUMN nsfw_model_version INTEGER")
+        if "nsfw_vit_score" not in image_columns:
+            self.connection.execute("ALTER TABLE images ADD COLUMN nsfw_vit_score REAL")
+        if "nsfw_review_required" not in image_columns:
+            self.connection.execute(
+                "ALTER TABLE images ADD COLUMN nsfw_review_required INTEGER NOT NULL DEFAULT 0"
+            )
         if "media_kind" not in image_columns:
             self.connection.execute("ALTER TABLE images ADD COLUMN media_kind TEXT")
         if "gps_latitude" not in image_columns:
@@ -285,6 +291,8 @@ class FaceCatalog:
             clauses.append(f"{effective_nsfw} = 0")
         elif nsfw_filter == "nsfw":
             clauses.append(f"{effective_nsfw} = 1")
+        elif nsfw_filter == "review":
+            clauses.append("images.nsfw_review_required = 1")
         effective_kind = "COALESCE(metadata.media_kind_override, images.media_kind, 'photo')"
         if media_kind:
             clauses.append(f"{effective_kind} = ?")
@@ -304,7 +312,8 @@ class FaceCatalog:
                        COALESCE(metadata.media_kind_override, images.media_kind, 'photo'),
                        metadata.media_kind_override, COALESCE(metadata.location_name, ''),
                        COALESCE(metadata.latitude, images.gps_latitude),
-                       COALESCE(metadata.longitude, images.gps_longitude), images.nsfw_details
+                       COALESCE(metadata.longitude, images.gps_longitude), images.nsfw_details,
+                       images.nsfw_vit_score, images.nsfw_review_required
                 FROM images LEFT JOIN image_metadata metadata ON metadata.image_id = images.id
                 WHERE {' AND '.join(clauses)}
                 ORDER BY COALESCE(images.capture_year_override, images.capture_year) DESC, images.path
@@ -320,6 +329,7 @@ class FaceCatalog:
                 "media_kind": row[12], "media_kind_override": row[13],
                 "location_name": row[14], "latitude": row[15], "longitude": row[16],
                 "nsfw_detections": json.loads(row[17]) if row[17] else [],
+                "nsfw_vit_score": row[18], "nsfw_review_required": bool(row[19]),
             }
             for row in rows
         ]
@@ -335,7 +345,8 @@ class FaceCatalog:
                       COALESCE(metadata.media_kind_override, images.media_kind, 'photo'),
                       metadata.media_kind_override, COALESCE(metadata.location_name, ''),
                       COALESCE(metadata.latitude, images.gps_latitude),
-                      COALESCE(metadata.longitude, images.gps_longitude), images.nsfw_details
+                      COALESCE(metadata.longitude, images.gps_longitude), images.nsfw_details,
+                      images.nsfw_vit_score, images.nsfw_review_required
                FROM images LEFT JOIN image_metadata metadata ON metadata.image_id = images.id
                WHERE images.id = ? AND images.missing_since IS NULL""",
             (image_id,),
@@ -350,6 +361,7 @@ class FaceCatalog:
             "media_kind": row[11], "media_kind_override": row[12],
             "location_name": row[13], "latitude": row[14], "longitude": row[15],
             "nsfw_detections": json.loads(row[16]) if row[16] else [],
+            "nsfw_vit_score": row[17], "nsfw_review_required": bool(row[18]),
         }
         faces = self.connection.execute(
             """SELECT faces.id, identities.name, faces.intentionally_unknown, faces.is_art,
@@ -433,10 +445,11 @@ class FaceCatalog:
         return row[0], json.loads(row[1]) if row[1] is not None else None
 
     def set_nsfw_score(self, image_id: int, score: float) -> None:
-        self.set_nsfw_classification(image_id, score, [])
+        self.set_nsfw_classification(image_id, score, [], 0.0, False)
 
     def set_nsfw_classification(
-        self, image_id: int, score: float, detections: list[dict[str, object]]
+        self, image_id: int, score: float, detections: list[dict[str, object]],
+        vit_score: float = 0.0, review_required: bool = False,
     ) -> None:
         if not 0 <= score <= 1:
             raise ValueError("NSFW score must be between 0 and 1.")
@@ -445,11 +458,11 @@ class FaceCatalog:
 
             self.connection.execute(
                 """UPDATE images SET nsfw_score = ?, nsfw_details = ?, nsfw_scanned_at = ?,
-                          nsfw_model_version = ?
+                          nsfw_model_version = ?, nsfw_vit_score = ?, nsfw_review_required = ?
                    WHERE id = ?""",
                 (
                     score, json.dumps(detections), datetime.now(timezone.utc).isoformat(),
-                    NSFW_MODEL_VERSION, image_id,
+                    NSFW_MODEL_VERSION, vit_score, int(review_required), image_id,
                 ),
             )
 

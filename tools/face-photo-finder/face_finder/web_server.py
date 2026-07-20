@@ -40,6 +40,9 @@ openPhoto = async function(id) {
     nsfwScore.insertAdjacentElement('afterend', box);
   }
   const findings = current.nsfw_detections || [];
+  if (current.nsfw_review_required) {
+    nsfwScore.textContent += ' Models disagree — manual review recommended.';
+  }
   box.innerHTML = findings.length
     ? '<b>Model detections</b>' + findings.map(item => {
         const label = String(item.label).toLowerCase().replaceAll('_', ' ')
@@ -50,6 +53,13 @@ openPhoto = async function(id) {
     : '<div class="muted">No anatomical detections above 20% confidence.</div>';
 };
 </script></body>''',
+)
+PAGE = PAGE.replace(
+    '<option value=nsfw>NSFW only</option>',
+    '<option value=nsfw>NSFW only</option><option value=review>Needs NSFW review</option>',
+).replace(
+    "let filter=contentFilter.value==='nsfw'?'nsfw':",
+    "let filter=['nsfw','review'].includes(contentFilter.value)?contentFilter.value:",
 )
 
 

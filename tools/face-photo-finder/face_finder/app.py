@@ -593,12 +593,15 @@ class FaceFinderApp(tk.Tk):
                         try:
                             if nsfw_detector is None:
                                 self.events.put(("status", "Loading local NSFW detector…"))
-                                nsfw_detector = NsfwDetector()
+                                nsfw_detector = NsfwDetector(model_dir)
                             nsfw_result = nsfw_detector.classify(path)
                             nsfw_score = nsfw_result.score
                             nsfw_details = list(nsfw_result.detections)
                             if cached:
-                                catalog.set_nsfw_classification(cached.image_id, nsfw_score, nsfw_details)
+                                catalog.set_nsfw_classification(
+                                    cached.image_id, nsfw_score, nsfw_details,
+                                    nsfw_result.vit_score, nsfw_result.review_required,
+                                )
                         except Exception as exc:
                             self.events.put(("status", f"NSFW classification skipped for {path.name}: {exc}"))
                     capture_year = cached.capture_year if cached else image_capture_year(path)
@@ -913,7 +916,10 @@ class FaceFinderApp(tk.Tk):
                             art_flags,
                         )
                         if nsfw_score is not None and nsfw_details is not None:
-                            catalog.set_nsfw_classification(stored.image_id, nsfw_score, nsfw_details)
+                            catalog.set_nsfw_classification(
+                                stored.image_id, nsfw_score, nsfw_details,
+                                nsfw_result.vit_score, nsfw_result.review_required,
+                            )
                         catalog.set_media_kind(stored.image_id, media_kind)
                         catalog.ensure_image_location(stored.image_id, path)
                         candidate_embeddings = [face.embedding for face in detected]
