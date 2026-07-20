@@ -359,6 +359,7 @@ class CatalogTests(unittest.TestCase):
             faces = catalog.faces_for_image(stored.image_id)
             self.assertEqual(faces[0].identity_name, "Alex Example")
             self.assertEqual(faces[0].bbox, (10, 20, 30, 40))
+            self.assertEqual(catalog.gallery_photo(stored.image_id)["faces"][0]["bbox"], [10, 20, 30, 40])  # type: ignore[index]
             self.assertIsNone(faces[1].identity_name)
             catalog.assign_face(faces[1].face_id, person_id)
             self.assertEqual(catalog.cached_image(image).identified_count, 2)  # type: ignore[union-attr]

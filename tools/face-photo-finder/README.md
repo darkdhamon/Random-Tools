@@ -28,7 +28,7 @@ A private, local desktop tool that recursively scans a folder and finds photos l
 - presents the web gallery as a newest-first year/month/day timeline and automatically saves metadata edits after typing pauses;
 - supports multi-select deletion with a danger confirmation and lets archived selections target an existing `.zip`/`.hide` archive or a newly named `.zip`, defaulting to `Hidden Pictures/GeneralArchive.zip`;
 - applies **Mark safe** or **Mark NSFW** decisions to multiple selected gallery photos at once;
-- includes Timeline and Identity web tabs, with separate recognized and unidentified people views, searchable identity statistics, biometric or anonymous-group thumbnails and an in-app viewer, inline name/birth-year editing, person-filtered timeline navigation, removable false face detections, and searchable non-biometric manual person tags;
+- includes Timeline and Identity web tabs, with separate recognized and unidentified people views, searchable identity statistics, biometric or anonymous-group thumbnails and an in-app viewer, inline name/birth-year editing, person-filtered timeline navigation, removable false face detections, searchable non-biometric manual person tags, and a **Show tags** overlay with labeled face reticles;
 - extracts EXIF GPS coordinates, supports editable place names and coordinates, and shows an offline map preview with an explicit OpenStreetMap link;
 - searches by a previously learned person from the **Known person** list without requiring another reference photo;
 - autocompletes identity names case-insensitively while still allowing new names;

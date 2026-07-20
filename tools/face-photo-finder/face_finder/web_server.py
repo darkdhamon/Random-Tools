@@ -454,6 +454,7 @@ openPhoto = async function(id) { await openPhotoWithFaceTags(id); renderFaceTagC
 function renderFaceTagControls() {
   const detected = current.faces || [];
   faces.innerHTML = detected.length ? detected.map(face => `<div class="face-entry"><span>${esc(face.name||(face.unknown?'Unknown person':'Unprocessed'))}${face.art?' · artwork':''}${face.estimated_age!=null?' · age '+face.estimated_age:''}</span><select aria-label="Assign detected face" onchange="assignFace(${face.id},this.value)"><option value="">${face.name?'Reassign…':'Assign person…'}</option>${identities.map(person=>`<option value="${person.id}">${esc(person.name)}</option>`).join('')}</select><button class="remove-face" onclick="removeDetectedFace(${face.id})">Not a face / remove</button></div>`).join('') : '<div class="empty-faces">No faces detected.</div>';
+  faces.insertAdjacentHTML('beforeend', `<button id="showFaceTagsButton" class="show-tags-button" onclick="toggleFaceTags()" ${detected.some(face=>face.bbox)?'':'disabled'}>${faceTagsVisible?'Hide tags':'Show tags'}</button>`);
   let tagBox = document.getElementById('personTags');
   if (!tagBox) { tagBox = document.createElement('div'); tagBox.id = 'personTags'; faces.insertAdjacentElement('afterend', tagBox); }
   const tags = current.face_tags || [];
@@ -479,6 +480,47 @@ async function removePersonTag(identityId) {
 PAGE = PAGE.replace(
     "identity_id:person.value,year:year.value",
     "identity_id:person.value,unknown_group_id:unknownGroupFilter,year:year.value",
+)
+
+PAGE = PAGE.replace(
+    '<div class=viewer><img id=full>',
+    '<div class=viewer><img id=full><div id=faceReticleLayer class=face-reticle-layer></div>',
+).replace(
+    "</style>",
+    r'''.viewer{position:relative}.face-reticle-layer{position:absolute;inset:0;pointer-events:none;display:none}.face-reticle{position:absolute;border:3px solid var(--reticle-color);box-sizing:border-box;filter:drop-shadow(0 1px 2px #000)}.face-reticle:before,.face-reticle:after{content:'';position:absolute;background:var(--reticle-color)}.face-reticle:before{width:18px;height:2px;left:50%;top:50%;transform:translate(-50%,-50%)}.face-reticle:after{width:2px;height:18px;left:50%;top:50%;transform:translate(-50%,-50%)}.face-reticle.recognized{--reticle-color:#35e287}.face-reticle.unknown{--reticle-color:#a4aeb2}.face-reticle.unprocessed{--reticle-color:#ff4f5f}.face-reticle-label{position:absolute;left:-3px;top:-27px;max-width:220px;padding:3px 6px;background:var(--reticle-color);color:#07110d;border-radius:4px;font-weight:700;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.show-tags-button{margin:8px 0;width:100%}</style>''',
+).replace(
+    "</body>",
+    r'''<script>
+let faceTagsVisible = false;
+const openPhotoWithReticles = openPhoto;
+openPhoto = async function(id) { faceTagsVisible = false; faceReticleLayer.style.display = 'none'; await openPhotoWithReticles(id); };
+function toggleFaceTags() {
+  faceTagsVisible = !faceTagsVisible;
+  const button = document.getElementById('showFaceTagsButton');
+  if (button) button.textContent = faceTagsVisible ? 'Hide tags' : 'Show tags';
+  renderFaceReticles();
+}
+function renderFaceReticles() {
+  faceReticleLayer.innerHTML = '';
+  faceReticleLayer.style.display = faceTagsVisible ? 'block' : 'none';
+  if (!faceTagsVisible || !full.naturalWidth || !current) return;
+  const imageRect = full.getBoundingClientRect(), viewerRect = full.parentElement.getBoundingClientRect();
+  const scaleX = imageRect.width / full.naturalWidth, scaleY = imageRect.height / full.naturalHeight;
+  for (const face of (current.faces || []).filter(item => item.bbox)) {
+    const [x,y,width,height] = face.bbox;
+    const reticle = document.createElement('div');
+    reticle.className = 'face-reticle ' + (face.name ? 'recognized' : (face.unknown ? 'unknown' : 'unprocessed'));
+    reticle.style.left = `${imageRect.left-viewerRect.left+x*scaleX}px`;
+    reticle.style.top = `${imageRect.top-viewerRect.top+y*scaleY}px`;
+    reticle.style.width = `${Math.max(18,width*scaleX)}px`; reticle.style.height = `${Math.max(18,height*scaleY)}px`;
+    const label = document.createElement('span'); label.className = 'face-reticle-label';
+    label.textContent = face.name || (face.unknown ? 'Unknown person' : 'Unprocessed');
+    reticle.append(label); faceReticleLayer.append(reticle);
+  }
+}
+full.addEventListener('load', renderFaceReticles);
+window.addEventListener('resize', renderFaceReticles);
+</script></body>''',
 )
 
 

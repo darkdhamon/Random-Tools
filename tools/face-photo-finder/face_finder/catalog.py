@@ -402,14 +402,16 @@ class FaceCatalog:
         }
         faces = self.connection.execute(
             """SELECT faces.id, identities.name, faces.intentionally_unknown, faces.is_art,
-                      faces.estimated_age, faces.unknown_group_id
+                      faces.estimated_age, faces.unknown_group_id,
+                      faces.bbox_x, faces.bbox_y, faces.bbox_width, faces.bbox_height
                FROM faces LEFT JOIN identities ON identities.id = faces.identity_id
                WHERE faces.image_id = ? ORDER BY faces.face_index""",
             (image_id,),
         ).fetchall()
         photo["faces"] = [
             {"id": int(row[0]), "name": row[1], "unknown": bool(row[2]), "art": bool(row[3]),
-             "estimated_age": row[4], "unknown_group_id": row[5]}
+             "estimated_age": row[4], "unknown_group_id": row[5],
+             "bbox": [int(value) for value in row[6:10]] if row[6] is not None else None}
             for row in faces
         ]
         photo["face_tags"] = [
