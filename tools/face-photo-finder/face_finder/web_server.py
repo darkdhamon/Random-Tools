@@ -73,7 +73,9 @@ openPhoto = async function(id) {
     ? '<b>Model detections</b>' + findings.map(item => {
         const label = String(item.label).toLowerCase().replaceAll('_', ' ')
           .replace(/\b\w/g, value => value.toUpperCase());
-        const reason = item.explicit ? ' · contributes to NSFW score' : '';
+        const reason = item.label === 'WHOLE_IMAGE_NSFW' && item.explicit
+          ? ' · automatic NSFW decision'
+          : (item.explicit ? ' · explicit-content evidence' : '');
         return `<div>${esc(label)} — ${(item.score * 100).toFixed(1)}%${reason}</div>`;
       }).join('')
     : '<div class="muted">No anatomical detections above 20% confidence.</div>';
@@ -82,10 +84,10 @@ openPhoto = async function(id) {
 )
 PAGE = PAGE.replace(
     '<option value=nsfw>NSFW only</option>',
-    '<option value=nsfw>NSFW only</option><option value=review>Needs NSFW review</option>',
+    '<option value=nsfw>NSFW only</option><option value=conflict>NSFW conflicts</option>',
 ).replace(
     "let filter=contentFilter.value==='nsfw'?'nsfw':",
-    "let filter=['nsfw','review'].includes(contentFilter.value)?contentFilter.value:",
+    "let filter=['nsfw','conflict'].includes(contentFilter.value)?contentFilter.value:",
 )
 PAGE = PAGE.replace(
     "</style>",

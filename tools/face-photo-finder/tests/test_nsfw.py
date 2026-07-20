@@ -47,14 +47,23 @@ class NsfwTests(unittest.TestCase):
         breast = next(item for item in result.detections if item["label"] == "FEMALE_BREAST_EXPOSED")
         self.assertFalse(breast["explicit"])
 
-    def test_model_disagreement_requires_review_instead_of_hiding(self) -> None:
+    def test_whole_image_nsfw_is_automatic_even_when_models_disagree(self) -> None:
         detector = NsfwDetector.__new__(NsfwDetector)
         detector.detector = type("EmptyDetector", (), {"detect": lambda _self, _path: []})()
         detector._vit_score = lambda _path: 0.93  # type: ignore[method-assign]
         result = detector.classify(Path("uncertain.jpg"))
-        self.assertEqual(result.score, 0.0)
+        self.assertEqual(result.score, 0.93)
         self.assertTrue(result.review_required)
-        self.assertFalse(result.detections[0]["explicit"])
+        self.assertTrue(result.detections[0]["explicit"])
+
+    def test_whole_image_majority_nsfw_uses_fifty_percent_boundary(self) -> None:
+        detector = NsfwDetector.__new__(NsfwDetector)
+        detector.detector = type("EmptyDetector", (), {"detect": lambda _self, _path: []})()
+        detector._vit_score = lambda _path: 0.638  # type: ignore[method-assign]
+        result = detector.classify(Path("whole-image-positive.jpg"))
+        self.assertEqual(result.score, 0.638)
+        self.assertTrue(result.review_required)
+        self.assertTrue(result.detections[0]["explicit"])
 
 
 if __name__ == "__main__":

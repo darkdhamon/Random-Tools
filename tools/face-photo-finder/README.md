@@ -23,7 +23,7 @@ A private, local desktop tool that recursively scans a folder and finds photos l
 - classifies explicit nudity locally with NudeNet and lets the web gallery hide, search, or manually correct NSFW results;
 - explains NSFW decisions with each detected anatomical class, its confidence, and whether it contributed to the overall score;
 - reduces shirtless-person false positives with deduplicated findings, class-specific thresholds, and male/female face context;
-- combines a whole-image Falconsai ViT classifier with NudeNet evidence, hiding only agreed high-confidence results and routing disagreements to **Needs NSFW review**;
+- uses the whole-image Falconsai ViT classifier as the automatic NSFW decision, retains NudeNet anatomical evidence, and routes model disagreements to the **NSFW conflicts** search for manual refinement;
 - detects screenshots and document/receipt-style images locally, with independent hide filters, type searches, and manual corrections;
 - presents the web gallery as a newest-first year/month/day timeline and automatically saves metadata edits after typing pauses;
 - supports multi-select deletion with a danger confirmation and lets archived selections target an existing `.zip`/`.hide` archive or a newly named `.zip`, defaulting to `Hidden Pictures/GeneralArchive.zip`;

@@ -296,7 +296,7 @@ class FaceCatalog:
             clauses.append(f"{effective_nsfw} = 0")
         elif nsfw_filter == "nsfw":
             clauses.append(f"{effective_nsfw} = 1")
-        elif nsfw_filter == "review":
+        elif nsfw_filter in {"review", "conflict"}:
             clauses.append("images.nsfw_review_required = 1")
         effective_kind = "COALESCE(metadata.media_kind_override, images.media_kind, 'photo')"
         effective_date = """CASE WHEN images.capture_year_override IS NULL

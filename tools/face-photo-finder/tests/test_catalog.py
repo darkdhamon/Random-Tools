@@ -446,6 +446,10 @@ class CatalogTests(unittest.TestCase):
                 [item["id"] for item in catalog.gallery_photos(nsfw_filter="review")],
                 [stored.image_id],
             )
+            self.assertEqual(
+                [item["id"] for item in catalog.gallery_photos(nsfw_filter="conflict")],
+                [stored.image_id],
+            )
             self.assertEqual(catalog.gallery_photos(excluded_kinds=("document",)), [])
             self.assertEqual(
                 [item["id"] for item in catalog.gallery_photos(media_kind="document")],

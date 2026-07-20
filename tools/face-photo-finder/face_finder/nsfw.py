@@ -10,7 +10,8 @@ import truststore
 from PIL import Image, ImageOps
 
 NSFW_THRESHOLD = 0.45
-NSFW_MODEL_VERSION = 3
+WHOLE_IMAGE_NSFW_THRESHOLD = 0.50
+NSFW_MODEL_VERSION = 4
 VIT_MODEL_URL = (
     "https://huggingface.co/onnx-community/nsfw_image_detection-ONNX/resolve/main/"
     "onnx/model_int8.onnx"
@@ -104,20 +105,19 @@ class NsfwDetector:
         nude_score = max(
             (float(item["score"]) for item in summarized if bool(item["explicit"])), default=0.0
         )
-        vit_positive = vit_score >= 0.65
+        vit_positive = vit_score >= WHOLE_IMAGE_NSFW_THRESHOLD
         nude_positive = nude_score >= NSFW_THRESHOLD
-        agreement = vit_positive and nude_positive
-        review_required = vit_positive != nude_positive or 0.45 <= vit_score < 0.65
+        review_required = vit_positive != nude_positive
         combined = (
             {
                 "label": "WHOLE_IMAGE_NSFW",
                 "score": vit_score,
-                "explicit": agreement,
+                "explicit": vit_positive,
                 "model": "Falconsai ViT",
             },
             *summarized,
         )
-        return NsfwResult(max(vit_score, nude_score) if agreement else 0.0, combined, vit_score, review_required)
+        return NsfwResult(vit_score if vit_positive else 0.0, combined, vit_score, review_required)
 
     def score(self, path: Path) -> float:
         return self.classify(path).score
