@@ -819,7 +819,7 @@ loadAlbums().then(renderAlbumSuggestions);
 
 PAGE = PAGE.replace(
     '<button id=identityTabButton onclick="showAppTab(\'identity\')">Identity</button></nav>',
-    '<button id=identityTabButton onclick="showAppTab(\'identity\')">Identity</button><button id=albumTabButton onclick="showAppTab(\'albums\')">Albums</button><button id=locationTabButton onclick="showAppTab(\'locations\')">Locations</button><button id=settingsTabButton onclick="showAppTab(\'settings\')">Settings</button></nav>',
+    '<button id=identityTabButton onclick="showAppTab(\'identity\')">Identity</button><button id=albumTabButton onclick="showAppTab(\'albums\')">Albums</button><button id=locationTabButton onclick="showAppTab(\'locations\')">Locations</button><button id=settingsTabButton onclick="showAppTab(\'settings\')">Settings</button><label class=header-privacy-toggle><input id=showNsfw type=checkbox onchange=toggleNsfwVisibility()> Show NSFW</label></nav>',
 ).replace(
     '<div id=modal class=modal>',
     r'''<section id=locationView class=location-view><div class=location-toolbar><h1>Locations</h1><button onclick=loadLocationGroups()>Refresh</button></div><div class=geofence-form><h2>Create a geofence</h2><label>Name<input id=geofenceName placeholder="Home, Madison Lake, Minnesota…"></label><label>Type<select id=geofenceType><option value=custom>Custom location</option><option value=general>General location</option></select></label><label>Parent location<select id=geofenceParent><option value="">No parent</option></select></label><label>Boundary<select id=geofenceBoundary onchange=updateBoundaryEditor()><option value=radius>Radius from a point</option><option value=drawn>Draw boundary on map</option><option value=legal>Import legal boundary (GeoJSON)</option></select></label><label>Latitude / map center<input id=geofenceLatitude type=number min=-90 max=90 step=any oninput=renderBoundaryMap()></label><label>Longitude / map center<input id=geofenceLongitude type=number min=-180 max=180 step=any oninput=renderBoundaryMap()></label><label id=geofenceRadiusLabel>Radius (kilometers)<input id=geofenceRadius type=number min=.001 max=20000 step=any value=1></label><div id=boundaryEditor class=boundary-editor><div class=boundary-map-controls><label>Map span (km)<input id=geofenceMapSpan type=number min=.1 max=2000 value=10 oninput=renderBoundaryMap()></label><button onclick=undoBoundaryPoint()>Undo point</button><button onclick=clearBoundaryPoints()>Clear drawing</button></div><svg id=geofenceMap viewBox="0 0 800 360" role=img aria-label="Local geofence drawing map" onclick=addBoundaryPoint(event)></svg><p id=boundaryHelp class=muted></p><label id=legalBoundaryLabel>Legal boundary GeoJSON<textarea id=legalBoundaryGeojson rows=5 placeholder='Paste a GeoJSON Polygon, MultiPolygon, or Feature' oninput=previewLegalBoundary()></textarea></label></div><button onclick=createGeofence()>Create geofence</button><div id=locationStatus class=identity-status></div></div><div id=locationGroups class=location-groups></div></section><div id=modal class=modal>''',
@@ -882,7 +882,8 @@ function addBoundaryPoint(event) {
 function undoBoundaryPoint(){drawnBoundaryPoints.pop();renderBoundaryMap()}
 function clearBoundaryPoints(){drawnBoundaryPoints=[];renderBoundaryMap()}
 function previewLegalBoundary(){try{const geometry=legalBoundaryGeometry(),coordinates=geometry.type==='MultiPolygon'?geometry.coordinates.flat(2):geometry.coordinates.flat(1);if(coordinates.length){geofenceLongitude.value=coordinates.reduce((sum,p)=>sum+p[0],0)/coordinates.length;geofenceLatitude.value=coordinates.reduce((sum,p)=>sum+p[1],0)/coordinates.length}boundaryHelp.textContent='Legal boundary loaded.'}catch{boundaryHelp.textContent='Paste valid Polygon or MultiPolygon GeoJSON.'}renderBoundaryMap()}
-function locationPreviewStrip(item,limit=4){return `<div class="location-previews">${item.preview_photo_ids.slice(0,limit).map(id=>`<img loading="lazy" src="/media?id=${id}&thumb=1&privacy=1" alt="">`).join('')}</div>`}
+function privacySuffix(){return showNsfw.checked?'':'&privacy=1'}
+function locationPreviewStrip(item,limit=4){return `<div class="location-previews">${item.preview_photo_ids.slice(0,limit).map(id=>`<img loading="lazy" src="/media?id=${id}&thumb=1${privacySuffix()}" alt="">`).join('')}</div>`}
 function customLocationCard(item,editable=false){return `<article class="location-card"><h2>${esc(item.name)}</h2><div class="muted">${esc(item.path)} · ${item.boundary_type==='radius'?(item.radius_meters/1000).toLocaleString()+' km radius':item.boundary_type+' boundary'} · ${item.photo_count} photos</div>${locationPreviewStrip(item,12)}<button onclick="viewLocationTimeline(${item.id})">View photos</button>${editable?`<button onclick="editGeofence(${item.id})">Edit boundary</button>`:''}</article>`}
 function legalLocationNode(item,childrenByParent,depth=0){
   const children=(childrenByParent.get(item.id)||[]).sort((left,right)=>{const rank={country:0,state:1,province:1,county:2,city:3};return (rank[left.admin_level]??4)-(rank[right.admin_level]??4)||left.name.localeCompare(right.name)}),label=item.admin_level==='country'?'Nation':item.admin_level==='state'||item.admin_level==='province'?'State/region':item.admin_level==='county'?'County':'City';
@@ -976,13 +977,13 @@ let locationOverviewPoints=[],locationOverviewClusters=[],locationPanelClusterIn
 function closeLocationPhotoPanel(){locationPhotoPanel.classList.remove('open')}
 function openLocationPhotoPanel(clusterIndex){
   const cluster=locationOverviewClusters[clusterIndex];if(!cluster)return;
-  if(cluster.ids.length===1){const id=cluster.ids[0];locationPhotoPanelContent.innerHTML=`<h2>Photo at this location</h2><img class="location-panel-single" src="/media?id=${id}&privacy=1" alt="Selected location photo"><div class="location-panel-actions"><button onclick="openLocationPhotoInViewer(${id})">Open full viewer</button></div>`}
+  if(cluster.ids.length===1){const id=cluster.ids[0];locationPhotoPanelContent.innerHTML=`<h2>Photo at this location</h2><img class="location-panel-single" src="/media?id=${id}${privacySuffix()}" alt="Selected location photo"><div class="location-panel-actions"><button onclick="openLocationPhotoInViewer(${id})">Open full viewer</button></div>`}
   else{locationPanelClusterIndex=clusterIndex;locationPanelVisibleCount=60;renderLocationClusterGrid()}
   locationPhotoPanel.classList.add('open');
 }
-function renderLocationClusterGrid(){const cluster=locationOverviewClusters[locationPanelClusterIndex],visible=cluster.ids.slice(0,locationPanelVisibleCount);locationPhotoPanelContent.innerHTML=`<h2>${cluster.ids.length} photos in this area</h2><p class="muted">Select a photo to focus it in this panel. Showing ${visible.length} of ${cluster.ids.length}.</p><div class="location-panel-grid">${visible.map(id=>`<button class="location-panel-thumb" onclick="focusLocationPhoto(${id},${locationPanelClusterIndex})" aria-label="Open photo ${id}"><img loading="lazy" src="/media?id=${id}&thumb=1&privacy=1" alt=""></button>`).join('')}</div>${visible.length<cluster.ids.length?'<button onclick="loadMoreLocationPhotos()">Load more photos</button>':''}`}
+function renderLocationClusterGrid(){const cluster=locationOverviewClusters[locationPanelClusterIndex],visible=cluster.ids.slice(0,locationPanelVisibleCount);locationPhotoPanelContent.innerHTML=`<h2>${cluster.ids.length} photos in this area</h2><p class="muted">Select a photo to focus it in this panel. Showing ${visible.length} of ${cluster.ids.length}.</p><div class="location-panel-grid">${visible.map(id=>`<button class="location-panel-thumb" onclick="focusLocationPhoto(${id},${locationPanelClusterIndex})" aria-label="Open photo ${id}"><img loading="lazy" src="/media?id=${id}&thumb=1${privacySuffix()}" alt=""></button>`).join('')}</div>${visible.length<cluster.ids.length?'<button onclick="loadMoreLocationPhotos()">Load more photos</button>':''}`}
 function loadMoreLocationPhotos(){locationPanelVisibleCount+=60;renderLocationClusterGrid()}
-function focusLocationPhoto(id,clusterIndex){locationPhotoPanelContent.innerHTML=`<button onclick="openLocationPhotoPanel(${clusterIndex})">← Back to group</button><h2>Photo at this location</h2><img class="location-panel-single" src="/media?id=${id}&privacy=1" alt="Selected location photo"><div class="location-panel-actions"><button onclick="openLocationPhotoInViewer(${id})">Open full viewer</button></div>`}
+function focusLocationPhoto(id,clusterIndex){locationPhotoPanelContent.innerHTML=`<button onclick="openLocationPhotoPanel(${clusterIndex})">← Back to group</button><h2>Photo at this location</h2><img class="location-panel-single" src="/media?id=${id}${privacySuffix()}" alt="Selected location photo"><div class="location-panel-actions"><button onclick="openLocationPhotoInViewer(${id})">Open full viewer</button></div>`}
 function openLocationPhotoInViewer(id){closeLocationPhotoPanel();openPhoto(id)}
 document.addEventListener('keydown',event=>{if(event.key==='Escape'&&locationPhotoPanel.classList.contains('open'))closeLocationPhotoPanel()});
 function overviewWorldPoint(latitude,longitude,zoom){
@@ -1107,6 +1108,30 @@ async function saveAlbumName(albumId,input){const status=document.getElementById
 async function createManagedAlbum(){const name=prompt('New album name:');if(!name||!name.trim())return;try{await post('/api/albums',{name});await loadAlbumManagement()}catch(error){albumManagementStatus.textContent='Create failed: '+error.message}}
 function viewAlbumTimeline(albumId){person.value='';locationFilter='';suggestionDateFilter='';albumFilter.value=String(albumId);showAppTab('timeline',true);load(true)}
 function viewAlbumPersonTimeline(albumId,identityId){person.value=String(identityId);locationFilter='';suggestionDateFilter='';albumFilter.value=String(albumId);showAppTab('timeline',true);load(true)}
+</script></body>''',
+    1,
+)
+
+PAGE = PAGE.replace(
+    "</style>",
+    r'''.header-privacy-toggle{display:flex;align-items:center;gap:6px;margin-left:auto;padding:6px 10px;border:1px solid #53666a;border-radius:7px;background:#20292b;font-weight:700}.header-privacy-toggle input{margin:0;accent-color:#e75869}</style>''',
+    1,
+).replace(
+    "</body>",
+    r'''<script>
+function toggleNsfwVisibility(){
+  localStorage.setItem('galleryShowNsfw',showNsfw.checked?'1':'0');
+  hideNsfw.checked=!showNsfw.checked;
+  if(showNsfw.checked&&contentFilter.value==='normal')contentFilter.value='all';
+  if(!showNsfw.checked&&contentFilter.value==='all')contentFilter.value='normal';
+  closeLocationPhotoPanel();
+  if(timeline.style.display!=='none')load(true);
+  else if(locationView.style.display==='block')loadLocationOverview();
+  else if(settingsView.style.display==='block')loadLocationGroups();
+}
+showNsfw.checked=localStorage.getItem('galleryShowNsfw')==='1';
+hideNsfw.checked=!showNsfw.checked;
+if(showNsfw.checked&&contentFilter.value==='normal')contentFilter.value='all';
 </script></body>''',
     1,
 )
