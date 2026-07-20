@@ -1503,6 +1503,15 @@ class FaceCatalog:
         path = Path(row[0]) if row else None
         return path if path and path.is_file() else None
 
+    def image_is_nsfw(self, image_id: int) -> bool:
+        row = self.connection.execute(
+            """SELECT COALESCE(metadata.nsfw_override, images.nsfw_score >= 0.45, 0)
+               FROM images LEFT JOIN image_metadata metadata ON metadata.image_id = images.id
+               WHERE images.id = ? AND images.missing_since IS NULL""",
+            (image_id,),
+        ).fetchone()
+        return bool(row and row[0])
+
     def backfill_capture_dates(self) -> tuple[int, int]:
         """Persist capture dates for legacy rows so timeline ordering is stable and fast."""
         rows = self.connection.execute(

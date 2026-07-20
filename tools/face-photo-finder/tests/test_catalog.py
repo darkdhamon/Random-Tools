@@ -1000,6 +1000,7 @@ class CatalogTests(unittest.TestCase):
             self.assertEqual(photo["nsfw_detections"][0]["label"], "FEMALE_BREAST_EXPOSED")  # type: ignore[index]
             self.assertEqual(photo["nsfw_vit_score"], 0.91)  # type: ignore[index]
             self.assertTrue(photo["nsfw_review_required"])  # type: ignore[index]
+            self.assertTrue(catalog.image_is_nsfw(stored.image_id))
             self.assertEqual([item["id"] for item in catalog.gallery_photos(search="vacation")], [stored.image_id])
             self.assertEqual([item["id"] for item in catalog.gallery_photos(year=2018)], [stored.image_id])
             self.assertEqual([item["id"] for item in catalog.gallery_photos(nsfw_filter="nsfw")], [stored.image_id])
@@ -1012,6 +1013,7 @@ class CatalogTests(unittest.TestCase):
                 [stored.image_id],
             )
             self.assertEqual(catalog.set_nsfw_overrides([stored.image_id], 0), 1)
+            self.assertFalse(catalog.image_is_nsfw(stored.image_id))
             self.assertEqual(catalog.gallery_photos(nsfw_filter="conflict"), [])
             self.assertEqual(catalog.gallery_photos(excluded_kinds=("document",)), [])
             self.assertEqual(

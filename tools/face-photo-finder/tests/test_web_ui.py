@@ -169,6 +169,8 @@ class WebGalleryUiTests(unittest.TestCase):
         self.assertIn('id=locationLegalGroups', PAGE)
         self.assertIn('id=locationCustomGroups', PAGE)
         self.assertIn('customLocationCard(item,editable=false)', PAGE)
+        self.assertIn('&thumb=1&privacy=1', PAGE)
+        self.assertIn('&privacy=1', PAGE)
         self.assertIn('locationCustomGroups.innerHTML', PAGE)
         self.assertIn('renderCustomGeofences', PAGE)
         self.assertIn('renderLegalLocationSections', PAGE)

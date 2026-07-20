@@ -11,7 +11,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
-from PIL import Image, ImageOps
+from PIL import Image, ImageFilter, ImageOps
 
 from .catalog import FaceCatalog, default_catalog_path
 
@@ -882,7 +882,7 @@ function addBoundaryPoint(event) {
 function undoBoundaryPoint(){drawnBoundaryPoints.pop();renderBoundaryMap()}
 function clearBoundaryPoints(){drawnBoundaryPoints=[];renderBoundaryMap()}
 function previewLegalBoundary(){try{const geometry=legalBoundaryGeometry(),coordinates=geometry.type==='MultiPolygon'?geometry.coordinates.flat(2):geometry.coordinates.flat(1);if(coordinates.length){geofenceLongitude.value=coordinates.reduce((sum,p)=>sum+p[0],0)/coordinates.length;geofenceLatitude.value=coordinates.reduce((sum,p)=>sum+p[1],0)/coordinates.length}boundaryHelp.textContent='Legal boundary loaded.'}catch{boundaryHelp.textContent='Paste valid Polygon or MultiPolygon GeoJSON.'}renderBoundaryMap()}
-function locationPreviewStrip(item,limit=4){return `<div class="location-previews">${item.preview_photo_ids.slice(0,limit).map(id=>`<img loading="lazy" src="/media?id=${id}&thumb=1" alt="">`).join('')}</div>`}
+function locationPreviewStrip(item,limit=4){return `<div class="location-previews">${item.preview_photo_ids.slice(0,limit).map(id=>`<img loading="lazy" src="/media?id=${id}&thumb=1&privacy=1" alt="">`).join('')}</div>`}
 function customLocationCard(item,editable=false){return `<article class="location-card"><h2>${esc(item.name)}</h2><div class="muted">${esc(item.path)} · ${item.boundary_type==='radius'?(item.radius_meters/1000).toLocaleString()+' km radius':item.boundary_type+' boundary'} · ${item.photo_count} photos</div>${locationPreviewStrip(item,12)}<button onclick="viewLocationTimeline(${item.id})">View photos</button>${editable?`<button onclick="editGeofence(${item.id})">Edit boundary</button>`:''}</article>`}
 function legalLocationNode(item,childrenByParent,depth=0){
   const children=(childrenByParent.get(item.id)||[]).sort((left,right)=>{const rank={country:0,state:1,province:1,county:2,city:3};return (rank[left.admin_level]??4)-(rank[right.admin_level]??4)||left.name.localeCompare(right.name)}),label=item.admin_level==='country'?'Nation':item.admin_level==='state'||item.admin_level==='province'?'State/region':item.admin_level==='county'?'County':'City';
@@ -976,13 +976,13 @@ let locationOverviewPoints=[],locationOverviewClusters=[],locationPanelClusterIn
 function closeLocationPhotoPanel(){locationPhotoPanel.classList.remove('open')}
 function openLocationPhotoPanel(clusterIndex){
   const cluster=locationOverviewClusters[clusterIndex];if(!cluster)return;
-  if(cluster.ids.length===1){const id=cluster.ids[0];locationPhotoPanelContent.innerHTML=`<h2>Photo at this location</h2><img class="location-panel-single" src="/media?id=${id}" alt="Selected location photo"><div class="location-panel-actions"><button onclick="openLocationPhotoInViewer(${id})">Open full viewer</button></div>`}
+  if(cluster.ids.length===1){const id=cluster.ids[0];locationPhotoPanelContent.innerHTML=`<h2>Photo at this location</h2><img class="location-panel-single" src="/media?id=${id}&privacy=1" alt="Selected location photo"><div class="location-panel-actions"><button onclick="openLocationPhotoInViewer(${id})">Open full viewer</button></div>`}
   else{locationPanelClusterIndex=clusterIndex;locationPanelVisibleCount=60;renderLocationClusterGrid()}
   locationPhotoPanel.classList.add('open');
 }
-function renderLocationClusterGrid(){const cluster=locationOverviewClusters[locationPanelClusterIndex],visible=cluster.ids.slice(0,locationPanelVisibleCount);locationPhotoPanelContent.innerHTML=`<h2>${cluster.ids.length} photos in this area</h2><p class="muted">Select a photo to focus it in this panel. Showing ${visible.length} of ${cluster.ids.length}.</p><div class="location-panel-grid">${visible.map(id=>`<button class="location-panel-thumb" onclick="focusLocationPhoto(${id},${locationPanelClusterIndex})" aria-label="Open photo ${id}"><img loading="lazy" src="/media?id=${id}&thumb=1" alt=""></button>`).join('')}</div>${visible.length<cluster.ids.length?'<button onclick="loadMoreLocationPhotos()">Load more photos</button>':''}`}
+function renderLocationClusterGrid(){const cluster=locationOverviewClusters[locationPanelClusterIndex],visible=cluster.ids.slice(0,locationPanelVisibleCount);locationPhotoPanelContent.innerHTML=`<h2>${cluster.ids.length} photos in this area</h2><p class="muted">Select a photo to focus it in this panel. Showing ${visible.length} of ${cluster.ids.length}.</p><div class="location-panel-grid">${visible.map(id=>`<button class="location-panel-thumb" onclick="focusLocationPhoto(${id},${locationPanelClusterIndex})" aria-label="Open photo ${id}"><img loading="lazy" src="/media?id=${id}&thumb=1&privacy=1" alt=""></button>`).join('')}</div>${visible.length<cluster.ids.length?'<button onclick="loadMoreLocationPhotos()">Load more photos</button>':''}`}
 function loadMoreLocationPhotos(){locationPanelVisibleCount+=60;renderLocationClusterGrid()}
-function focusLocationPhoto(id,clusterIndex){locationPhotoPanelContent.innerHTML=`<button onclick="openLocationPhotoPanel(${clusterIndex})">← Back to group</button><h2>Photo at this location</h2><img class="location-panel-single" src="/media?id=${id}" alt="Selected location photo"><div class="location-panel-actions"><button onclick="openLocationPhotoInViewer(${id})">Open full viewer</button></div>`}
+function focusLocationPhoto(id,clusterIndex){locationPhotoPanelContent.innerHTML=`<button onclick="openLocationPhotoPanel(${clusterIndex})">← Back to group</button><h2>Photo at this location</h2><img class="location-panel-single" src="/media?id=${id}&privacy=1" alt="Selected location photo"><div class="location-panel-actions"><button onclick="openLocationPhotoInViewer(${id})">Open full viewer</button></div>`}
 function openLocationPhotoInViewer(id){closeLocationPhotoPanel();openPhoto(id)}
 document.addEventListener('keydown',event=>{if(event.key==='Escape'&&locationPhotoPanel.classList.contains('open'))closeLocationPhotoPanel()});
 function overviewWorldPoint(latitude,longitude,zoom){
@@ -1197,14 +1197,22 @@ class GalleryHandler(BaseHTTPRequestHandler):
             elif parsed.path == "/api/location-points":
                 self._json(catalog.photo_location_points())
             elif parsed.path == "/media":
-                path = catalog.image_path(int(query["id"][0]))
+                image_id = int(query["id"][0])
+                path = catalog.image_path(image_id)
                 if path is None: self.send_error(404); return
                 with Image.open(path) as source:
                     image = ImageOps.exif_transpose(source).convert("RGB")
                     if query.get("thumb") == ["1"]: image.thumbnail((500, 360), Image.Resampling.LANCZOS)
+                    if query.get("privacy") == ["1"] and catalog.image_is_nsfw(image_id):
+                        image.thumbnail((1200, 900), Image.Resampling.LANCZOS)
+                        image = image.filter(ImageFilter.GaussianBlur(radius=24))
                     output = io.BytesIO(); image.save(output, "JPEG", quality=88); data = output.getvalue()
                 self.send_response(200); self.send_header("Content-Type", "image/jpeg")
-                self.send_header("Content-Length", str(len(data))); self.send_header("Cache-Control", "private, max-age=3600")
+                self.send_header("Content-Length", str(len(data)))
+                self.send_header(
+                    "Cache-Control",
+                    "private, no-store" if query.get("privacy") == ["1"] else "private, max-age=3600",
+                )
                 self.end_headers(); self.wfile.write(data)
             else: self.send_error(404)
         except (ValueError, KeyError) as exc: self._json({"error": str(exc)}, 400)
