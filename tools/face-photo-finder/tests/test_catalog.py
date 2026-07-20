@@ -417,6 +417,7 @@ class CatalogTests(unittest.TestCase):
             self.assertEqual(summary["photo_count"], 2)
             legal_summary = next(item for item in catalog.location_summaries() if item["id"] == legal)
             self.assertEqual(legal_summary["boundary_type"], "legal")
+            self.assertTrue(legal_summary["read_only"])
             self.assertEqual(legal_summary["photo_count"], 1)
             catalog.close()
 

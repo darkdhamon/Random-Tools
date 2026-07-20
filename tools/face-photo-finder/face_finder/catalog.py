@@ -1179,6 +1179,7 @@ class FaceCatalog:
                 "id": row[0], "name": row[1], "type": row[2], "parent_id": row[3],
                 "latitude": row[4], "longitude": row[5], "radius_meters": row[6],
                 "boundary_type": row[7],
+                "read_only": row[7] == "legal",
                 "geometry": (None if row[0] in imported_ids else json.loads(row[8]) if row[8] else None),
                 "source_name": imported_metadata.get(row[0], (None, None))[0],
                 "admin_level": imported_metadata.get(row[0], (None, None))[1],

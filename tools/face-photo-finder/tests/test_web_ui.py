@@ -128,6 +128,8 @@ class WebGalleryUiTests(unittest.TestCase):
         self.assertIn('id=geofenceMap', PAGE)
         self.assertIn('addBoundaryPoint', PAGE)
         self.assertIn('legalBoundaryGeometry', PAGE)
+        self.assertIn('Legal boundaries cannot be edited', PAGE)
+        self.assertIn("item.read_only?' · read-only'", PAGE)
         self.assertIn('Satellite + roads', PAGE)
         self.assertIn('Road map', PAGE)
         self.assertIn('geofenceRoadOverlay', PAGE)
