@@ -588,15 +588,17 @@ class FaceFinderApp(tk.Tk):
                         catalog.set_media_kind(cached.image_id, media_kind)
                     if cached:
                         catalog.ensure_image_location(cached.image_id, path)
-                    nsfw_score = catalog.nsfw_score_for_path(path)
-                    if nsfw_score is None:
+                    nsfw_score, nsfw_details = catalog.nsfw_classification_for_path(path)
+                    if nsfw_details is None:
                         try:
                             if nsfw_detector is None:
                                 self.events.put(("status", "Loading local NSFW detector…"))
                                 nsfw_detector = NsfwDetector()
-                            nsfw_score = nsfw_detector.score(path)
+                            nsfw_result = nsfw_detector.classify(path)
+                            nsfw_score = nsfw_result.score
+                            nsfw_details = list(nsfw_result.detections)
                             if cached:
-                                catalog.set_nsfw_score(cached.image_id, nsfw_score)
+                                catalog.set_nsfw_classification(cached.image_id, nsfw_score, nsfw_details)
                         except Exception as exc:
                             self.events.put(("status", f"NSFW classification skipped for {path.name}: {exc}"))
                     capture_year = cached.capture_year if cached else image_capture_year(path)
@@ -910,8 +912,8 @@ class FaceFinderApp(tk.Tk):
                             profile_eligible_flags,
                             art_flags,
                         )
-                        if nsfw_score is not None:
-                            catalog.set_nsfw_score(stored.image_id, nsfw_score)
+                        if nsfw_score is not None and nsfw_details is not None:
+                            catalog.set_nsfw_classification(stored.image_id, nsfw_score, nsfw_details)
                         catalog.set_media_kind(stored.image_id, media_kind)
                         catalog.ensure_image_location(stored.image_id, path)
                         candidate_embeddings = [face.embedding for face in detected]

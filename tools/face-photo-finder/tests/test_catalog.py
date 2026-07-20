@@ -341,6 +341,11 @@ class CatalogTests(unittest.TestCase):
             image.write_bytes(b"gallery image")
             catalog = FaceCatalog(root / "catalog.sqlite3")
             stored = catalog.store_scan(image, [], [])
+            catalog.set_nsfw_classification(
+                stored.image_id,
+                0.82,
+                [{"label": "FEMALE_BREAST_EXPOSED", "score": 0.82, "explicit": True}],
+            )
             catalog.update_gallery_metadata(
                 stored.image_id, "Summer trip", "At the lake", "family, vacation", 5, 2018, 1,
                 "document", "Lake Michigan", 43.0, -87.0,
@@ -355,6 +360,7 @@ class CatalogTests(unittest.TestCase):
             self.assertEqual(photo["location_name"], "Lake Michigan")  # type: ignore[index]
             self.assertEqual(photo["latitude"], 43.0)  # type: ignore[index]
             self.assertEqual(photo["longitude"], -87.0)  # type: ignore[index]
+            self.assertEqual(photo["nsfw_detections"][0]["label"], "FEMALE_BREAST_EXPOSED")  # type: ignore[index]
             self.assertEqual([item["id"] for item in catalog.gallery_photos(search="vacation")], [stored.image_id])
             self.assertEqual([item["id"] for item in catalog.gallery_photos(year=2018)], [stored.image_id])
             self.assertEqual([item["id"] for item in catalog.gallery_photos(nsfw_filter="nsfw")], [stored.image_id])

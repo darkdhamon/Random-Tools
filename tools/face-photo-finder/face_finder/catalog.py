@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 import hashlib
+import json
 import re
 import sqlite3
 
@@ -180,6 +181,8 @@ class FaceCatalog:
             self.connection.execute("ALTER TABLE images ADD COLUMN nsfw_score REAL")
         if "nsfw_scanned_at" not in image_columns:
             self.connection.execute("ALTER TABLE images ADD COLUMN nsfw_scanned_at TEXT")
+        if "nsfw_details" not in image_columns:
+            self.connection.execute("ALTER TABLE images ADD COLUMN nsfw_details TEXT")
         if "media_kind" not in image_columns:
             self.connection.execute("ALTER TABLE images ADD COLUMN media_kind TEXT")
         if "gps_latitude" not in image_columns:
@@ -299,7 +302,7 @@ class FaceCatalog:
                        COALESCE(metadata.media_kind_override, images.media_kind, 'photo'),
                        metadata.media_kind_override, COALESCE(metadata.location_name, ''),
                        COALESCE(metadata.latitude, images.gps_latitude),
-                       COALESCE(metadata.longitude, images.gps_longitude)
+                       COALESCE(metadata.longitude, images.gps_longitude), images.nsfw_details
                 FROM images LEFT JOIN image_metadata metadata ON metadata.image_id = images.id
                 WHERE {' AND '.join(clauses)}
                 ORDER BY COALESCE(images.capture_year_override, images.capture_year) DESC, images.path
@@ -314,6 +317,7 @@ class FaceCatalog:
                 "nsfw_score": row[9], "nsfw_override": row[10], "is_nsfw": bool(row[11]),
                 "media_kind": row[12], "media_kind_override": row[13],
                 "location_name": row[14], "latitude": row[15], "longitude": row[16],
+                "nsfw_detections": json.loads(row[17]) if row[17] else [],
             }
             for row in rows
         ]
@@ -329,7 +333,7 @@ class FaceCatalog:
                       COALESCE(metadata.media_kind_override, images.media_kind, 'photo'),
                       metadata.media_kind_override, COALESCE(metadata.location_name, ''),
                       COALESCE(metadata.latitude, images.gps_latitude),
-                      COALESCE(metadata.longitude, images.gps_longitude)
+                      COALESCE(metadata.longitude, images.gps_longitude), images.nsfw_details
                FROM images LEFT JOIN image_metadata metadata ON metadata.image_id = images.id
                WHERE images.id = ? AND images.missing_since IS NULL""",
             (image_id,),
@@ -343,6 +347,7 @@ class FaceCatalog:
             "nsfw_score": row[8], "nsfw_override": row[9], "is_nsfw": bool(row[10]),
             "media_kind": row[11], "media_kind_override": row[12],
             "location_name": row[13], "latitude": row[14], "longitude": row[15],
+            "nsfw_detections": json.loads(row[16]) if row[16] else [],
         }
         faces = self.connection.execute(
             """SELECT faces.id, identities.name, faces.intentionally_unknown, faces.is_art,
@@ -410,13 +415,29 @@ class FaceCatalog:
         ).fetchone()
         return row[0] if row else None
 
+    def nsfw_classification_for_path(
+        self, path: Path
+    ) -> tuple[float | None, list[dict[str, object]] | None]:
+        row = self.connection.execute(
+            "SELECT nsfw_score, nsfw_details FROM images WHERE path = ?", (str(path.resolve()),)
+        ).fetchone()
+        if row is None:
+            return None, None
+        return row[0], json.loads(row[1]) if row[1] is not None else None
+
     def set_nsfw_score(self, image_id: int, score: float) -> None:
+        self.set_nsfw_classification(image_id, score, [])
+
+    def set_nsfw_classification(
+        self, image_id: int, score: float, detections: list[dict[str, object]]
+    ) -> None:
         if not 0 <= score <= 1:
             raise ValueError("NSFW score must be between 0 and 1.")
         with self.connection:
             self.connection.execute(
-                "UPDATE images SET nsfw_score = ?, nsfw_scanned_at = ? WHERE id = ?",
-                (score, datetime.now(timezone.utc).isoformat(), image_id),
+                """UPDATE images SET nsfw_score = ?, nsfw_details = ?, nsfw_scanned_at = ?
+                   WHERE id = ?""",
+                (score, json.dumps(detections), datetime.now(timezone.utc).isoformat(), image_id),
             )
 
     def media_kind_for_path(self, path: Path) -> str | None:

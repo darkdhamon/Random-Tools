@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
 from pathlib import Path
 
 NSFW_THRESHOLD = 0.45
@@ -12,6 +13,12 @@ EXPLICIT_CLASSES = {
 }
 
 
+@dataclass(frozen=True)
+class NsfwResult:
+    score: float
+    detections: tuple[dict[str, object], ...]
+
+
 class NsfwDetector:
     """Local ONNX nudity detector with a single conservative gallery score."""
 
@@ -20,9 +27,23 @@ class NsfwDetector:
 
         self.detector = NudeDetector()
 
-    def score(self, path: Path) -> float:
+    def classify(self, path: Path) -> NsfwResult:
         detections = self.detector.detect(str(path))
-        return max(
-            (float(item.get("score", 0.0)) for item in detections if item.get("class") in EXPLICIT_CLASSES),
-            default=0.0,
+        summarized = tuple(
+            {
+                "label": str(item.get("class", "UNKNOWN")),
+                "score": float(item.get("score", 0.0)),
+                "explicit": item.get("class") in EXPLICIT_CLASSES,
+            }
+            for item in sorted(
+                detections, key=lambda value: float(value.get("score", 0.0)), reverse=True
+            )
+            if float(item.get("score", 0.0)) >= 0.20
         )
+        score = max(
+            (float(item["score"]) for item in summarized if bool(item["explicit"])), default=0.0
+        )
+        return NsfwResult(score, summarized)
+
+    def score(self, path: Path) -> float:
+        return self.classify(path).score

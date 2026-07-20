@@ -12,6 +12,8 @@ class WebGalleryUiTests(unittest.TestCase):
         self.assertIn('id=map class=map', PAGE)
         self.assertIn('Open in OpenStreetMap', PAGE)
         self.assertIn("'locationName','latitude','longitude'", PAGE)
+        self.assertIn('Model detections', PAGE)
+        self.assertIn('contributes to NSFW score', PAGE)
         self.assertNotIn('>Save metadata</button>', PAGE)
 
 
