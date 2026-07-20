@@ -420,6 +420,30 @@ class CatalogTests(unittest.TestCase):
             self.assertEqual(legal_summary["photo_count"], 1)
             catalog.close()
 
+    def test_imported_boundaries_are_indexed_and_hidden_until_they_have_photos(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            catalog = FaceCatalog(root / "catalog.sqlite3")
+            geometry = {"type": "Polygon", "coordinates": [[
+                [-93.82, 44.19], [-93.80, 44.19], [-93.80, 44.21],
+                [-93.82, 44.21], [-93.82, 44.19],
+            ]]}
+            boundary_id = catalog.upsert_imported_location(
+                "US:city:test", "Imported city", "city", geometry, "Test source"
+            )
+            self.assertFalse(any(item["id"] == boundary_id for item in catalog.location_summaries()))
+            image = root / "inside.jpg"; image.write_bytes(b"inside")
+            image_id = catalog.store_scan(image, [], []).image_id
+            with catalog.connection:
+                catalog.connection.execute(
+                    "UPDATE images SET gps_latitude=44.20,gps_longitude=-93.81 WHERE id=?", (image_id,)
+                )
+            self.assertIn(boundary_id, {item["id"] for item in catalog.locations_for_image(image_id)})
+            self.assertEqual(
+                next(item for item in catalog.location_summaries() if item["id"] == boundary_id)["photo_count"], 1
+            )
+            catalog.close()
+
     def test_reset_removes_all_catalog_data_without_deleting_source_image(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
