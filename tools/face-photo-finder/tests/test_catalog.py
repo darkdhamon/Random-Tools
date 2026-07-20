@@ -550,6 +550,47 @@ class CatalogTests(unittest.TestCase):
             self.assertNotIn(group_id, [group.group_id for group in catalog.unknown_groups()])
             catalog.close()
 
+    def test_similar_unknown_groups_are_clustered_and_assigned_together(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            catalog = FaceCatalog(root / "catalog.sqlite3")
+            group_ids = [catalog.create_unknown_group() for _ in range(3)]
+            embeddings = [
+                np.array([1.0, 0.0], dtype=np.float32),
+                np.array([0.99, 0.01], dtype=np.float32),
+                np.array([0.0, 1.0], dtype=np.float32),
+            ]
+            capture_dates = ["20200101", "20211231", "20220615"]
+            image_ids = []
+            for index, (group_id, embedding) in enumerate(zip(group_ids, embeddings, strict=True)):
+                image = root / f"PXL_{capture_dates[index]}_120000_unknown-{index}.jpg"; image.write_bytes(bytes([index + 1]))
+                stored = catalog.store_scan(
+                    image, [embedding], [None], intentionally_unknown=[True],
+                    unknown_group_ids=[group_id],
+                    previews=[np.frombuffer(f"preview-{index}".encode(), dtype=np.uint8)],
+                )
+                image_ids.append(stored.image_id)
+
+            summaries = catalog.unidentified_summaries()
+            self.assertEqual(len(summaries), 2)
+            similar = next(item for item in summaries if len(item["group_ids"]) == 2)
+            self.assertEqual(set(similar["group_ids"]), set(group_ids[:2]))
+            self.assertEqual(similar["face_count"], 2)
+            self.assertEqual(similar["last_seen"], "2021-12-31")
+            self.assertEqual(
+                {item["id"] for item in catalog.gallery_photos(unknown_group_ids=tuple(group_ids[:2]))},
+                set(image_ids[:2]),
+            )
+
+            person_id = catalog.create_identity("Now recognized")
+            self.assertEqual(catalog.assign_unknown_groups(similar["group_ids"], person_id), (2, 2))
+            self.assertEqual(
+                {catalog.faces_for_image(image_id)[0].identity_id for image_id in image_ids[:2]},
+                {person_id},
+            )
+            self.assertEqual(len(catalog.unidentified_summaries()), 1)
+            catalog.close()
+
     def test_gallery_metadata_can_be_saved_and_filtered(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

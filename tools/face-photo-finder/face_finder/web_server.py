@@ -82,6 +82,7 @@ openPhoto = async function(id) {
 };
 </script></body>''',
 )
+
 PAGE = PAGE.replace(
     "</style>",
     r'''.app-tabs{position:sticky;top:0;z-index:15;display:flex;gap:6px;background:#101719;padding:8px 14px;border-bottom:1px solid #31535a}.app-tabs button{border-color:transparent;background:transparent;font-weight:700}.app-tabs button.active{background:#176679;border-color:#63d7e8}.app-tabs+header{top:49px}.identity-view{display:none;padding:22px;max-width:1400px;margin:auto}.identity-toolbar{display:flex;gap:12px;align-items:center;flex-wrap:wrap;margin-bottom:15px}.identity-toolbar input{min-width:280px}.identity-table-wrap{overflow:auto;border:1px solid #3e555a;border-radius:9px}.identity-table{width:100%;border-collapse:collapse;background:#1c1f20}.identity-table th,.identity-table td{padding:10px;border-bottom:1px solid #353d3f;text-align:left;white-space:nowrap}.identity-table th{position:sticky;top:0;background:#18363c;color:#bdf5fb}.identity-table input{box-sizing:border-box;width:100%}.identity-table .name-input{min-width:220px}.identity-table .year-input{width:100px}.identity-status{min-height:22px;color:#72dfbd}.reference-strip{display:flex;gap:6px;max-width:390px;overflow-x:auto;padding:3px}.reference-thumb{padding:0;border:2px solid #47656b;background:#101010;flex:0 0 auto}.reference-thumb:hover{border-color:#62dbe8}.reference-thumb img{display:block;width:58px;height:58px;object-fit:cover;border-radius:4px}.reference-viewer{width:min(620px,95vw);background:#1c2325;border-color:#5dd4e2}.reference-viewer img{display:block;max-width:100%;max-height:72vh;margin:auto;border-radius:7px}.reference-viewer h2{color:#baf6fb}@media(max-width:750px){.app-tabs+header{top:49px}.identity-view{padding:12px}.identity-toolbar input{min-width:0;width:100%}.reference-strip{max-width:250px}}</style>''',
@@ -203,9 +204,16 @@ function showIdentityKind(kind) {
 function renderUnidentifiedTable() {
   const query = identitySearch.value.trim().toLowerCase();
   unidentifiedTableBody.innerHTML = '';
-  for (const group of unidentifiedManagementRows.filter(item => item.label.toLowerCase().includes(query))) {
+  const sortedGroups = unidentifiedManagementRows.filter(item => item.label.toLowerCase().includes(query));
+  sortedGroups.sort((left,right) => identitySort.value === 'photo_count'
+    ? right.photo_count-left.photo_count || right.id-left.id
+    : identitySort.value === 'name'
+      ? left.label.localeCompare(right.label,undefined,{sensitivity:'base'}) || right.id-left.id
+      : (right.last_seen||'').localeCompare(left.last_seen||'') || right.id-left.id);
+  for (const group of sortedGroups) {
     const row = document.createElement('tr');
     row.insertCell().textContent = group.label;
+    row.insertCell().textContent = group.last_seen || 'Unknown';
     const referenceCell = row.insertCell();
     const strip = document.createElement('div'); strip.className = 'reference-strip';
     for (const faceId of group.reference_face_ids || []) {
@@ -217,11 +225,23 @@ function renderUnidentifiedTable() {
     referenceCell.append(strip);
     row.insertCell().textContent = group.photo_count;
     row.insertCell().textContent = group.face_count;
+    const identityCell = row.insertCell(); const identitySelect = document.createElement('select');
+    identitySelect.innerHTML = `<option value="">Choose known identity…</option>${identities.map(item=>`<option value="${item.id}">${esc(item.name)} (#${item.id})</option>`).join('')}`;
+    const assignButton = document.createElement('button'); assignButton.textContent = 'Add to known identity';
+    assignButton.onclick = () => assignUnknownCluster(group, identitySelect.value);
+    identityCell.append(identitySelect, assignButton);
     const actionCell = row.insertCell(); const viewButton = document.createElement('button');
-    viewButton.textContent = 'View photos'; viewButton.onclick = () => viewUnidentifiedTimeline(group.id); actionCell.append(viewButton);
+    viewButton.textContent = 'View photos'; viewButton.onclick = () => viewUnidentifiedTimeline(group.group_ids); actionCell.append(viewButton);
     unidentifiedTableBody.append(row);
   }
-  identityStatus.textContent = `${unidentifiedManagementRows.length} unidentified people`;
+  identityStatus.textContent = `${unidentifiedManagementRows.length} unidentified review clusters`;
+}
+async function assignUnknownCluster(group, identityId) {
+  if (!identityId) { identityStatus.textContent = 'Choose a known identity first.'; return; }
+  const target = identities.find(item => item.id === +identityId);
+  if (!confirm(`Assign all ${group.face_count} face(s) in this similar-identity cluster to ${target.name} (#${target.id})?`)) return;
+  try { await post('/api/assign-unknown-groups',{group_ids:group.group_ids,identity_id:+identityId}); await people(true); await loadIdentityTable(); identityStatus.textContent = `Added cluster to ${target.name} (#${target.id})`; }
+  catch (error) { identityStatus.textContent = 'Assignment failed: ' + error.message; }
 }
 async function saveIdentityRow(identity, nameInput, yearInput) {
   identityStatus.textContent = 'Saving identity...';
@@ -242,7 +262,7 @@ function viewIdentityTimeline(identityId) {
   showAppTab('timeline', true);
   load();
 }
-function viewUnidentifiedTimeline(groupId) { person.value = ''; unknownGroupFilter = String(groupId); showAppTab('timeline', true); load(); }
+function viewUnidentifiedTimeline(groupIds) { person.value = ''; unknownGroupFilter = groupIds.join(','); showAppTab('timeline', true); load(); }
 function openReferencePreview(faceId, identityName) {
   referenceTitle.textContent = `${identityName} reference`;
   referenceFull.src = `/api/identity-reference?id=${faceId}`;
@@ -585,7 +605,16 @@ PAGE = PAGE.replace(
     "nameCell.append(nameInput);\n    row.insertCell().textContent = identity.last_seen || 'Unknown';\n    const referenceCell",
 ).replace(
     "mergeIdentityButton.style.display = kind === 'recognized' ? '' : 'none';",
-    "mergeIdentityButton.style.display = kind === 'recognized' ? '' : 'none';\n  identitySortLabel.style.display = kind === 'recognized' ? '' : 'none';",
+    "mergeIdentityButton.style.display = kind === 'recognized' ? '' : 'none';\n  identitySortLabel.style.display = '';",
+).replace(
+    '<th>Photos</th><th>Faces</th><th>Timeline</th>',
+    '<th>Photos</th><th>Faces</th><th>Add to known identity</th><th>Timeline</th>',
+).replace(
+    '<div id=unidentifiedPeoplePanel class=identity-table-wrap style="display:none"><table',
+    '<div id=unidentifiedPeoplePanel class=identity-table-wrap style="display:none"><p class=muted style="padding:0 10px">Similar unidentified people are grouped by biometric resemblance for review.</p><table',
+).replace(
+    '<th>Anonymous group</th><th>Appearances</th>',
+    '<th>Anonymous group</th><th>Last seen</th><th>Appearances</th>',
 )
 
 
@@ -619,6 +648,9 @@ class GalleryHandler(BaseHTTPRequestHandler):
             if parsed.path == "/api/photos":
                 identity = query.get("identity_id", [""])[0]
                 unknown_group = query.get("unknown_group_id", [""])[0]
+                unknown_groups = tuple(
+                    int(value) for value in unknown_group.split(",") if value.strip()
+                )
                 year = query.get("year", [""])[0]
                 self._json(catalog.gallery_photos(
                     query.get("q", [""])[0], int(identity) if identity else None,
@@ -626,7 +658,7 @@ class GalleryHandler(BaseHTTPRequestHandler):
                     int(query.get("offset", ["0"])[0]), query.get("nsfw", ["all"])[0],
                     tuple(filter(None, query.get("exclude_kinds", [""])[0].split(","))),
                     query.get("media_kind", [""])[0] or None,
-                    int(unknown_group) if unknown_group else None,
+                    unknown_group_ids=unknown_groups,
                 ))
             elif parsed.path == "/api/photo":
                 photo = catalog.gallery_photo(int(query["id"][0]))
@@ -727,6 +759,14 @@ class GalleryHandler(BaseHTTPRequestHandler):
                     )
                 finally: catalog.close()
                 self._json({"ok": True, "faces": faces, "tags": tags})
+            elif self.path == "/api/assign-unknown-groups":
+                catalog = self._catalog()
+                try:
+                    faces, photos = catalog.assign_unknown_groups(
+                        [int(value) for value in body["group_ids"]], int(body["identity_id"])
+                    )
+                finally: catalog.close()
+                self._json({"ok": True, "faces": faces, "photos": photos})
             elif self.path == "/api/delete-photo":
                 catalog = self._catalog()
                 try: deleted = catalog.delete_photo(int(body["id"]))

@@ -16,6 +16,7 @@ from PIL import Image, ExifTags
 
 PROFILE_MAX_SAMPLES = 64
 PROFILE_DUPLICATE_SIMILARITY = 0.92
+UNKNOWN_CLUSTER_SIMILARITY = 0.62
 
 
 def image_gps_coordinates(path: Path) -> tuple[float, float] | None:
@@ -314,6 +315,7 @@ class FaceCatalog:
         limit: int = 100, offset: int = 0, nsfw_filter: str = "all",
         excluded_kinds: tuple[str, ...] = (), media_kind: str | None = None,
         unknown_group_id: int | None = None,
+        unknown_group_ids: tuple[int, ...] = (),
     ) -> list[dict[str, object]]:
         clauses = ["images.missing_since IS NULL"]
         values: list[object] = []
@@ -327,11 +329,16 @@ class FaceCatalog:
                             OR EXISTS (SELECT 1 FROM photo_identity_tags tags
                                        WHERE tags.image_id = images.id AND tags.identity_id = ?))""")
             values.extend((identity_id, identity_id))
-        if unknown_group_id is not None:
+        selected_unknown_groups = tuple(dict.fromkeys(
+            (*unknown_group_ids, *((unknown_group_id,) if unknown_group_id is not None else ()))
+        ))
+        if selected_unknown_groups:
+            placeholders = ",".join("?" for _ in selected_unknown_groups)
             clauses.append(
-                "EXISTS (SELECT 1 FROM faces WHERE faces.image_id = images.id AND faces.unknown_group_id = ?)"
+                f"""EXISTS (SELECT 1 FROM faces WHERE faces.image_id = images.id
+                             AND faces.unknown_group_id IN ({placeholders}))"""
             )
-            values.append(unknown_group_id)
+            values.extend(selected_unknown_groups)
         if year is not None:
             clauses.append("COALESCE(images.capture_year_override, images.capture_year) = ?")
             values.append(year)
@@ -835,11 +842,19 @@ class FaceCatalog:
         return bytes(row[0]) if row else None
 
     def unidentified_summaries(self) -> list[dict[str, object]]:
-        """Return persisted anonymous face groups for identity-management review."""
+        """Cluster similar anonymous groups for identity-management review."""
         rows = self.connection.execute(
             """SELECT unknown_groups.id,
                       COUNT(CASE WHEN images.missing_since IS NULL THEN faces.id END),
-                      COUNT(DISTINCT CASE WHEN images.missing_since IS NULL THEN faces.image_id END)
+                      COUNT(DISTINCT CASE WHEN images.missing_since IS NULL THEN faces.image_id END),
+                      MAX(CASE WHEN images.missing_since IS NULL THEN
+                            CASE WHEN images.capture_year_override IS NULL
+                                       OR CAST(substr(images.capture_date, 1, 4) AS INTEGER)
+                                          = images.capture_year_override
+                                 THEN COALESCE(NULLIF(images.capture_date, ''),
+                                               CAST(images.capture_year AS TEXT))
+                                 ELSE CAST(images.capture_year_override AS TEXT) END
+                          END)
                FROM unknown_groups
                LEFT JOIN faces ON faces.unknown_group_id = unknown_groups.id
                LEFT JOIN images ON images.id = faces.image_id
@@ -847,23 +862,67 @@ class FaceCatalog:
                HAVING COUNT(CASE WHEN images.missing_since IS NULL THEN faces.id END) > 0
                ORDER BY unknown_groups.id DESC"""
         ).fetchall()
+        group_ids = [int(row[0]) for row in rows]
+        profiles = {group.group_id: group.embeddings for group in self.unknown_groups()}
+        parent = {group_id: group_id for group_id in group_ids}
+
+        def find(group_id: int) -> int:
+            while parent[group_id] != group_id:
+                parent[group_id] = parent[parent[group_id]]
+                group_id = parent[group_id]
+            return group_id
+
+        def union(first: int, second: int) -> None:
+            first_root, second_root = find(first), find(second)
+            if first_root != second_root:
+                parent[second_root] = first_root
+
+        for index, first in enumerate(group_ids):
+            first_profile = profiles.get(first, ())
+            if not first_profile:
+                continue
+            for second in group_ids[index + 1:]:
+                second_profile = profiles.get(second, ())
+                if second_profile and max(
+                    float(np.dot(left, right))
+                    for left in first_profile for right in second_profile
+                ) >= UNKNOWN_CLUSTER_SIMILARITY:
+                    union(first, second)
+
+        clusters: dict[int, list[int]] = {}
+        for group_id in group_ids:
+            clusters.setdefault(find(group_id), []).append(group_id)
+        counts = {int(row[0]): (int(row[1]), int(row[2])) for row in rows}
+        last_seen = {int(row[0]): row[3] for row in rows}
         previews: dict[int, list[int]] = {}
-        for group_id, face_id in self.connection.execute(
-            """SELECT faces.unknown_group_id, faces.id
+        photo_ids: dict[int, set[int]] = {}
+        for group_id, face_id, image_id, has_preview in self.connection.execute(
+            """SELECT faces.unknown_group_id, faces.id, faces.image_id,
+                      faces.preview IS NOT NULL
                FROM faces JOIN images ON images.id = faces.image_id
-               WHERE faces.unknown_group_id IS NOT NULL AND faces.preview IS NOT NULL
-                     AND images.missing_since IS NULL
-               ORDER BY faces.unknown_group_id, faces.profile_eligible DESC, faces.id"""
+               WHERE faces.unknown_group_id IS NOT NULL AND images.missing_since IS NULL
+               ORDER BY faces.unknown_group_id, faces.profile_eligible DESC, faces.id DESC"""
         ).fetchall():
-            group_previews = previews.setdefault(int(group_id), [])
-            if len(group_previews) < 12:
+            group_id = int(group_id)
+            photo_ids.setdefault(group_id, set()).add(int(image_id))
+            group_previews = previews.setdefault(group_id, [])
+            if len(group_previews) < 12 and has_preview:
                 group_previews.append(int(face_id))
-        return [
-            {"id": int(row[0]), "label": f"Unidentified person {int(row[0])}",
-             "face_count": int(row[1]), "photo_count": int(row[2]),
-             "reference_face_ids": previews.get(int(row[0]), [])}
-            for row in rows
-        ]
+        summaries = []
+        for members in clusters.values():
+            members.sort(reverse=True)
+            cluster_previews = [face_id for group_id in members for face_id in previews.get(group_id, [])][:12]
+            distinct_photos = set().union(*(photo_ids.get(group_id, set()) for group_id in members))
+            summaries.append({
+                "id": members[0], "group_ids": members,
+                "label": (f"Unidentified person {members[0]}" if len(members) == 1
+                          else f"Similar unidentified people ({len(members)} groups)"),
+                "face_count": sum(counts[group_id][0] for group_id in members),
+                "photo_count": len(distinct_photos), "reference_face_ids": cluster_previews,
+                "last_seen": max((last_seen[group_id] or "" for group_id in members), default="") or None,
+            })
+        summaries.sort(key=lambda item: int(item["id"]), reverse=True)
+        return summaries
 
     def unidentified_reference_preview(self, face_id: int) -> bytes | None:
         row = self.connection.execute(
@@ -875,7 +934,7 @@ class FaceCatalog:
         return bytes(row[0]) if row else None
 
     def update_identity(self, identity_id: int, name: str, birth_year: int | None) -> None:
-        """Rename an identity and update its birth year after validating uniqueness."""
+        """Rename an identity and update its birth year while preserving its stable ID."""
         clean_name = " ".join(name.split())
         if not clean_name:
             raise ValueError("An identity name is required.")
@@ -941,6 +1000,40 @@ class FaceCatalog:
                 """DELETE FROM unknown_groups WHERE id = ?
                    AND NOT EXISTS (SELECT 1 FROM faces WHERE unknown_group_id = ?)""",
                 (group_id, group_id),
+            )
+        return int(cursor.rowcount), len(image_ids)
+
+    def assign_unknown_groups(self, group_ids: list[int], identity_id: int) -> tuple[int, int]:
+        """Attach a review cluster of anonymous groups to one known identity."""
+        selected = list(dict.fromkeys(int(value) for value in group_ids))
+        if not selected:
+            raise ValueError("Select at least one unidentified group.")
+        if self.connection.execute("SELECT 1 FROM identities WHERE id = ?", (identity_id,)).fetchone() is None:
+            raise ValueError("The selected known identity no longer exists.")
+        placeholders = ",".join("?" for _ in selected)
+        existing = self.connection.execute(
+            f"SELECT id FROM unknown_groups WHERE id IN ({placeholders})", selected
+        ).fetchall()
+        if len(existing) != len(selected):
+            raise ValueError("One or more unidentified groups no longer exist.")
+        image_ids = [int(row[0]) for row in self.connection.execute(
+            f"SELECT DISTINCT image_id FROM faces WHERE unknown_group_id IN ({placeholders})", selected
+        ).fetchall()]
+        with self.connection:
+            cursor = self.connection.execute(
+                f"""UPDATE faces SET identity_id = ?, intentionally_unknown = 0,
+                           unknown_group_id = NULL
+                    WHERE unknown_group_id IN ({placeholders})""",
+                (identity_id, *selected),
+            )
+            for image_id in image_ids:
+                self.connection.execute(
+                    """UPDATE images SET identified_count =
+                       (SELECT COUNT(*) FROM faces WHERE faces.image_id = images.id
+                        AND identity_id IS NOT NULL) WHERE id = ?""", (image_id,),
+                )
+            self.connection.execute(
+                f"DELETE FROM unknown_groups WHERE id IN ({placeholders})", selected
             )
         return int(cursor.rowcount), len(image_ids)
 
