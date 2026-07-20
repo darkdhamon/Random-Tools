@@ -362,9 +362,15 @@ class CatalogTests(unittest.TestCase):
 
             suggestions = catalog.album_suggestions()
             self.assertEqual(suggestions, [{"capture_date": "2026-07-04", "photo_count": 21}])
+            self.assertEqual(
+                len(catalog.gallery_photos(suggested_album_date="2026-07-04")), 21
+            )
             first_album = catalog.create_album("July Fourth")
             second_album = catalog.create_album("Favorites")
             catalog.set_photo_albums(image_ids[0], [first_album, second_album])
+            self.assertEqual(
+                len(catalog.gallery_photos(suggested_album_date="2026-07-04")), 20
+            )
             self.assertEqual(
                 [item["name"] for item in catalog.gallery_photo(image_ids[0])["albums"]],  # type: ignore[index]
                 ["Favorites", "July Fourth"],

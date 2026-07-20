@@ -103,7 +103,7 @@ function showAppTab(tabName, preservePersonFilter=false) {
   const identityActive = tabName === 'identity';
   const locationActive = tabName === 'locations';
   const timelineActive = !identityActive && !locationActive;
-  if (timelineActive && !preservePersonFilter) { unknownGroupFilter = ''; locationFilter = ''; }
+  if (timelineActive && !preservePersonFilter) { unknownGroupFilter = ''; locationFilter = ''; suggestionDateFilter = ''; }
   timelineTabButton.classList.toggle('active', timelineActive);
   identityTabButton.classList.toggle('active', identityActive);
   locationTabButton.classList.toggle('active', locationActive);
@@ -746,11 +746,11 @@ PAGE = PAGE.replace(
     "exclude_kinds:excluded.join(','),album_id:albumFilter.value,limit:100,offset",
 ).replace(
     "</style>",
-    r'''.album-suggestions{display:none;padding:10px 14px;background:#19363d;border-bottom:1px solid #4ca3b0}.album-suggestions summary{cursor:pointer;font-weight:700}.album-suggestion-list{max-height:42vh;overflow:auto;padding-top:6px}.album-suggestion{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin:5px 0}.photo-albums{margin:8px 0 16px;padding:10px;background:#182326;border:1px solid #3e555a;border-radius:7px}.photo-album-options{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:6px;margin:8px 0}.photo-album-options label{display:flex;align-items:center;gap:6px}.photo-album-options input{width:auto!important;margin:0!important}</style>''',
+    r'''.album-suggestions{display:none;padding:10px 14px;background:#19363d;border-bottom:1px solid #4ca3b0}.album-suggestions summary{cursor:pointer;font-weight:700}.album-suggestion-list{max-height:42vh;overflow:auto;padding-top:6px}.album-suggestion{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin:5px 0}.album-suggestion-viewing{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:6px;color:#aaf3fb}.photo-albums{margin:8px 0 16px;padding:10px;background:#182326;border:1px solid #3e555a;border-radius:7px}.photo-album-options{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:6px;margin:8px 0}.photo-album-options label{display:flex;align-items:center;gap:6px}.photo-album-options input{width:auto!important;margin:0!important}</style>''',
 ).replace(
     "</body>",
     r'''<script>
-let albums=[];
+let albums=[], suggestionDateFilter='';
 const albumSuggestionBar=document.createElement('section'); albumSuggestionBar.className='album-suggestions'; timelineHeader.insertAdjacentElement('afterend',albumSuggestionBar);
 async function loadAlbums() {
   const selected=albumFilter.value; albums=await api('/api/albums');
@@ -761,8 +761,11 @@ function suggestedAlbumName(date) { return new Date(date+'T12:00:00').toLocaleDa
 async function renderAlbumSuggestions() {
   const suggestions=await api('/api/album-suggestions');
   albumSuggestionBar.style.display=suggestions.length?'block':'none';
-  albumSuggestionBar.innerHTML=suggestions.length?`<details><summary>${suggestions.length} suggested albums</summary><div class="album-suggestion-list">${suggestions.map(item=>`<div class="album-suggestion"><span>${item.photo_count} ungrouped photos from ${esc(suggestedAlbumName(item.capture_date))}</span><button onclick="createSuggestedAlbum('${item.capture_date}')">Create album</button><button onclick="dismissAlbumSuggestion('${item.capture_date}')">Dismiss</button></div>`).join('')}</div></details>`:'';
+  const viewing=suggestionDateFilter?`<div class="album-suggestion-viewing"><strong>Viewing suggested album: ${esc(suggestedAlbumName(suggestionDateFilter))}</strong><button onclick="clearSuggestedAlbumView()">Show full Timeline</button></div>`:'';
+  albumSuggestionBar.innerHTML=viewing+(suggestions.length?`<details><summary>${suggestions.length} suggested albums</summary><div class="album-suggestion-list">${suggestions.map(item=>`<div class="album-suggestion"><span>${item.photo_count} ungrouped photos from ${esc(suggestedAlbumName(item.capture_date))}</span><button onclick="viewSuggestedAlbum('${item.capture_date}')">View photos</button><button onclick="createSuggestedAlbum('${item.capture_date}')">Create album</button><button onclick="dismissAlbumSuggestion('${item.capture_date}')">Dismiss</button></div>`).join('')}</div></details>`:'');
 }
+function viewSuggestedAlbum(date) { suggestionDateFilter=date; person.value=''; albumFilter.value=''; locationFilter=''; year.value=''; renderAlbumSuggestions(); load(true); }
+function clearSuggestedAlbumView() { suggestionDateFilter=''; renderAlbumSuggestions(); load(true); }
 async function createSuggestedAlbum(date) {
   const proposed=suggestedAlbumName(date), albumName=prompt('Album name:',proposed); if(!albumName||!albumName.trim())return;
   const result=await post('/api/create-suggested-album',{capture_date:date,name:albumName});
@@ -799,7 +802,7 @@ PAGE = PAGE.replace(
     r'''<section id=locationView class=location-view><div class=location-toolbar><h1>Locations</h1><button onclick=loadLocationGroups()>Refresh</button></div><div class=geofence-form><h2>Create a geofence</h2><label>Name<input id=geofenceName placeholder="Home, Madison Lake, Minnesota…"></label><label>Type<select id=geofenceType><option value=custom>Custom location</option><option value=general>General location</option></select></label><label>Parent location<select id=geofenceParent><option value="">No parent</option></select></label><label>Latitude<input id=geofenceLatitude type=number min=-90 max=90 step=any></label><label>Longitude<input id=geofenceLongitude type=number min=-180 max=180 step=any></label><label>Radius (kilometers)<input id=geofenceRadius type=number min=.001 max=20000 step=any value=1></label><button onclick=createGeofence()>Create geofence</button><div id=locationStatus class=identity-status></div></div><div id=locationGroups class=location-groups></div></section><div id=modal class=modal>''',
 ).replace(
     "album_id:albumFilter.value,limit:100,offset",
-    "album_id:albumFilter.value,location_id:locationFilter,limit:100,offset",
+    "album_id:albumFilter.value,location_id:locationFilter,suggested_album_date:suggestionDateFilter,limit:100,offset",
 ).replace(
     "</style>",
     r'''.location-view{display:none;padding:22px;max-width:1500px;margin:auto}.location-toolbar{display:flex;align-items:center;gap:12px}.geofence-form{display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:10px;align-items:end;background:#192326;border:1px solid #3d5960;border-radius:9px;padding:14px;margin-bottom:18px}.geofence-form h2{grid-column:1/-1;margin:0}.geofence-form label{display:flex;flex-direction:column;gap:4px}.location-groups{display:grid;grid-template-columns:repeat(auto-fit,minmax(340px,1fr));gap:14px}.location-card{background:#1c2224;border:1px solid #3d555a;border-radius:9px;padding:12px}.location-card h2{margin:0 0 4px}.location-previews{display:grid;grid-template-columns:repeat(6,1fr);gap:4px;margin:9px 0}.location-previews img{width:100%;aspect-ratio:1;object-fit:cover;border-radius:4px}.photo-locations{margin:8px 0 16px;padding:10px;background:#182326;border:1px solid #3e555a;border-radius:7px}.photo-location-options{display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:6px;margin:8px 0}.photo-location-options label{display:flex;align-items:center;gap:6px}.photo-location-options input{width:auto!important;margin:0!important}@media(max-width:750px){.location-view{padding:12px}.location-groups{grid-template-columns:1fr}.location-previews{grid-template-columns:repeat(4,1fr)}}</style>''',
@@ -879,6 +882,7 @@ class GalleryHandler(BaseHTTPRequestHandler):
                 year = query.get("year", [""])[0]
                 album = query.get("album_id", [""])[0]
                 location = query.get("location_id", [""])[0]
+                suggested_date = query.get("suggested_album_date", [""])[0]
                 self._json(catalog.gallery_photos(
                     query.get("q", [""])[0], int(identity) if identity else None,
                     int(year) if year else None, int(query.get("limit", ["100"])[0]),
@@ -888,6 +892,7 @@ class GalleryHandler(BaseHTTPRequestHandler):
                     unknown_group_ids=unknown_groups,
                     album_id=int(album) if album else None,
                     location_id=int(location) if location else None,
+                    suggested_album_date=suggested_date or None,
                 ))
             elif parsed.path == "/api/photo":
                 photo = catalog.gallery_photo(int(query["id"][0]))

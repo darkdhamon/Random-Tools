@@ -394,6 +394,7 @@ class FaceCatalog:
         unknown_group_ids: tuple[int, ...] = (),
         album_id: int | None = None,
         location_id: int | None = None,
+        suggested_album_date: str | None = None,
     ) -> list[dict[str, object]]:
         clauses = ["images.missing_since IS NULL"]
         values: list[object] = []
@@ -420,6 +421,16 @@ class FaceCatalog:
                 values.extend(matching_ids)
             else:
                 clauses.append("0")
+        if suggested_album_date:
+            try:
+                datetime.strptime(suggested_album_date, "%Y-%m-%d")
+            except ValueError as exc:
+                raise ValueError("Suggested album date must use YYYY-MM-DD.") from exc
+            clauses.append("substr(images.capture_date, 1, 10) = ?")
+            clauses.append(
+                "NOT EXISTS (SELECT 1 FROM album_photos WHERE album_photos.image_id = images.id)"
+            )
+            values.append(suggested_album_date)
         selected_unknown_groups = tuple(dict.fromkeys(
             (*unknown_group_ids, *((unknown_group_id,) if unknown_group_id is not None else ()))
         ))
