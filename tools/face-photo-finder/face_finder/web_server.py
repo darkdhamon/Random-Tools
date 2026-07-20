@@ -375,10 +375,13 @@ function removeDeletedCard(id) {
 )
 PAGE = PAGE.replace(
     "let current=null,identities=[],offset=0,saveTimer=null;",
-    "let current=null,identities=[],offset=0,saveTimer=null,loading=false,hasMore=true,reloadAfterLoad=false;",
+    "let current=null,identities=[],offset=0,saveTimer=null,loading=false,hasMore=true,reloadAfterLoad=false,filterGeneration=0;",
 ).replace(
     "async function load(reset=true){if(reset){offset=0;timeline.innerHTML=''}",
-    "async function load(reset=true){if(loading){if(reset)reloadAfterLoad=true;return}if(!reset&&!hasMore)return;loading=true;try{if(reset){offset=0;hasMore=true;timeline.innerHTML=''}",
+    "async function load(reset=true){if(loading){if(reset)reloadAfterLoad=true;return}if(!reset&&!hasMore)return;loading=true;const requestedGeneration=filterGeneration;try{if(reset){offset=0;hasMore=true;timeline.innerHTML=''}",
+).replace(
+    "let a=await api('/api/photos?'+p);offset+=a.length;",
+    "let a=await api('/api/photos?'+p);if(requestedGeneration!==filterGeneration){reloadAfterLoad=true;return}offset+=a.length;",
 ).replace(
     "yearGrid(x.year).append(c)}}function updateMap()",
     "yearGrid(x.year).append(c)}hasMore=a.length===100}finally{loading=false;if(reloadAfterLoad){reloadAfterLoad=false;load(true)}}}function updateMap()",
@@ -805,11 +808,14 @@ PAGE = PAGE.replace(
     "album_id:albumFilter.value,location_id:locationFilter,suggested_album_date:suggestionDateFilter,limit:100,offset",
 ).replace(
     "</style>",
-    r'''.location-view{display:none;padding:22px;max-width:1500px;margin:auto}.location-toolbar{display:flex;align-items:center;gap:12px}.geofence-form{display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:10px;align-items:end;background:#192326;border:1px solid #3d5960;border-radius:9px;padding:14px;margin-bottom:18px}.geofence-form h2{grid-column:1/-1;margin:0}.geofence-form label{display:flex;flex-direction:column;gap:4px}.boundary-editor{display:none;grid-column:1/-1}.boundary-map-controls{display:flex;align-items:end;gap:8px;flex-wrap:wrap;margin-bottom:8px}.boundary-map-controls label{max-width:180px}.boundary-editor svg{display:block;width:100%;max-height:52vh;background-color:#173039;background-image:linear-gradient(#ffffff18 1px,transparent 1px),linear-gradient(90deg,#ffffff18 1px,transparent 1px);background-size:10% 20%;border:1px solid #5a7c83;border-radius:8px;cursor:crosshair}.boundary-editor polyline,.boundary-editor polygon{fill:#32c8dd33;stroke:#4be2f2;stroke-width:3}.boundary-editor circle{fill:#ffdc69;stroke:#202020;stroke-width:2}.boundary-editor textarea{width:100%;box-sizing:border-box}.location-groups{display:grid;grid-template-columns:repeat(auto-fit,minmax(340px,1fr));gap:14px}.location-card{background:#1c2224;border:1px solid #3d555a;border-radius:9px;padding:12px}.location-card h2{margin:0 0 4px}.location-previews{display:grid;grid-template-columns:repeat(6,1fr);gap:4px;margin:9px 0}.location-previews img{width:100%;aspect-ratio:1;object-fit:cover;border-radius:4px}.photo-locations{margin:8px 0 16px;padding:10px;background:#182326;border:1px solid #3e555a;border-radius:7px}.photo-location-options{display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:6px;margin:8px 0}.photo-location-options label{display:flex;align-items:center;gap:6px}.photo-location-options input{width:auto!important;margin:0!important}@media(max-width:750px){.location-view{padding:12px}.location-groups{grid-template-columns:1fr}.location-previews{grid-template-columns:repeat(4,1fr)}}</style>''',
+    r'''.location-view{display:none;padding:22px;max-width:1500px;margin:auto}.location-toolbar{display:flex;align-items:center;gap:12px}.geofence-form{display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:10px;align-items:end;background:#192326;border:1px solid #3d5960;border-radius:9px;padding:14px;margin-bottom:18px}.geofence-form h2{grid-column:1/-1;margin:0}.geofence-form label{display:flex;flex-direction:column;gap:4px}.boundary-editor{display:none;grid-column:1/-1}.boundary-map-controls{display:flex;align-items:end;gap:8px;flex-wrap:wrap;margin-bottom:8px}.boundary-map-controls label{max-width:180px}.boundary-editor svg{display:block;width:100%;max-height:52vh;background-color:#173039;background-image:linear-gradient(#ffffff18 1px,transparent 1px),linear-gradient(90deg,#ffffff18 1px,transparent 1px);background-size:10% 20%;border:1px solid #5a7c83;border-radius:8px;cursor:crosshair}.boundary-editor polyline,.boundary-editor polygon{fill:#32c8dd33;stroke:#4be2f2;stroke-width:3}.boundary-editor circle{fill:#ffdc69;stroke:#202020;stroke-width:2}.boundary-editor textarea{width:100%;box-sizing:border-box}.location-groups{display:grid;grid-template-columns:repeat(auto-fit,minmax(340px,1fr));gap:14px}.location-card{background:#1c2224;border:1px solid #3d555a;border-radius:9px;padding:12px}.location-card h2{margin:0 0 4px}.location-previews{display:grid;grid-template-columns:repeat(6,1fr);gap:4px;margin:9px 0}.location-previews img{width:100%;aspect-ratio:1;object-fit:cover;border-radius:4px}.timeline-location-scope{display:none;margin:10px 18px 0;padding:9px 12px;background:#18363c;border:1px solid #4b8993;border-radius:7px;align-items:center;gap:10px}.photo-locations{margin:8px 0 16px;padding:10px;background:#182326;border:1px solid #3e555a;border-radius:7px}.photo-location-options{display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:6px;margin:8px 0}.photo-location-options label{display:flex;align-items:center;gap:6px}.photo-location-options input{width:auto!important;margin:0!important}@media(max-width:750px){.location-view{padding:12px}.location-groups{grid-template-columns:1fr}.location-previews{grid-template-columns:repeat(4,1fr)}}</style>''',
 ).replace(
     "</body>",
     r'''<script>
 let managedLocations=[], locationFilter='', drawnBoundaryPoints=[];
+const timelineLocationScope=document.createElement('section');timelineLocationScope.className='timeline-location-scope';timelineHeader.insertAdjacentElement('afterend',timelineLocationScope);
+function updateTimelineLocationScope(){const location=managedLocations.find(item=>String(item.id)===locationFilter);timelineLocationScope.style.display=locationFilter?'flex':'none';timelineLocationScope.innerHTML=locationFilter?`<strong>Location: ${esc(location?.path||'Selected location')}</strong><button onclick="clearLocationTimelineFilter()">Show all locations</button>`:''}
+function clearLocationTimelineFilter(){locationFilter='';filterGeneration++;updateTimelineLocationScope();load(true)}
 function boundaryMapBounds() {
   const centerLat=Number(geofenceLatitude.value)||0,centerLon=Number(geofenceLongitude.value)||0,spanKm=Math.max(.1,Number(geofenceMapSpan.value)||10);
   const latSpan=spanKm/111,lonSpan=spanKm/(111*Math.max(.15,Math.cos(centerLat*Math.PI/180)));
@@ -862,7 +868,7 @@ async function createGeofence() {
     geofenceName.value='';drawnBoundaryPoints=[];legalBoundaryGeojson.value='';await loadLocationGroups();updateBoundaryEditor();locationStatus.textContent='Geofence created';
   } catch(error) { locationStatus.textContent='Create failed: '+error.message; }
 }
-function viewLocationTimeline(id) { locationFilter=String(id); person.value=''; albumFilter.value=''; showAppTab('timeline',true); load(true); }
+function viewLocationTimeline(id) { locationFilter=String(id); filterGeneration++; person.value=''; albumFilter.value=''; updateTimelineLocationScope(); showAppTab('timeline',true); load(true); }
 function renderPhotoLocations() {
   let box=document.getElementById('photoLocations');
   if(!box){box=document.createElement('section');box.id='photoLocations';box.className='photo-locations';photoAlbums.insertAdjacentElement('afterend',box)}
@@ -965,7 +971,7 @@ window.addEventListener('resize',()=>requestAnimationFrame(renderBoundaryMap));
 const renderBoundaryOverlay=renderBoundaryMap;
 renderBoundaryMap=function(){renderMapTiles();renderBoundaryOverlay()};
 const showAppTabWithoutDeviceLocation=showAppTab;
-showAppTab=function(tabName,preservePersonFilter=false){showAppTabWithoutDeviceLocation(tabName,preservePersonFilter);if(tabName==='locations')useDeviceLocation(false)};
+showAppTab=function(tabName,preservePersonFilter=false){showAppTabWithoutDeviceLocation(tabName,preservePersonFilter);updateTimelineLocationScope();if(tabName==='locations')useDeviceLocation(false)};
 requestAnimationFrame(renderBoundaryMap);
 </script></body>''',
 )
