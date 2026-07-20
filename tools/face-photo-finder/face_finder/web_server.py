@@ -22,6 +22,29 @@ PICTURES_ROOT = Path(os.environ.get("OneDrive", Path.home() / "OneDrive")) / "Pi
 GENERAL_ARCHIVE = PICTURES_ROOT / "Hidden Pictures" / "GeneralArchive.zip"
 
 
+def archive_path_for_name(value: object = None) -> Path:
+    """Resolve a user-selected archive name without allowing paths outside Hidden Pictures."""
+    name = str(value or "").strip() or GENERAL_ARCHIVE.name
+    if Path(name).name != name or any(character in name for character in '<>:"/\\|?*'):
+        raise ValueError("Archive names cannot contain a folder path or reserved characters.")
+    candidate = Path(name)
+    if not candidate.suffix:
+        candidate = candidate.with_suffix(".zip")
+    if candidate.suffix.lower() not in {".zip", ".hide"} or not candidate.stem.strip(". "):
+        raise ValueError("Archive names must end in .zip or .hide.")
+    return GENERAL_ARCHIVE.parent / candidate.name
+
+
+def available_archives() -> list[str]:
+    names = {GENERAL_ARCHIVE.name}
+    if GENERAL_ARCHIVE.parent.is_dir():
+        names.update(
+            path.name for path in GENERAL_ARCHIVE.parent.iterdir()
+            if path.is_file() and path.suffix.lower() in {".zip", ".hide"}
+        )
+    return [GENERAL_ARCHIVE.name, *sorted(names - {GENERAL_ARCHIVE.name}, key=str.casefold)]
+
+
 PAGE = r'''<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width">
 <title>Face Photo Finder Gallery</title><style>
 :root{color-scheme:dark;background:#111;color:#eee;font:15px system-ui}body{margin:0}header{position:sticky;top:0;z-index:2;background:#181818;padding:12px;display:flex;flex-wrap:wrap;gap:10px;align-items:center;box-shadow:0 2px 8px #000}input,select,textarea,button{background:#292929;color:#eee;border:1px solid #555;border-radius:6px;padding:8px}button{cursor:pointer}.timeline{position:relative;padding:18px 18px 18px 86px}.timeline:before{content:'';position:absolute;left:48px;top:0;bottom:0;width:3px;background:#3a6f78}.year-group{position:relative;margin-bottom:30px}.year-group h2{position:sticky;top:68px;z-index:1;margin:0 0 12px -72px;width:58px;text-align:center;background:#164d57;border:2px solid #59d7e6;border-radius:18px;padding:6px;font-size:16px}.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(210px,1fr));gap:12px}.card{background:#202020;border-radius:9px;overflow:hidden;cursor:pointer;box-shadow:0 3px 12px #0008}.card img{width:100%;height:180px;object-fit:cover}.info{padding:9px}.muted{color:#aaa;font-size:12px}.stars{color:#ffd65a}.modal{position:fixed;inset:0;background:#000d;display:none;z-index:5;padding:3vh}.panel{max-width:1100px;height:94vh;margin:auto;background:#202020;border-radius:10px;display:grid;grid-template-columns:2fr 1fr;overflow:hidden}.viewer{background:#090909;display:flex;align-items:center;justify-content:center}.viewer img{max-width:100%;max-height:94vh}.editor{padding:16px;overflow:auto}.editor input,.editor textarea,.editor select{width:100%;box-sizing:border-box;margin:5px 0 12px}.faces div{padding:7px;background:#292929;margin:5px 0;border-radius:5px}.close{float:right}.save-state{min-height:20px;color:#69dfbd;margin:8px 0}.map{position:relative;height:150px;border:1px solid #49656b;border-radius:8px;margin:6px 0 8px;overflow:hidden;background-color:#18323a;background-image:linear-gradient(#ffffff14 1px,transparent 1px),linear-gradient(90deg,#ffffff14 1px,transparent 1px);background-size:25% 50%}.map:after{content:'Offline world map';position:absolute;right:7px;bottom:5px;color:#9eb7bc;font-size:11px}.pin{display:none;position:absolute;width:14px;height:14px;background:#ff4e67;border:3px solid white;border-radius:50% 50% 50% 0;transform:translate(-50%,-100%) rotate(-45deg);box-shadow:0 2px 6px #000}.location-row{display:grid;grid-template-columns:1fr 1fr;gap:8px}.map-link{display:none;color:#72ddea}@media(max-width:750px){.panel{grid-template-columns:1fr}.viewer{height:48vh}.viewer img{max-height:48vh}.timeline{padding-left:58px}.timeline:before{left:28px}.year-group h2{margin-left:-50px}}
@@ -154,7 +177,7 @@ PAGE = PAGE.replace(
 )
 PAGE = PAGE.replace(
     "</style>",
-    r'''.card{position:relative}.select-box{display:none;position:absolute;z-index:1;top:9px;left:9px;width:34px;height:34px;border-radius:50%;background:#171717dd;border:2px solid #ddd;font-size:20px;line-height:1}.selection-mode .select-box{display:block}.card.selected{outline:4px solid #5de0ee;outline-offset:-4px}.card.selected .select-box{display:block;background:#168594;border-color:#baf8ff}.bulk-bar{display:none;position:fixed;z-index:12;left:50%;bottom:18px;transform:translateX(-50%);align-items:center;gap:9px;background:#152a2e;border:1px solid #55c9d6;border-radius:10px;padding:10px 14px;box-shadow:0 8px 30px #000}.selection-mode .bulk-bar{display:flex}.archive-button{background:#17627a;border-color:#56bad5;font-weight:700}</style>''',
+    r'''.card{position:relative}.select-box{display:none;position:absolute;z-index:1;top:9px;left:9px;width:34px;height:34px;border-radius:50%;background:#171717dd;border:2px solid #ddd;font-size:20px;line-height:1}.selection-mode .select-box{display:block}.card.selected{outline:4px solid #5de0ee;outline-offset:-4px}.card.selected .select-box{display:block;background:#168594;border-color:#baf8ff}.bulk-bar{display:none;position:fixed;z-index:12;left:50%;bottom:18px;transform:translateX(-50%);align-items:center;gap:9px;background:#152a2e;border:1px solid #55c9d6;border-radius:10px;padding:10px 14px;box-shadow:0 8px 30px #000}.selection-mode .bulk-bar{display:flex}.archive-button{background:#17627a;border-color:#56bad5;font-weight:700}.archive-options{display:none;background:#162529;padding:12px;border-radius:7px}.archive-options label{display:block;margin:8px 0}.archive-options select,.archive-options input{display:block;width:100%;box-sizing:border-box;margin-top:5px}</style>''',
 ).replace(
     "c.onclick=()=>openPhoto(x.id);",
     "attachSelection(c,x);",
@@ -163,7 +186,7 @@ PAGE = PAGE.replace(
     r'''<button id=selectModeButton onclick=toggleSelectionMode()>Select photos</button></header>''',
 ).replace(
     "</body>",
-    r'''<div id=bulkBar class=bulk-bar><strong id=selectedCount>0 selected</strong><button class=archive-button onclick="requestBulkAction('archive')">Archive selected</button><button class=danger-button onclick="requestBulkAction('delete')">Delete selected</button><button onclick=clearSelection()>Done</button></div><div id=bulkDialog class=danger-dialog role=dialog aria-modal=true aria-labelledby=bulkTitle><div class=danger-box><h2 id=bulkTitle></h2><p id=bulkMessage></p><div id=bulkError class=save-state></div><div class=danger-actions><button onclick=cancelBulkAction()>Cancel</button><button id=bulkConfirmButton onclick=executeBulkAction()></button></div></div></div><script>
+    r'''<div id=bulkBar class=bulk-bar><strong id=selectedCount>0 selected</strong><button class=archive-button onclick="requestBulkAction('archive')">Archive selected</button><button class=danger-button onclick="requestBulkAction('delete')">Delete selected</button><button onclick=clearSelection()>Done</button></div><div id=bulkDialog class=danger-dialog role=dialog aria-modal=true aria-labelledby=bulkTitle><div class=danger-box><h2 id=bulkTitle></h2><p id=bulkMessage></p><div id=archiveOptions class=archive-options><label>Existing archive<select id=archiveExisting></select></label><label>Or create a new archive<input id=archiveNew placeholder="Example: Vacation.zip"></label><div class=muted>Leave the new name blank to use the selected existing archive. The default is GeneralArchive.zip.</div></div><div id=bulkError class=save-state></div><div class=danger-actions><button onclick=cancelBulkAction()>Cancel</button><button id=bulkConfirmButton onclick=executeBulkAction()></button></div></div></div><script>
 const selectedPhotos = new Map();
 let selectionMode = false;
 let pendingBulkAction = null;
@@ -202,20 +225,25 @@ function clearSelection() {
   selectModeButton.textContent = 'Select photos';
   updateSelectedCount();
 }
-function requestBulkAction(action) {
+async function requestBulkAction(action) {
   if (!selectedPhotos.size) return;
   pendingBulkAction = action;
   const count = selectedPhotos.size;
   bulkError.textContent = '';
   bulkConfirmButton.disabled = false;
   if (action === 'delete') {
+    archiveOptions.style.display = 'none';
     bulkTitle.textContent = `Danger: permanently delete ${count} photo${count === 1 ? '' : 's'}?`;
     bulkMessage.innerHTML = '<strong>This action cannot be undone.</strong> The selected source files and their catalog records will be permanently removed.';
     bulkConfirmButton.textContent = 'Delete permanently';
     bulkConfirmButton.className = 'danger-button';
   } else {
+    archiveOptions.style.display = 'block';
+    archiveNew.value = '';
+    const archives = await api('/api/archives');
+    archiveExisting.innerHTML = archives.map(name => `<option value="${esc(name)}">${esc(name)}</option>`).join('');
     bulkTitle.textContent = `Archive ${count} photo${count === 1 ? '' : 's'}?`;
-    bulkMessage.textContent = 'The selected originals will be moved into Hidden Pictures\\GeneralArchive.zip and removed from the active catalog.';
+    bulkMessage.textContent = 'Choose an existing archive or enter a new archive name. If no destination is designated, GeneralArchive.zip is used.';
     bulkConfirmButton.textContent = 'Move to archive';
     bulkConfirmButton.className = 'archive-button';
   }
@@ -230,7 +258,9 @@ async function executeBulkAction() {
   bulkConfirmButton.disabled = true;
   bulkError.textContent = action === 'archive' ? 'Archiving...' : 'Deleting...';
   try {
-    await post(action === 'archive' ? '/api/archive-photos' : '/api/delete-photos', {ids});
+    const payload = {ids};
+    if (action === 'archive') payload.archive_name = archiveNew.value.trim() || archiveExisting.value || 'GeneralArchive.zip';
+    await post(action === 'archive' ? '/api/archive-photos' : '/api/delete-photos', payload);
     ids.forEach(removeDeletedCard);
     bulkDialog.classList.remove('open');
     pendingBulkAction = null;
@@ -289,6 +319,8 @@ class GalleryHandler(BaseHTTPRequestHandler):
                 self._json(photo if photo else {"error": "not found"}, 200 if photo else 404)
             elif parsed.path == "/api/identities":
                 self._json([{"id": x.identity_id, "name": x.name, "birth_year": x.birth_year} for x in catalog.identities()])
+            elif parsed.path == "/api/archives":
+                self._json(available_archives())
             elif parsed.path == "/media":
                 path = catalog.image_path(int(query["id"][0]))
                 if path is None: self.send_error(404); return
@@ -341,10 +373,12 @@ class GalleryHandler(BaseHTTPRequestHandler):
                 catalog = self._catalog()
                 try:
                     archived = catalog.archive_photos(
-                        [int(value) for value in body["ids"]], GENERAL_ARCHIVE, PICTURES_ROOT
+                        [int(value) for value in body["ids"]],
+                        archive_path_for_name(body.get("archive_name")), PICTURES_ROOT
                     )
                 finally: catalog.close()
-                self._json({"ok": True, "archived": len(archived), "archive": str(GENERAL_ARCHIVE)})
+                destination = archive_path_for_name(body.get("archive_name"))
+                self._json({"ok": True, "archived": len(archived), "archive": str(destination)})
             elif self.path == "/api/scan":
                 subprocess.run(["schtasks", "/Run", "/TN", "Face Photo Finder Background Catalog"], check=True, creationflags=subprocess.CREATE_NO_WINDOW)
                 self._json({"ok": True, "message": "Background catalog scan started."})

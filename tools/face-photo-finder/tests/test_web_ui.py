@@ -1,6 +1,6 @@
 import unittest
 
-from face_finder.web_server import PAGE
+from face_finder.web_server import PAGE, GENERAL_ARCHIVE, archive_path_for_name
 
 
 class WebGalleryUiTests(unittest.TestCase):
@@ -36,9 +36,22 @@ class WebGalleryUiTests(unittest.TestCase):
         self.assertIn("Delete selected", PAGE)
         self.assertIn("const selectedPhotos = new Map()", PAGE)
         self.assertIn("'/api/archive-photos' : '/api/delete-photos'", PAGE)
-        self.assertIn("Hidden Pictures\\\\GeneralArchive.zip", PAGE)
+        self.assertIn("Existing archive", PAGE)
+        self.assertIn("Or create a new archive", PAGE)
+        self.assertIn("payload.archive_name", PAGE)
         self.assertNotIn("current = null;\n    await load();", PAGE)
         self.assertNotIn('>Save metadata</button>', PAGE)
+
+    def test_archive_destination_defaults_and_rejects_paths(self) -> None:
+        self.assertEqual(archive_path_for_name(), GENERAL_ARCHIVE)
+        self.assertEqual(archive_path_for_name("Trips"), GENERAL_ARCHIVE.parent / "Trips.zip")
+        self.assertEqual(
+            archive_path_for_name("Existing.hide"), GENERAL_ARCHIVE.parent / "Existing.hide"
+        )
+        with self.assertRaises(ValueError):
+            archive_path_for_name("../outside.zip")
+        with self.assertRaises(ValueError):
+            archive_path_for_name("bad.exe")
 
 
 if __name__ == "__main__":
