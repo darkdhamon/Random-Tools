@@ -828,7 +828,7 @@ PAGE = PAGE.replace(
     '<section id=locationView class=location-view><div class=location-toolbar><h1>Photo locations</h1><button onclick=loadLocationOverview()>Refresh</button></div><div id=locationOverviewMapFrame class=location-overview-map><div id=locationOverviewTiles class=geofence-tiles aria-hidden=true></div><svg id=locationOverviewMarkers viewBox="0 0 1200 650" preserveAspectRatio="none" role=img aria-label="Map of all geotagged photos"></svg><div class=map-attribution>Tiles: OpenStreetMap contributors</div></div><div id=locationOverviewStatus class=identity-status></div></section><section id=settingsView class=location-view><div class=location-toolbar><h1>Location settings</h1></div><div class=geofence-form>',
 ).replace(
     '<div id=locationOverviewStatus class=identity-status></div></section>',
-    '<div id=locationOverviewStatus class=identity-status></div><aside id=locationPhotoPanel class=location-photo-panel aria-label="Photos at selected map location"><button class=close onclick=closeLocationPhotoPanel()>Close</button><div id=locationPhotoPanelContent></div></aside><div id=locationLegalGroups class=location-groups></div></section>',
+    '<div id=locationOverviewStatus class=identity-status></div><aside id=locationPhotoPanel class=location-photo-panel aria-label="Photos at selected map location"><button class=close onclick=closeLocationPhotoPanel()>Close</button><div id=locationPhotoPanelContent></div></aside><div id=locationCustomGroups class=location-groups></div><div id=locationLegalGroups class=location-groups></div></section>',
 ).replace(
     '<div class=geofence-form><h2>Create a geofence</h2>',
     '<div class=geofence-form><h2 id=geofenceFormTitle>Create a geofence</h2>',
@@ -883,7 +883,7 @@ function undoBoundaryPoint(){drawnBoundaryPoints.pop();renderBoundaryMap()}
 function clearBoundaryPoints(){drawnBoundaryPoints=[];renderBoundaryMap()}
 function previewLegalBoundary(){try{const geometry=legalBoundaryGeometry(),coordinates=geometry.type==='MultiPolygon'?geometry.coordinates.flat(2):geometry.coordinates.flat(1);if(coordinates.length){geofenceLongitude.value=coordinates.reduce((sum,p)=>sum+p[0],0)/coordinates.length;geofenceLatitude.value=coordinates.reduce((sum,p)=>sum+p[1],0)/coordinates.length}boundaryHelp.textContent='Legal boundary loaded.'}catch{boundaryHelp.textContent='Paste valid Polygon or MultiPolygon GeoJSON.'}renderBoundaryMap()}
 function locationPreviewStrip(item,limit=4){return `<div class="location-previews">${item.preview_photo_ids.slice(0,limit).map(id=>`<img loading="lazy" src="/media?id=${id}&thumb=1" alt="">`).join('')}</div>`}
-function customLocationCard(item){return `<article class="location-card"><h2>${esc(item.name)}</h2><div class="muted">${esc(item.path)} · ${item.boundary_type==='radius'?(item.radius_meters/1000).toLocaleString()+' km radius':item.boundary_type+' boundary'} · ${item.photo_count} photos</div>${locationPreviewStrip(item,12)}<button onclick="viewLocationTimeline(${item.id})">View photos</button><button onclick="editGeofence(${item.id})">Edit boundary</button></article>`}
+function customLocationCard(item,editable=false){return `<article class="location-card"><h2>${esc(item.name)}</h2><div class="muted">${esc(item.path)} · ${item.boundary_type==='radius'?(item.radius_meters/1000).toLocaleString()+' km radius':item.boundary_type+' boundary'} · ${item.photo_count} photos</div>${locationPreviewStrip(item,12)}<button onclick="viewLocationTimeline(${item.id})">View photos</button>${editable?`<button onclick="editGeofence(${item.id})">Edit boundary</button>`:''}</article>`}
 function legalLocationNode(item,childrenByParent,depth=0){
   const children=(childrenByParent.get(item.id)||[]).sort((left,right)=>{const rank={country:0,state:1,province:1,county:2,city:3};return (rank[left.admin_level]??4)-(rank[right.admin_level]??4)||left.name.localeCompare(right.name)}),label=item.admin_level==='country'?'Nation':item.admin_level==='state'||item.admin_level==='province'?'State/region':item.admin_level==='county'?'County':'City';
   const photoLabel=`${item.photo_count} photo${item.photo_count===1?'':'s'}`;
@@ -892,7 +892,8 @@ function legalLocationNode(item,childrenByParent,depth=0){
 }
 function renderCustomGeofences(){
   const custom=managedLocations.filter(item=>!item.read_only).sort((a,b)=>a.path.localeCompare(b.path));
-  locationGroups.innerHTML=`<section class="location-section"><h2>Custom geofences</h2><div class="custom-location-grid">${custom.length?custom.map(customLocationCard).join(''):'<p>No custom geofences yet.</p>'}</div></section>`;
+  locationGroups.innerHTML=`<section class="location-section"><h2>Custom geofences</h2><div class="custom-location-grid">${custom.length?custom.map(item=>customLocationCard(item,true)).join(''):'<p>No custom geofences yet.</p>'}</div></section>`;
+  locationCustomGroups.innerHTML=`<section class="location-section"><h2>Custom geofences</h2><div class="custom-location-grid">${custom.length?custom.map(item=>customLocationCard(item)).join(''):'<p>No custom geofences yet.</p>'}</div></section>`;
 }
 function renderLegalLocationSections(){
   const legalWithPhotos=managedLocations.filter(item=>item.read_only&&item.photo_count>0),visibleIds=new Set(legalWithPhotos.map(item=>item.id)),byId=new Map(managedLocations.filter(item=>item.read_only).map(item=>[item.id,item]));
@@ -1008,7 +1009,7 @@ function renderLocationOverview(){
 }
 async function loadLocationOverview(){
   locationOverviewStatus.textContent='Loading photo locations…';
-  try{[locationOverviewPoints,managedLocations]=await Promise.all([api('/api/location-points'),api('/api/locations')]);renderLocationOverview();renderLegalLocationSections()}catch(error){locationOverviewStatus.textContent='Map failed: '+error.message}
+  try{[locationOverviewPoints,managedLocations]=await Promise.all([api('/api/location-points'),api('/api/locations')]);renderLocationOverview();renderCustomGeofences();renderLegalLocationSections()}catch(error){locationOverviewStatus.textContent='Map failed: '+error.message}
 }
 function mapTileUrl(layer,z,x,y){
   if(layer==='road')return `https://tile.openstreetmap.org/${z}/${x}/${y}.png`;
