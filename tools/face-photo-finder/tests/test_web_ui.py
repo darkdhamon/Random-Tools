@@ -19,6 +19,9 @@ class WebGalleryUiTests(unittest.TestCase):
         self.assertIn('Danger: permanently delete photo?', PAGE)
         self.assertIn('This action cannot be undone.', PAGE)
         self.assertIn("post('/api/delete-photo'", PAGE)
+        self.assertIn("new IntersectionObserver", PAGE)
+        self.assertIn("rootMargin:'600px 0px'", PAGE)
+        self.assertIn("if(loading){if(reset)reloadAfterLoad=true;return}", PAGE)
         self.assertNotIn('>Save metadata</button>', PAGE)
 
 

@@ -105,6 +105,19 @@ async function confirmDelete() {
 }
 </script></body>''',
 )
+PAGE = PAGE.replace(
+    "let current=null,identities=[],offset=0,saveTimer=null;",
+    "let current=null,identities=[],offset=0,saveTimer=null,loading=false,hasMore=true,reloadAfterLoad=false;",
+).replace(
+    "async function load(reset=true){if(reset){offset=0;timeline.innerHTML=''}",
+    "async function load(reset=true){if(loading){if(reset)reloadAfterLoad=true;return}if(!reset&&!hasMore)return;loading=true;try{if(reset){offset=0;hasMore=true;timeline.innerHTML=''}",
+).replace(
+    "yearGrid(x.year).append(c)}}function updateMap()",
+    "yearGrid(x.year).append(c)}hasMore=a.length===100}finally{loading=false;if(reloadAfterLoad){reloadAfterLoad=false;load(true)}}}function updateMap()",
+).replace(
+    "people().then(load);</script>",
+    "const infiniteObserver=new IntersectionObserver(entries=>{if(entries.some(entry=>entry.isIntersecting))load(false)},{rootMargin:'600px 0px'});infiniteObserver.observe(more);people().then(load);</script>",
+)
 
 
 class GalleryHandler(BaseHTTPRequestHandler):
