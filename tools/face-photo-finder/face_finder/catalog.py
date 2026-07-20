@@ -673,6 +673,7 @@ class FaceCatalog:
         ).fetchall()
         result: list[dict[str, object]] = []
         for row in rows:
+            album_id = int(row[0])
             previews = [
                 int(preview[0])
                 for preview in self.connection.execute(
@@ -680,13 +681,33 @@ class FaceCatalog:
                        JOIN images ON images.id = album_photos.image_id
                        WHERE album_photos.album_id = ? AND images.missing_since IS NULL
                        ORDER BY images.capture_date DESC, images.id DESC LIMIT 8""",
-                    (int(row[0]),),
+                    (album_id,),
+                )
+            ]
+            people = [
+                {"id": int(person[0]), "name": person[1], "photo_count": int(person[2])}
+                for person in self.connection.execute(
+                    """SELECT identities.id, identities.name, COUNT(DISTINCT tagged.image_id)
+                       FROM identities
+                       JOIN (
+                           SELECT faces.identity_id, faces.image_id
+                           FROM faces JOIN album_photos ON album_photos.image_id = faces.image_id
+                           WHERE album_photos.album_id = ? AND faces.identity_id IS NOT NULL
+                           UNION
+                           SELECT tags.identity_id, tags.image_id
+                           FROM photo_identity_tags tags
+                           JOIN album_photos ON album_photos.image_id = tags.image_id
+                           WHERE album_photos.album_id = ?
+                       ) tagged ON tagged.identity_id = identities.id
+                       GROUP BY identities.id
+                       ORDER BY COUNT(DISTINCT tagged.image_id) DESC, identities.name COLLATE NOCASE""",
+                    (album_id, album_id),
                 )
             ]
             result.append({
-                "id": int(row[0]), "name": row[1], "photo_count": int(row[2]),
+                "id": album_id, "name": row[1], "photo_count": int(row[2]),
                 "capture_start": row[3], "capture_end": row[4],
-                "preview_photo_ids": previews,
+                "preview_photo_ids": previews, "people": people,
             })
         return result
 
