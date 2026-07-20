@@ -298,6 +298,42 @@ class CatalogTests(unittest.TestCase):
             self.assertEqual(identified.identity_name, "Later Identified")
             catalog.close()
 
+    def test_unknown_group_can_be_retroactively_assigned_to_identity(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            first_image = root / "first.jpg"
+            second_image = root / "second.jpg"
+            first_image.write_bytes(b"first image")
+            second_image.write_bytes(b"second image")
+            catalog = FaceCatalog(root / "catalog.sqlite3")
+            group_id = catalog.create_unknown_group()
+            first = catalog.store_scan(
+                first_image,
+                [np.array([1.0, 0.0], dtype=np.float32)],
+                [None],
+                intentionally_unknown=[True],
+                unknown_group_ids=[group_id],
+            )
+            second = catalog.store_scan(
+                second_image,
+                [np.array([0.98, 0.02], dtype=np.float32)],
+                [None],
+                intentionally_unknown=[True],
+                unknown_group_ids=[group_id],
+            )
+            self.assertEqual(catalog.unknown_group_face_count(group_id), 2)
+
+            identity_id = catalog.get_or_create_identity("Now Known")
+            self.assertEqual(catalog.assign_unknown_group(group_id, identity_id), (2, 2))
+            for stored in (first, second):
+                face = catalog.faces_for_image(stored.image_id)[0]
+                self.assertEqual(face.identity_name, "Now Known")
+                self.assertFalse(face.intentionally_unknown)
+                self.assertIsNone(face.unknown_group_id)
+                self.assertEqual(catalog.cached_image(stored.path).identified_count, 1)  # type: ignore[union-attr]
+            self.assertNotIn(group_id, [group.group_id for group in catalog.unknown_groups()])
+            catalog.close()
+
     def test_best_known_identity_applies_threshold(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             catalog = FaceCatalog(Path(temporary) / "catalog.sqlite3")

@@ -257,6 +257,38 @@ class FaceCatalog:
         self.connection.commit()
         return int(cursor.lastrowid)
 
+    def unknown_group_face_count(self, group_id: int) -> int:
+        row = self.connection.execute(
+            "SELECT COUNT(*) FROM faces WHERE unknown_group_id = ?", (group_id,)
+        ).fetchone()
+        return int(row[0])
+
+    def assign_unknown_group(self, group_id: int, identity_id: int) -> tuple[int, int]:
+        """Retroactively attach every face in an anonymous group to a named identity."""
+        image_rows = self.connection.execute(
+            "SELECT DISTINCT image_id FROM faces WHERE unknown_group_id = ?", (group_id,)
+        ).fetchall()
+        image_ids = [int(row[0]) for row in image_rows]
+        with self.connection:
+            cursor = self.connection.execute(
+                """UPDATE faces SET identity_id = ?, intentionally_unknown = 0,
+                          unknown_group_id = NULL WHERE unknown_group_id = ?""",
+                (identity_id, group_id),
+            )
+            for image_id in image_ids:
+                self.connection.execute(
+                    """UPDATE images SET identified_count =
+                       (SELECT COUNT(*) FROM faces WHERE faces.image_id = images.id
+                        AND identity_id IS NOT NULL) WHERE id = ?""",
+                    (image_id,),
+                )
+            self.connection.execute(
+                """DELETE FROM unknown_groups WHERE id = ?
+                   AND NOT EXISTS (SELECT 1 FROM faces WHERE unknown_group_id = ?)""",
+                (group_id, group_id),
+            )
+        return int(cursor.rowcount), len(image_ids)
+
     def get_or_create_identity(self, name: str) -> int:
         clean_name = " ".join(name.split())
         if not clean_name:
