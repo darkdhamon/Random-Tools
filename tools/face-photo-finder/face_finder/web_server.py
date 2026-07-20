@@ -533,6 +533,9 @@ PAGE = PAGE.replace(
     "</style>",
     r'''.location-section{grid-column:1/-1;margin-top:8px}.location-section>h2{margin:8px 0 12px}.custom-location-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(340px,1fr));gap:14px}.legal-location-tree{display:flex;flex-direction:column;gap:9px}.legal-location-node,.legal-location-leaf{background:#1a2224;border:1px solid #3b555b;border-radius:8px}.legal-location-node>summary{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:11px 13px;cursor:pointer;background:#1c292c;border-radius:8px}.legal-location-node[open]>summary{border-bottom:1px solid #385157;border-radius:8px 8px 0 0}.legal-location-summary-title{display:flex;align-items:baseline;gap:8px}.legal-location-summary-actions{display:flex;align-items:center;gap:9px}.legal-location-summary-actions button{padding:5px 8px}.legal-location-children{display:flex;flex-direction:column;gap:8px;padding:9px 9px 9px 22px}.legal-location-leaf{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:9px 11px}.legal-location-leaf-main{display:flex;align-items:center;gap:10px;min-width:0}.legal-location-leaf .location-previews{display:flex;margin:0}.legal-location-leaf .location-previews img{width:44px;height:44px}.legal-level-0{border-color:#5c8790}.legal-level-1{margin-left:4px}.legal-level-2{margin-left:8px}.legal-level-3{margin-left:12px}@media(max-width:750px){.legal-location-node>summary,.legal-location-leaf{align-items:flex-start;flex-direction:column}.legal-location-summary-actions{width:100%;justify-content:space-between}.legal-location-children{padding-left:10px}.custom-location-grid{grid-template-columns:1fr}}</style>''',
 ).replace(
+    "</style>",
+    r'''.photo-location-readonly{display:flex;flex-wrap:wrap;gap:6px;margin:9px 0}.photo-location-readonly>span:not(.muted){padding:5px 8px;border:1px solid #48666c;border-radius:999px;background:#202d30;color:#d8f6fa}</style>''',
+).replace(
     "</body>",
     r'''<script>
 const openPhotoWithFaceTags = openPhoto;
@@ -930,23 +933,19 @@ function viewLocationTimeline(id) { locationFilter=String(id); filterGeneration+
 function renderPhotoLocations() {
   let box=document.getElementById('photoLocations');
   if(!box){box=document.createElement('section');box.id='photoLocations';box.className='photo-locations';photoAlbums.insertAdjacentElement('afterend',box)}
-  const manual=new Set(current.manual_location_ids||[]), matched=current.locations||[];
-  box.innerHTML='<strong>Locations</strong><div class="muted">Matched: '+(matched.length?matched.map(item=>esc(item.path)+(item.inherited?' (inherited)':item.manual?' (manual)':'')).join(', '):'None')+'</div><div class="photo-location-options">'+(managedLocations.length?managedLocations.map(item=>`<label><input type="checkbox" value="${item.id}" ${manual.has(item.id)?'checked':''} onchange="savePhotoLocations()">${esc(item.path)}</label>`).join(''):'<span class="muted">No saved locations.</span>')+'</div><button onclick="newGeofenceFromPhoto()">New geofence here…</button>'+(current.latitude!=null&&current.longitude!=null?'<button onclick="removePhotoGpsLocation()">Remove GPS location</button>':'');
+  const matched=current.locations||[];
+  box.innerHTML='<strong>GPS-derived locations</strong><div class="muted">Read-only geofence matches calculated from this photo’s latitude and longitude.</div><div class="photo-location-readonly">'+(matched.length?matched.map(item=>`<span>${esc(item.path)}</span>`).join(''):'<span class="muted">No matching geofences.</span>')+'</div><button onclick="newGeofenceFromPhoto()">New geofence here…</button>'+(current.latitude!=null&&current.longitude!=null?'<button onclick="removePhotoGpsLocation()">Remove GPS location</button>':'');
 }
 async function removePhotoGpsLocation(){
   if(!current)return;clearTimeout(saveTimer);const imageId=current.id;latitude.value='';longitude.value='';updateMap();saveState.textContent='Removing GPS location…';
   try{await post('/api/photo',{id:imageId,title:title.value,description:description.value,tags:tags.value,rating:+rating.value,capture_year:captureYear.value?+captureYear.value:null,location_name:locationName.value,latitude:null,longitude:null,remove_location:true,nsfw_override:nsfwOverride.value===''?null:+nsfwOverride.value,media_kind_override:mediaKindOverride.value||null});await openPhoto(imageId);saveState.textContent='GPS location removed'}catch(error){saveState.textContent='Remove location failed: '+error.message}
-}
-async function savePhotoLocations() {
-  const ids=[...document.querySelectorAll('#photoLocations input:checked')].map(input=>+input.value);
-  await post('/api/photo-locations',{image_id:current.id,location_ids:ids}); saveState.textContent='Location assignments saved automatically'; await openPhoto(current.id);
 }
 function newGeofenceFromPhoto() {
   if(current.latitude==null||current.longitude==null){saveState.textContent='Add latitude and longitude to this photo first.';return}
   geofenceLatitude.value=current.latitude;geofenceLongitude.value=current.longitude;closePhotoViewer();showAppTab('settings');geofenceName.focus();
 }
 const openPhotoWithLocations=openPhoto;
-openPhoto=async function(id){await openPhotoWithLocations(id);if(!managedLocations.length)managedLocations=await api('/api/locations');renderPhotoLocations()};
+openPhoto=async function(id){await openPhotoWithLocations(id);renderPhotoLocations()};
 updateBoundaryEditor();
 </script></body>''',
 )
