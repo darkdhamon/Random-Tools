@@ -46,6 +46,26 @@ class CatalogTests(unittest.TestCase):
             self.assertEqual(catalog.cached_image(image).capture_year, 2012)  # type: ignore[union-attr]
             catalog.close()
 
+    def test_visual_age_and_capture_year_override_persist(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            image = root / "downloaded-photo.jpg"
+            image.write_bytes(b"placeholder")
+            catalog = FaceCatalog(root / "catalog.sqlite3")
+            identity_id = catalog.get_or_create_identity("Younger Person")
+            stored = catalog.store_scan(
+                image, [np.array([1.0, 0.0], dtype=np.float32)], [identity_id]
+            )
+            face_id = catalog.faces_for_image(stored.image_id)[0].face_id
+            catalog.set_face_estimated_age(face_id, 17.8)
+            self.assertEqual(catalog.set_capture_year_for_faces([face_id], 2006), 1)
+            assignment = catalog.identity_assignments(identity_id)[0]
+            self.assertAlmostEqual(assignment.estimated_age or 0, 17.8)
+            self.assertEqual(assignment.capture_year, 2006)
+            self.assertTrue(assignment.capture_year_overridden)
+            self.assertEqual(catalog.cached_image(image).capture_year, 2006)  # type: ignore[union-attr]
+            catalog.close()
+
     def test_closest_identity_matches_are_ranked_with_percent_ready_scores(self) -> None:
         identities = [
             KnownIdentity(1, "Second", (np.array([0.7, 0.3], dtype=np.float32),)),

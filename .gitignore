@@ -53,3 +53,4 @@ target/
 # Local tool output
 out/
 output/
+tools/face-photo-finder/models/

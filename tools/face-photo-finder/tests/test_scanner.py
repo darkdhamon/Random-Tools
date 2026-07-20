@@ -13,10 +13,19 @@ from face_finder.scanner import (
     resize_for_detection,
     restore_face_coordinates,
     face_sharpness,
+    age_from_output,
 )
 
 
 class ScannerUtilitiesTests(unittest.TestCase):
+    def test_age_output_is_converted_and_bounded(self) -> None:
+        teenager = np.array([[0.0, 0.0, 0.1, 0.8, 0.1, 0.0, 0.0, 0.0]], dtype=np.float32)
+        older_adult = np.array([[0.0, 0.0, 0.0, 0.0, 0.0, 0.1, 0.2, 0.7]], dtype=np.float32)
+        self.assertEqual(age_from_output(teenager), 17.5)
+        self.assertEqual(age_from_output(older_adult), 70.0)
+        with self.assertRaises(ValueError):
+            age_from_output(np.array([0.5], dtype=np.float32))
+
     def test_blur_score_separates_sharp_and_blurred_face_crops(self) -> None:
         sharp = np.zeros((112, 112, 3), dtype=np.uint8)
         sharp[::8, :] = 255

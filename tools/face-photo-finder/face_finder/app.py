@@ -31,9 +31,10 @@ from .catalog import (
     identity_embeddings_for_year,
     image_capture_year,
 )
-from .models import ensure_models
+from .models import ensure_age_model, ensure_models
 from .prefetch import DetectionPrefetcher
 from .scanner import (
+    AgeEstimator,
     DetectedFace,
     FaceEngine,
     MatchResult,
@@ -1097,7 +1098,7 @@ class FaceFinderApp(tk.Tk):
         style.configure("IdentityManager.Treeview", rowheight=84)
         tree = ttk.Treeview(
             outer,
-            columns=("path", "year", "age", "type", "profile"),
+            columns=("path", "year", "age", "visual_age", "type", "profile"),
             show="tree headings",
             selectmode="extended",
             style="IdentityManager.Treeview",
@@ -1106,12 +1107,14 @@ class FaceFinderApp(tk.Tk):
         tree.heading("path", text="Source photo")
         tree.heading("year", text="Year")
         tree.heading("age", text="Age")
+        tree.heading("visual_age", text="Visual age*")
         tree.heading("type", text="Type")
         tree.heading("profile", text="Profile sample")
         tree.column("#0", width=100, stretch=False)
-        tree.column("path", width=510)
+        tree.column("path", width=420)
         tree.column("year", width=60, anchor="center", stretch=False)
         tree.column("age", width=60, anchor="center", stretch=False)
+        tree.column("visual_age", width=85, anchor="center", stretch=False)
         tree.column("type", width=70, anchor="center", stretch=False)
         tree.column("profile", width=100, anchor="center", stretch=False)
         tree.grid(row=2, column=0, columnspan=3, sticky="nsew")
@@ -1120,6 +1123,7 @@ class FaceFinderApp(tk.Tk):
         tree.configure(yscrollcommand=scrollbar.set)
         photos: dict[str, ImageTk.PhotoImage] = {}
         identity_by_name: dict[str, KnownIdentity] = {}
+        assignments_by_id: dict[int, object] = {}
 
         def refresh_identity_lists(preferred_source: str = "") -> None:
             nonlocal identities, identity_by_name
@@ -1140,11 +1144,13 @@ class FaceFinderApp(tk.Tk):
         def load_source(_event: object | None = None) -> None:
             tree.delete(*tree.get_children())
             photos.clear()
+            assignments_by_id.clear()
             identity = identity_by_name.get(source_var.get())
             if not identity:
                 return
             birth_year_var.set(str(identity.birth_year) if identity.birth_year else "")
             for assignment in catalog.identity_assignments(identity.identity_id):
+                assignments_by_id[assignment.face_id] = assignment
                 item_id = str(assignment.face_id)
                 if assignment.preview is not None:
                     crop = cv2.imdecode(assignment.preview, cv2.IMREAD_COLOR)
@@ -1161,9 +1167,12 @@ class FaceFinderApp(tk.Tk):
                     text=assignment.image_path.name,
                     values=(
                         str(assignment.image_path),
-                        assignment.capture_year or "Unknown",
+                        f"{assignment.capture_year}*" if assignment.capture_year_overridden
+                        else assignment.capture_year or "Unknown",
                         assignment.capture_year - identity.birth_year
                         if assignment.capture_year and identity.birth_year else "—",
+                        f"≈{assignment.estimated_age:.0f}"
+                        if assignment.estimated_age is not None else "—",
                         "Artwork" if assignment.is_art else "Photo",
                         "Yes" if assignment.profile_eligible else "No",
                     ),
@@ -1198,6 +1207,8 @@ class FaceFinderApp(tk.Tk):
 
         buttons = ttk.Frame(outer)
         buttons.grid(row=3, column=0, columnspan=3, sticky="ew", pady=(10, 0))
+        metadata_buttons = ttk.Frame(outer)
+        metadata_buttons.grid(row=4, column=0, columnspan=3, sticky="w", pady=(8, 0))
         ttk.Button(buttons, text="Reassign selected", command=lambda: reassign(False)).pack(side="right")
         ttk.Button(buttons, text="Reassign all / merge profile", command=lambda: reassign(True)).pack(
             side="right", padx=8
@@ -1222,6 +1233,97 @@ class FaceFinderApp(tk.Tk):
             )
 
         ttk.Button(buttons, text="Save birth year", command=save_birth_year).pack(side="left", padx=(8, 0))
+
+        def set_selected_year(clear: bool = False) -> None:
+            selected = [int(item) for item in tree.selection()]
+            if not selected:
+                messagebox.showinfo("Nothing selected", "Select one or more photos first.", parent=dialog)
+                return
+            year = None if clear else simpledialog.askinteger(
+                "Correct capture year",
+                "What year were the selected photos taken?",
+                parent=dialog,
+                minvalue=1900,
+                maxvalue=datetime.now().year,
+            )
+            if not clear and year is None:
+                return
+            changed = catalog.set_capture_year_for_faces(selected, year)
+            load_source()
+            action = "Cleared" if clear else "Saved"
+            self.status_var.set(f"{action} capture-year override for {changed} photo(s).")
+
+        ttk.Button(metadata_buttons, text="Set selected photo year…", command=set_selected_year).pack(
+            side="left", padx=(8, 0)
+        )
+        ttk.Button(metadata_buttons, text="Clear year override", command=lambda: set_selected_year(True)).pack(
+            side="left", padx=(8, 0)
+        )
+
+        age_results: queue.Queue[tuple[str, object]] = queue.Queue()
+
+        def poll_age_results() -> None:
+            try:
+                kind, payload = age_results.get_nowait()
+            except queue.Empty:
+                dialog.after(100, poll_age_results)
+                return
+            age_button.config(state="normal")
+            if kind == "error":
+                messagebox.showerror("Age estimate failed", str(payload), parent=dialog)
+                return
+            results = payload
+            assert isinstance(results, list)
+            for face_id, estimated_age in results:
+                catalog.set_face_estimated_age(face_id, estimated_age)
+            identity = identity_by_name.get(source_var.get())
+            if identity and identity.birth_year and messagebox.askyesno(
+                "Use estimated ages?",
+                "Visual ages are broad estimates and can be wrong, especially for children and teenagers.\n\n"
+                "Use them with the saved birth year to set capture-year overrides for these photos?",
+                parent=dialog,
+            ):
+                for face_id, estimated_age in results:
+                    suggested = min(datetime.now().year, identity.birth_year + round(estimated_age))
+                    catalog.set_capture_year_for_faces([face_id], suggested)
+            load_source()
+            self.status_var.set(f"Estimated visual age for {len(results)} selected face(s).")
+
+        def estimate_selected_ages() -> None:
+            previews: list[tuple[int, bytes]] = []
+            for item in tree.selection():
+                face_id = int(item)
+                assignment = assignments_by_id.get(face_id)
+                preview = getattr(assignment, "preview", None)
+                if preview is not None:
+                    previews.append((face_id, bytes(preview)))
+            if not previews:
+                messagebox.showinfo(
+                    "No usable faces", "Select one or more entries with a face preview.", parent=dialog
+                )
+                return
+            age_button.config(state="disabled")
+            self.status_var.set("Estimating visual ages locally…")
+
+            def worker() -> None:
+                try:
+                    model_dir = Path(__file__).resolve().parents[1] / "models"
+                    model = ensure_age_model(model_dir)
+                    estimator = AgeEstimator(model)
+                    estimates: list[tuple[int, float]] = []
+                    for face_id, encoded in previews:
+                        crop = cv2.imdecode(np.frombuffer(encoded, dtype=np.uint8), cv2.IMREAD_COLOR)
+                        if crop is not None:
+                            estimates.append((face_id, estimator.estimate(crop)))
+                    age_results.put(("ok", estimates))
+                except Exception as exc:
+                    age_results.put(("error", exc))
+
+            threading.Thread(target=worker, daemon=True).start()
+
+        age_button = ttk.Button(metadata_buttons, text="Estimate selected ages", command=estimate_selected_ages)
+        age_button.pack(side="left", padx=(8, 0))
+        dialog.after(100, poll_age_results)
 
         def close_dialog() -> None:
             catalog.close()

@@ -63,6 +63,8 @@ class IdentityAssignment:
     is_art: bool
     profile_eligible: bool
     capture_year: int | None = None
+    estimated_age: float | None = None
+    capture_year_overridden: bool = False
 
 
 class FaceCatalog:
@@ -90,7 +92,8 @@ class FaceCatalog:
                 face_count INTEGER NOT NULL,
                 identified_count INTEGER NOT NULL,
                 scanned_at TEXT NOT NULL,
-                capture_year INTEGER
+                capture_year INTEGER,
+                capture_year_override INTEGER
             );
             CREATE TABLE IF NOT EXISTS unknown_groups (
                 id INTEGER PRIMARY KEY,
@@ -112,6 +115,7 @@ class FaceCatalog:
                 sharpness REAL,
                 profile_eligible INTEGER NOT NULL DEFAULT 1,
                 is_art INTEGER NOT NULL DEFAULT 0,
+                estimated_age REAL,
                 UNIQUE(image_id, face_index)
             );
             CREATE INDEX IF NOT EXISTS faces_identity_idx ON faces(identity_id);
@@ -124,6 +128,8 @@ class FaceCatalog:
             self.connection.execute("ALTER TABLE identities ADD COLUMN birth_year INTEGER")
         if "capture_year" not in image_columns:
             self.connection.execute("ALTER TABLE images ADD COLUMN capture_year INTEGER")
+        if "capture_year_override" not in image_columns:
+            self.connection.execute("ALTER TABLE images ADD COLUMN capture_year_override INTEGER")
         if "preview" not in columns:
             self.connection.execute("ALTER TABLE faces ADD COLUMN preview BLOB")
         if "intentionally_unknown" not in columns:
@@ -156,6 +162,8 @@ class FaceCatalog:
             self.connection.commit()
         if "is_art" not in columns:
             self.connection.execute("ALTER TABLE faces ADD COLUMN is_art INTEGER NOT NULL DEFAULT 0")
+        if "estimated_age" not in columns:
+            self.connection.execute("ALTER TABLE faces ADD COLUMN estimated_age REAL")
         legacy_unknowns = self.connection.execute(
             "SELECT id FROM faces WHERE intentionally_unknown = 1 AND unknown_group_id IS NULL"
         ).fetchall()
@@ -184,7 +192,7 @@ class FaceCatalog:
     def identities(self) -> list[KnownIdentity]:
         rows = self.connection.execute(
             """SELECT identities.id, identities.name, identities.birth_year,
-                      faces.embedding, images.capture_year
+                      faces.embedding, COALESCE(images.capture_year_override, images.capture_year)
                FROM identities LEFT JOIN faces ON faces.identity_id = identities.id
                     AND faces.profile_eligible = 1
                LEFT JOIN images ON images.id = faces.image_id
@@ -252,7 +260,8 @@ class FaceCatalog:
     def identity_assignments(self, identity_id: int) -> list[IdentityAssignment]:
         rows = self.connection.execute(
             """SELECT faces.id, images.path, faces.preview, faces.is_art, faces.profile_eligible,
-                      images.capture_year
+                      COALESCE(images.capture_year_override, images.capture_year), faces.estimated_age,
+                      images.capture_year_override IS NOT NULL
                FROM faces JOIN images ON images.id = faces.image_id
                WHERE faces.identity_id = ? ORDER BY images.path, faces.face_index""",
             (identity_id,),
@@ -265,9 +274,41 @@ class FaceCatalog:
                 bool(row[3]),
                 bool(row[4]),
                 row[5],
+                row[6],
+                bool(row[7]),
             )
             for row in rows
         ]
+
+    def set_face_estimated_age(self, face_id: int, estimated_age: float | None) -> None:
+        if estimated_age is not None and not 0 <= estimated_age <= 100:
+            raise ValueError("Estimated age must be between 0 and 100.")
+        with self.connection:
+            self.connection.execute(
+                "UPDATE faces SET estimated_age = ? WHERE id = ?", (estimated_age, face_id)
+            )
+
+    def set_capture_year_for_faces(self, face_ids: list[int], capture_year: int | None) -> int:
+        """Set or clear a persistent photo-year override for the selected face rows."""
+        if capture_year is not None and not 1900 <= capture_year <= datetime.now().year:
+            raise ValueError("Capture year must be between 1900 and the current year.")
+        unique_ids = sorted(set(face_ids))
+        if not unique_ids:
+            return 0
+        placeholders = ",".join("?" for _ in unique_ids)
+        image_rows = self.connection.execute(
+            f"SELECT DISTINCT image_id FROM faces WHERE id IN ({placeholders})", unique_ids
+        ).fetchall()
+        image_ids = [int(row[0]) for row in image_rows]
+        if not image_ids:
+            return 0
+        image_placeholders = ",".join("?" for _ in image_ids)
+        with self.connection:
+            self.connection.execute(
+                f"UPDATE images SET capture_year_override = ? WHERE id IN ({image_placeholders})",
+                (capture_year, *image_ids),
+            )
+        return len(image_ids)
 
     def reassign_faces(self, face_ids: list[int], target_identity_id: int) -> int:
         unique_ids = sorted(set(face_ids))
@@ -297,7 +338,9 @@ class FaceCatalog:
         except OSError:
             return None
         row = self.connection.execute(
-            "SELECT id, path, size, modified_ns, face_count, identified_count, capture_year FROM images WHERE path = ?",
+            """SELECT id, path, size, modified_ns, face_count, identified_count,
+                      COALESCE(capture_year_override, capture_year)
+               FROM images WHERE path = ?""",
             (str(path.resolve()),),
         ).fetchone()
         if not row or row[2] != stat.st_size or row[3] != stat.st_mtime_ns:
@@ -400,7 +443,14 @@ class FaceCatalog:
                     for index, (embedding, identity_id) in enumerate(zip(embeddings, identities, strict=True))
                 ],
             )
-        return CatalogImage(image_id, resolved, stat.st_size, stat.st_mtime_ns, len(embeddings), identified_count, capture_year)
+        effective_year = self.connection.execute(
+            "SELECT COALESCE(capture_year_override, capture_year) FROM images WHERE id = ?",
+            (image_id,),
+        ).fetchone()[0]
+        return CatalogImage(
+            image_id, resolved, stat.st_size, stat.st_mtime_ns, len(embeddings),
+            identified_count, effective_year,
+        )
 
     def faces_for_image(self, image_id: int) -> list[CatalogFace]:
         rows = self.connection.execute(

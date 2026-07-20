@@ -83,6 +83,29 @@ class FaceEngine:
         return [face.embedding for face in self.detect_faces(image_path)]
 
 
+class AgeEstimator:
+    """Local eight-band age classifier; results are deliberately approximate."""
+
+    def __init__(self, model: Path) -> None:
+        self.net = cv2.dnn.readNetFromONNX(str(model))
+
+    def estimate(self, aligned_face: np.ndarray) -> float:
+        blob = cv2.dnn.blobFromImage(
+            aligned_face, size=(224, 224), mean=(104, 117, 123), swapRB=False, crop=False
+        )
+        self.net.setInput(blob)
+        return age_from_output(self.net.forward())
+
+
+def age_from_output(output: np.ndarray) -> float:
+    """Convert the winning Adience age band into its representative midpoint."""
+    midpoints = np.array((1.0, 5.0, 10.5, 17.5, 28.5, 40.5, 50.5, 70.0))
+    scores = np.asarray(output).reshape(-1)
+    if scores.size != midpoints.size:
+        raise ValueError(f"Unexpected age-model output containing {scores.size} values.")
+    return float(midpoints[int(np.argmax(scores))])
+
+
 def resize_for_detection(image: np.ndarray, max_edge: int = DETECTION_MAX_EDGE) -> tuple[np.ndarray, float]:
     """Shrink large photos so close-up faces stay within YuNet's detection range."""
     height, width = image.shape[:2]
