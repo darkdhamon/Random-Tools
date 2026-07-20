@@ -313,26 +313,33 @@ class FaceCatalog:
                        metadata.media_kind_override, COALESCE(metadata.location_name, ''),
                        COALESCE(metadata.latitude, images.gps_latitude),
                        COALESCE(metadata.longitude, images.gps_longitude), images.nsfw_details,
-                       images.nsfw_vit_score, images.nsfw_review_required
+                       images.nsfw_vit_score, images.nsfw_review_required,
+                       images.capture_year_override
                 FROM images LEFT JOIN image_metadata metadata ON metadata.image_id = images.id
                 WHERE {' AND '.join(clauses)}
                 ORDER BY COALESCE(images.capture_year_override, images.capture_year) DESC, images.path
                 LIMIT ? OFFSET ?""",
             values,
         ).fetchall()
-        return [
-            {
+        photos = []
+        for row in rows:
+            capture_date = image_capture_date(Path(row[1]))
+            if row[20] is not None and (
+                capture_date is None or int(capture_date[:4]) != int(row[20])
+            ):
+                capture_date = None
+            photos.append({
                 "id": int(row[0]), "path": row[1], "name": Path(row[1]).name,
                 "face_count": int(row[2]), "identified_count": int(row[3]), "year": row[4],
+                "capture_date": capture_date,
                 "title": row[5], "description": row[6], "tags": row[7], "rating": int(row[8]),
                 "nsfw_score": row[9], "nsfw_override": row[10], "is_nsfw": bool(row[11]),
                 "media_kind": row[12], "media_kind_override": row[13],
                 "location_name": row[14], "latitude": row[15], "longitude": row[16],
                 "nsfw_detections": json.loads(row[17]) if row[17] else [],
                 "nsfw_vit_score": row[18], "nsfw_review_required": bool(row[19]),
-            }
-            for row in rows
-        ]
+            })
+        return photos
 
     def gallery_photo(self, image_id: int) -> dict[str, object] | None:
         row = self.connection.execute(
@@ -346,13 +353,19 @@ class FaceCatalog:
                       metadata.media_kind_override, COALESCE(metadata.location_name, ''),
                       COALESCE(metadata.latitude, images.gps_latitude),
                       COALESCE(metadata.longitude, images.gps_longitude), images.nsfw_details,
-                      images.nsfw_vit_score, images.nsfw_review_required
+                      images.nsfw_vit_score, images.nsfw_review_required,
+                      images.capture_year_override
                FROM images LEFT JOIN image_metadata metadata ON metadata.image_id = images.id
                WHERE images.id = ? AND images.missing_since IS NULL""",
             (image_id,),
         ).fetchone()
         if row is None:
             return None
+        capture_date = image_capture_date(Path(row[0]))
+        if row[19] is not None and (
+            capture_date is None or int(capture_date[:4]) != int(row[19])
+        ):
+            capture_date = None
         photo: dict[str, object] = {
             "id": image_id, "path": row[0], "name": Path(row[0]).name,
             "face_count": int(row[1]), "identified_count": int(row[2]), "year": row[3],
@@ -362,6 +375,7 @@ class FaceCatalog:
             "location_name": row[13], "latitude": row[14], "longitude": row[15],
             "nsfw_detections": json.loads(row[16]) if row[16] else [],
             "nsfw_vit_score": row[17], "nsfw_review_required": bool(row[18]),
+            "capture_date": capture_date,
         }
         faces = self.connection.execute(
             """SELECT faces.id, identities.name, faces.intentionally_unknown, faces.is_art,
@@ -1072,6 +1086,31 @@ def image_capture_year(path: Path) -> int | None:
         return datetime.fromtimestamp(path.stat().st_mtime).year
     except OSError:
         return None
+
+
+def image_capture_date(path: Path) -> str | None:
+    """Return a trustworthy ISO capture date from EXIF or a date-bearing filename."""
+    try:
+        with Image.open(path) as image:
+            exif = image.getexif()
+            for tag in (36867, 36868, 306):
+                value = exif.get(tag)
+                if value and (match := re.match(
+                    r"(19\d{2}|20\d{2})[:\-](\d{2})[:\-](\d{2})", str(value)
+                )):
+                    parsed = datetime.strptime("-".join(match.groups()), "%Y-%m-%d")
+                    return parsed.date().isoformat()
+    except (OSError, ValueError):
+        pass
+    match = re.search(
+        r"(?<!\d)(19\d{2}|20\d{2})[-_]?([01]\d)[-_]?([0-3]\d)(?!\d)", path.stem
+    )
+    if match:
+        try:
+            return datetime.strptime("-".join(match.groups()), "%Y-%m-%d").date().isoformat()
+        except ValueError:
+            pass
+    return None
 
 
 def file_content_hash(path: Path) -> str:

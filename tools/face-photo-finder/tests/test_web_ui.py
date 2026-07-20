@@ -22,6 +22,10 @@ class WebGalleryUiTests(unittest.TestCase):
         self.assertIn("new IntersectionObserver", PAGE)
         self.assertIn("rootMargin:'600px 0px'", PAGE)
         self.assertIn("if(loading){if(reset)reloadAfterLoad=true;return}", PAGE)
+        self.assertIn("function timelineGrid(photo)", PAGE)
+        self.assertIn("className='month-group'", PAGE)
+        self.assertIn("className='day-group'", PAGE)
+        self.assertIn("weekday:'long',month:'long',day:'numeric'", PAGE)
         self.assertNotIn('>Save metadata</button>', PAGE)
 
 

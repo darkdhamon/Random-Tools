@@ -14,6 +14,7 @@ from face_finder.catalog import (
     closest_identity_matches,
     identity_embeddings_for_year,
     image_capture_year,
+    image_capture_date,
 )
 
 
@@ -30,6 +31,12 @@ class CatalogTests(unittest.TestCase):
             image = Path(temporary) / "college-trip-2004.jpg"
             image.write_bytes(b"not an image")
             self.assertEqual(image_capture_year(image), 2004)
+
+    def test_capture_date_can_be_read_from_camera_filename(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            image = Path(temporary) / "PXL_20260713_002421467.jpg"
+            image.touch()
+            self.assertEqual(image_capture_date(image), "2026-07-13")
 
     def test_birth_year_and_capture_year_round_trip(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

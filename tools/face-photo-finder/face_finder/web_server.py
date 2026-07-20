@@ -118,6 +118,16 @@ PAGE = PAGE.replace(
     "people().then(load);</script>",
     "const infiniteObserver=new IntersectionObserver(entries=>{if(entries.some(entry=>entry.isIntersecting))load(false)},{rootMargin:'600px 0px'});infiniteObserver.observe(more);people().then(load);</script>",
 )
+PAGE = PAGE.replace(
+    "</style>",
+    r'''.month-group{margin:0 0 28px}.month-group>h3{margin:12px 0;padding:8px 12px;background:#18363c;border-left:4px solid #49aeb9;border-radius:5px}.day-group{margin:0 0 20px}.day-group>h4{margin:10px 0 8px;color:#9de9f1;font-size:14px}</style>''',
+).replace(
+    "yearGrid(x.year).append(c)",
+    "timelineGrid(x).append(c)",
+).replace(
+    "const infiniteObserver=new IntersectionObserver",
+    r'''function timelineGrid(photo){let yearLabel=photo.year||'Unknown date',yearId='year-'+String(yearLabel).replace(/\W/g,'-'),yearSection=document.getElementById(yearId);if(!yearSection){yearSection=document.createElement('section');yearSection.id=yearId;yearSection.className='year-group';yearSection.innerHTML=`<h2>${esc(String(yearLabel))}</h2><div class="months"></div>`;timeline.append(yearSection)}let date=photo.capture_date?new Date(photo.capture_date+'T12:00:00'):null,monthKey=date?String(date.getMonth()+1).padStart(2,'0'):'unknown',monthLabel=date?date.toLocaleDateString(undefined,{month:'long'}):'Unknown month',monthId=yearId+'-month-'+monthKey,month=document.getElementById(monthId);if(!month){month=document.createElement('section');month.id=monthId;month.className='month-group';month.innerHTML=`<h3>${esc(monthLabel)}</h3><div class="days"></div>`;yearSection.querySelector('.months').append(month)}let dayKey=date?String(date.getDate()).padStart(2,'0'):'unknown',dayLabel=date?date.toLocaleDateString(undefined,{weekday:'long',month:'long',day:'numeric'}):'Unknown day',dayId=monthId+'-day-'+dayKey,grid=document.getElementById(dayId);if(!grid){let day=document.createElement('section');day.className='day-group';day.innerHTML=`<h4>${esc(dayLabel)}</h4><div id="${dayId}" class="grid"></div>`;month.querySelector('.days').append(day);grid=document.getElementById(dayId)}return grid}const infiniteObserver=new IntersectionObserver''',
+)
 
 
 class GalleryHandler(BaseHTTPRequestHandler):
