@@ -5,6 +5,9 @@ from face_finder.web_server import PAGE, GENERAL_ARCHIVE, archive_path_for_name
 
 class WebGalleryUiTests(unittest.TestCase):
     def test_gallery_uses_timeline_and_automatic_metadata_saving(self) -> None:
+        self.assertIn('.panel{width:100vw;max-width:none;height:100vh', PAGE)
+        self.assertIn('grid-template-columns:minmax(0,1fr) clamp(340px,25vw,460px)', PAGE)
+        self.assertIn('.viewer img{max-width:100%;max-height:100vh}', PAGE)
         self.assertIn('id=timeline class=timeline', PAGE)
         self.assertIn('className=\'year-group\'', PAGE)
         self.assertIn('setTimeout(save,immediate?0:700)', PAGE)
