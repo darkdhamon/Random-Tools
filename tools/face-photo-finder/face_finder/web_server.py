@@ -83,6 +83,91 @@ openPhoto = async function(id) {
 </script></body>''',
 )
 PAGE = PAGE.replace(
+    "</style>",
+    r'''.app-tabs{position:sticky;top:0;z-index:15;display:flex;gap:6px;background:#101719;padding:8px 14px;border-bottom:1px solid #31535a}.app-tabs button{border-color:transparent;background:transparent;font-weight:700}.app-tabs button.active{background:#176679;border-color:#63d7e8}.app-tabs+header{top:49px}.identity-view{display:none;padding:22px;max-width:1200px;margin:auto}.identity-toolbar{display:flex;gap:12px;align-items:center;flex-wrap:wrap;margin-bottom:15px}.identity-toolbar input{min-width:280px}.identity-table-wrap{overflow:auto;border:1px solid #3e555a;border-radius:9px}.identity-table{width:100%;border-collapse:collapse;background:#1c1f20}.identity-table th,.identity-table td{padding:10px;border-bottom:1px solid #353d3f;text-align:left;white-space:nowrap}.identity-table th{position:sticky;top:0;background:#18363c;color:#bdf5fb}.identity-table input{box-sizing:border-box;width:100%}.identity-table .name-input{min-width:220px}.identity-table .year-input{width:100px}.identity-status{min-height:22px;color:#72dfbd}@media(max-width:750px){.app-tabs+header{top:49px}.identity-view{padding:12px}.identity-toolbar input{min-width:0;width:100%}}</style>''',
+).replace(
+    "<body><header>",
+    r'''<body><nav class=app-tabs aria-label="Gallery sections"><button id=timelineTabButton class=active onclick="showAppTab('timeline')">Timeline</button><button id=identityTabButton onclick="showAppTab('identity')">Identity</button></nav><header id=timelineHeader>''',
+).replace(
+    '<div style="text-align:center;padding:15px"><button id=more',
+    '<div id=timelineMore style="text-align:center;padding:15px"><button id=more',
+).replace(
+    "<div id=modal class=modal>",
+    r'''<section id=identityView class=identity-view><div class=identity-toolbar><h1>Identity management</h1><input id=identitySearch placeholder="Search identities" oninput=renderIdentityTable()><button onclick=loadIdentityTable()>Refresh</button></div><div id=identityStatus class=identity-status></div><div class=identity-table-wrap><table class=identity-table><thead><tr><th>Name</th><th>Birth year</th><th>Approx. age</th><th>Photos</th><th>Faces</th><th>Profile samples</th><th>Timeline</th></tr></thead><tbody id=identityTableBody></tbody></table></div></section><div id=modal class=modal>''',
+).replace(
+    "</body>",
+    r'''<script>
+let identityManagementRows = [];
+function showAppTab(tabName) {
+  const identityActive = tabName === 'identity';
+  timelineTabButton.classList.toggle('active', !identityActive);
+  identityTabButton.classList.toggle('active', identityActive);
+  timelineHeader.style.display = identityActive ? 'none' : '';
+  timeline.style.display = identityActive ? 'none' : '';
+  timelineMore.style.display = identityActive ? 'none' : '';
+  identityView.style.display = identityActive ? 'block' : 'none';
+  if (identityActive) { clearSelection(); loadIdentityTable(); }
+}
+async function loadIdentityTable() {
+  identityStatus.textContent = 'Loading identities...';
+  try {
+    identityManagementRows = await api('/api/identity-summaries');
+    identityStatus.textContent = `${identityManagementRows.length} identities`;
+    renderIdentityTable();
+  } catch (error) { identityStatus.textContent = 'Load failed: ' + error.message; }
+}
+function renderIdentityTable() {
+  const query = identitySearch.value.trim().toLowerCase();
+  identityTableBody.innerHTML = '';
+  for (const identity of identityManagementRows.filter(item => item.name.toLowerCase().includes(query))) {
+    const row = document.createElement('tr');
+    const nameCell = row.insertCell();
+    const nameInput = document.createElement('input');
+    nameInput.className = 'name-input';
+    nameInput.value = identity.name;
+    nameCell.append(nameInput);
+    const yearCell = row.insertCell();
+    const yearInput = document.createElement('input');
+    yearInput.className = 'year-input';
+    yearInput.type = 'number';
+    yearInput.min = '1900';
+    yearInput.value = identity.birth_year == null ? '' : identity.birth_year;
+    yearCell.append(yearInput);
+    for (const value of [identity.age ?? '—', identity.photo_count, identity.face_count, identity.profile_sample_count]) {
+      const cell = row.insertCell(); cell.textContent = value;
+    }
+    const actionCell = row.insertCell();
+    const viewButton = document.createElement('button');
+    viewButton.textContent = 'View photos';
+    viewButton.onclick = () => viewIdentityTimeline(identity.id);
+    actionCell.append(viewButton);
+    const saveIdentity = () => saveIdentityRow(identity, nameInput, yearInput);
+    nameInput.addEventListener('change', saveIdentity);
+    yearInput.addEventListener('change', saveIdentity);
+    identityTableBody.append(row);
+  }
+}
+async function saveIdentityRow(identity, nameInput, yearInput) {
+  identityStatus.textContent = 'Saving identity...';
+  try {
+    await post('/api/identity', {id:identity.id,name:nameInput.value,birth_year:yearInput.value||null});
+    identity.name = nameInput.value.trim().replace(/\s+/g, ' ');
+    identity.birth_year = yearInput.value ? +yearInput.value : null;
+    identity.age = identity.birth_year ? new Date().getFullYear() - identity.birth_year : null;
+    const option = person.querySelector(`option[value="${identity.id}"]`);
+    if (option) option.textContent = identity.name;
+    identityStatus.textContent = 'Identity saved automatically';
+    renderIdentityTable();
+  } catch (error) { identityStatus.textContent = 'Save failed: ' + error.message; }
+}
+function viewIdentityTimeline(identityId) {
+  person.value = String(identityId);
+  showAppTab('timeline');
+  load();
+}
+</script></body>''',
+)
+PAGE = PAGE.replace(
     '<option value=nsfw>NSFW only</option>',
     '<option value=nsfw>NSFW only</option><option value=conflict>NSFW conflicts</option>',
 ).replace(
@@ -337,6 +422,8 @@ class GalleryHandler(BaseHTTPRequestHandler):
                 self._json(photo if photo else {"error": "not found"}, 200 if photo else 404)
             elif parsed.path == "/api/identities":
                 self._json([{"id": x.identity_id, "name": x.name, "birth_year": x.birth_year} for x in catalog.identities()])
+            elif parsed.path == "/api/identity-summaries":
+                self._json(catalog.identity_summaries())
             elif parsed.path == "/api/archives":
                 self._json(available_archives())
             elif parsed.path == "/media":
@@ -375,6 +462,16 @@ class GalleryHandler(BaseHTTPRequestHandler):
             elif self.path == "/api/face":
                 catalog = self._catalog()
                 try: catalog.assign_face(int(body["face_id"]), int(body["identity_id"]))
+                finally: catalog.close()
+                self._json({"ok": True})
+            elif self.path == "/api/identity":
+                catalog = self._catalog()
+                try:
+                    birth_year = body.get("birth_year")
+                    catalog.update_identity(
+                        int(body["id"]), str(body.get("name", "")),
+                        int(birth_year) if birth_year not in (None, "") else None,
+                    )
                 finally: catalog.close()
                 self._json({"ok": True})
             elif self.path == "/api/delete-photo":

@@ -71,6 +71,32 @@ class CatalogTests(unittest.TestCase):
             self.assertEqual(catalog.cached_image(image).capture_year, 2012)  # type: ignore[union-attr]
             catalog.close()
 
+    def test_identity_management_summaries_and_updates(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            image = root / "identity.jpg"
+            image.touch()
+            catalog = FaceCatalog(root / "catalog.sqlite3")
+            identity_id = catalog.get_or_create_identity("Original Name")
+            catalog.store_scan(
+                image,
+                [np.array([1.0, 0.0], dtype=np.float32), np.array([0.0, 1.0], dtype=np.float32)],
+                [identity_id, identity_id],
+                profile_eligible=[True, False],
+            )
+
+            catalog.update_identity(identity_id, "Updated Name", 1985)
+            summary = catalog.identity_summaries()[0]
+
+            self.assertEqual(summary["name"], "Updated Name")
+            self.assertEqual(summary["birth_year"], 1985)
+            self.assertEqual(summary["photo_count"], 1)
+            self.assertEqual(summary["face_count"], 2)
+            self.assertEqual(summary["profile_sample_count"], 1)
+            with self.assertRaises(ValueError):
+                catalog.update_identity(identity_id, "", 1985)
+            catalog.close()
+
     def test_visual_age_and_capture_year_override_persist(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

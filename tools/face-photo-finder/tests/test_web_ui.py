@@ -43,6 +43,13 @@ class WebGalleryUiTests(unittest.TestCase):
         self.assertIn("Existing archive", PAGE)
         self.assertIn("Or create a new archive", PAGE)
         self.assertIn("payload.archive_name", PAGE)
+        self.assertIn('>Timeline</button>', PAGE)
+        self.assertIn('>Identity</button>', PAGE)
+        self.assertIn('Identity management', PAGE)
+        self.assertIn('id=identityTableBody', PAGE)
+        self.assertIn("api('/api/identity-summaries')", PAGE)
+        self.assertIn("post('/api/identity'", PAGE)
+        self.assertIn('View photos', PAGE)
         self.assertNotIn("current = null;\n    await load();", PAGE)
         self.assertNotIn('>Save metadata</button>', PAGE)
 

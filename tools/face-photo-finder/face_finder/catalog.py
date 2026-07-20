@@ -678,6 +678,51 @@ class FaceCatalog:
                 "UPDATE identities SET birth_year = ? WHERE id = ?", (birth_year, identity_id)
             )
 
+    def identity_summaries(self) -> list[dict[str, object]]:
+        """Return lightweight identity-management rows without loading biometric vectors."""
+        rows = self.connection.execute(
+            """SELECT identities.id, identities.name, identities.birth_year,
+                      COUNT(CASE WHEN images.missing_since IS NULL THEN faces.id END),
+                      COUNT(DISTINCT CASE WHEN images.missing_since IS NULL THEN faces.image_id END),
+                      COALESCE(SUM(CASE WHEN images.missing_since IS NULL
+                                            AND faces.profile_eligible = 1 THEN 1 ELSE 0 END), 0)
+               FROM identities
+               LEFT JOIN faces ON faces.identity_id = identities.id
+               LEFT JOIN images ON images.id = faces.image_id
+               GROUP BY identities.id, identities.name, identities.birth_year
+               ORDER BY identities.name COLLATE NOCASE"""
+        ).fetchall()
+        current_year = datetime.now().year
+        return [
+            {
+                "id": int(row[0]), "name": row[1], "birth_year": row[2],
+                "age": current_year - int(row[2]) if row[2] is not None else None,
+                "face_count": int(row[3]), "photo_count": int(row[4]),
+                "profile_sample_count": int(row[5]),
+            }
+            for row in rows
+        ]
+
+    def update_identity(self, identity_id: int, name: str, birth_year: int | None) -> None:
+        """Rename an identity and update its birth year after validating uniqueness."""
+        clean_name = " ".join(name.split())
+        if not clean_name:
+            raise ValueError("An identity name is required.")
+        if birth_year is not None and not 1900 <= birth_year <= datetime.now().year:
+            raise ValueError("Birth year must be between 1900 and the current year.")
+        existing = self.connection.execute(
+            "SELECT id FROM identities WHERE name = ? COLLATE NOCASE", (clean_name,)
+        ).fetchone()
+        if existing is not None and int(existing[0]) != identity_id:
+            raise ValueError("Another identity already uses that name.")
+        with self.connection:
+            cursor = self.connection.execute(
+                "UPDATE identities SET name = ?, birth_year = ? WHERE id = ?",
+                (clean_name, birth_year, identity_id),
+            )
+        if cursor.rowcount != 1:
+            raise ValueError("Identity was not found.")
+
     def unknown_groups(self) -> list[UnknownGroup]:
         rows = self.connection.execute(
             """SELECT unknown_groups.id, faces.embedding
