@@ -793,7 +793,7 @@ PAGE = PAGE.replace(
     "exclude_kinds:excluded.join(','),album_id:albumFilter.value,limit:100,offset",
 ).replace(
     "</style>",
-    r'''.album-suggestions{display:none;padding:10px 14px;background:#19363d;border-bottom:1px solid #4ca3b0}.album-suggestions summary{cursor:pointer;font-weight:700}.album-suggestion-list{max-height:42vh;overflow:auto;padding-top:6px}.album-suggestion{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin:5px 0}.album-suggestion-viewing{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:6px;color:#aaf3fb}.photo-albums{margin:8px 0 16px;padding:10px;background:#182326;border:1px solid #3e555a;border-radius:7px}.photo-album-options{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:6px;margin:8px 0}.photo-album-options label{display:flex;align-items:center;gap:6px}.photo-album-options input{width:auto!important;margin:0!important}</style>''',
+    r'''.album-suggestions{display:none;padding:10px 14px;background:#19363d;border-bottom:1px solid #4ca3b0}.album-suggestions summary{cursor:pointer;font-weight:700}.album-suggestion-list{max-height:42vh;overflow:auto;padding-top:6px}.album-suggestion{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin:5px 0}.album-suggestion-viewing{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:6px;color:#aaf3fb}.photo-albums{margin:8px 0 16px;padding:10px;background:#182326;border:1px solid #3e555a;border-radius:7px}.photo-album-chips{display:flex;gap:6px;flex-wrap:wrap;margin:9px 0}.photo-album-chip{display:inline-flex;align-items:center;gap:7px;padding:5px 8px;background:#22545d;border-color:#67c8d6}.photo-album-chip .chip-remove{font-size:18px;line-height:12px}.photo-album-picker{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:7px;margin:7px 0}.photo-album-picker select{width:100%;margin:0}</style>''',
 ).replace(
     "</body>",
     r'''<script>
@@ -828,13 +828,15 @@ function renderPhotoAlbums() {
   let box=document.getElementById('photoAlbums');
   if(!box){box=document.createElement('section');box.id='photoAlbums';box.className='photo-albums';tags.closest('label').insertAdjacentElement('afterend',box)}
   const selected=new Set((current.albums||[]).map(album=>album.id));
-  box.innerHTML='<strong>Albums</strong><div class="photo-album-options">'+(albums.length?albums.map(album=>`<label><input type="checkbox" value="${album.id}" ${selected.has(album.id)?'checked':''} onchange="savePhotoAlbums()">${esc(album.name)}</label>`).join(''):'<span class="muted">No albums yet.</span>')+'</div><button onclick="createAlbumForPhoto()">New album…</button>';
+  const available=albums.filter(album=>!selected.has(album.id));
+  box.innerHTML=`<strong>Albums</strong><div class="photo-album-chips">${current.albums?.length?current.albums.map(album=>`<button class="photo-album-chip" onclick="removePhotoAlbum(${album.id})" title="Remove from ${esc(album.name)}"><span>${esc(album.name)}</span><span class="chip-remove" aria-hidden="true">×</span></button>`).join(''):'<span class="muted">Not assigned to an album.</span>'}</div><div class="photo-album-picker"><select id="photoAlbumPicker" aria-label="Album to add"><option value="">Choose an album…</option>${available.map(album=>`<option value="${album.id}">${esc(album.name)}</option>`).join('')}</select><button onclick=addPhotoAlbum() ${available.length?'':'disabled'}>Add</button></div><button onclick="createAlbumForPhoto()">New album…</button>`;
 }
 async function savePhotoAlbums() {
-  const albumIds=[...document.querySelectorAll('#photoAlbums input:checked')].map(input=>+input.value);
-  await post('/api/photo-albums',{image_id:current.id,album_ids:albumIds}); current.albums=albums.filter(album=>albumIds.includes(album.id));
-  saveState.textContent='Album assignments saved automatically'; await loadAlbums();
+  const albumIds=(current.albums||[]).map(album=>album.id);
+  await post('/api/photo-albums',{image_id:current.id,album_ids:albumIds});saveState.textContent='Album assignments saved automatically';await loadAlbums();renderPhotoAlbums();
 }
+async function addPhotoAlbum(){const albumId=Number(document.getElementById('photoAlbumPicker').value);if(!albumId)return;const album=albums.find(item=>item.id===albumId);if(!album)return;current.albums=[...(current.albums||[]),album];renderPhotoAlbums();await savePhotoAlbums()}
+async function removePhotoAlbum(albumId){current.albums=(current.albums||[]).filter(album=>album.id!==albumId);renderPhotoAlbums();await savePhotoAlbums()}
 async function createAlbumForPhoto() {
   const albumName=prompt('New album name:'); if(!albumName||!albumName.trim())return;
   const created=await post('/api/albums',{name:albumName}); await loadAlbums();
