@@ -49,6 +49,8 @@ On macOS/Linux, activate with `source .venv/bin/activate` instead.
 
 On Windows, run `install-background-task.ps1` to install the hourly **Face Photo Finder Background Catalog** task. It scans the last folder selected in the app, relinks reorganized files, and stays hidden unless identification is needed. Task Scheduler ignores overlapping runs.
 
+Run `install-gallery-service.ps1` to install the local web gallery at `http://127.0.0.1:8765`. It starts when you sign in and is reachable only from this computer. The gallery browses cataloged photos, filters by person or year, searches titles/tags/paths, edits titles, descriptions, tags, ratings and capture years, reassigns detected faces, and can start a catalog scan or open the full desktop interface.
+
 ## Use
 
 1. To find a specific person, select clear reference photos or choose someone from **Known person**. If a reference contains multiple faces, choose one or several people from the thumbnail picker.

@@ -129,6 +129,13 @@ class FaceCatalog:
                 UNIQUE(image_id, face_index)
             );
             CREATE INDEX IF NOT EXISTS faces_identity_idx ON faces(identity_id);
+            CREATE TABLE IF NOT EXISTS image_metadata (
+                image_id INTEGER PRIMARY KEY REFERENCES images(id) ON DELETE CASCADE,
+                title TEXT NOT NULL DEFAULT '',
+                description TEXT NOT NULL DEFAULT '',
+                tags TEXT NOT NULL DEFAULT '',
+                rating INTEGER NOT NULL DEFAULT 0 CHECK(rating BETWEEN 0 AND 5)
+            );
             """
         )
         columns = {row[1] for row in self.connection.execute("PRAGMA table_info(faces)")}
@@ -202,6 +209,101 @@ class FaceCatalog:
             self.connection.execute("DELETE FROM identities")
             self.connection.execute("DELETE FROM unknown_groups")
         self.connection.execute("VACUUM")
+
+    def gallery_photos(
+        self, search: str = "", identity_id: int | None = None, year: int | None = None,
+        limit: int = 100, offset: int = 0,
+    ) -> list[dict[str, object]]:
+        clauses = ["images.missing_since IS NULL"]
+        values: list[object] = []
+        if search:
+            clauses.append("(images.path LIKE ? OR metadata.title LIKE ? OR metadata.tags LIKE ?)")
+            pattern = f"%{search}%"
+            values.extend((pattern, pattern, pattern))
+        if identity_id is not None:
+            clauses.append("EXISTS (SELECT 1 FROM faces WHERE faces.image_id = images.id AND faces.identity_id = ?)")
+            values.append(identity_id)
+        if year is not None:
+            clauses.append("COALESCE(images.capture_year_override, images.capture_year) = ?")
+            values.append(year)
+        values.extend((max(1, min(limit, 250)), max(0, offset)))
+        rows = self.connection.execute(
+            f"""SELECT images.id, images.path, images.face_count, images.identified_count,
+                       COALESCE(images.capture_year_override, images.capture_year),
+                       COALESCE(metadata.title, ''), COALESCE(metadata.description, ''),
+                       COALESCE(metadata.tags, ''), COALESCE(metadata.rating, 0)
+                FROM images LEFT JOIN image_metadata metadata ON metadata.image_id = images.id
+                WHERE {' AND '.join(clauses)}
+                ORDER BY COALESCE(images.capture_year_override, images.capture_year) DESC, images.path
+                LIMIT ? OFFSET ?""",
+            values,
+        ).fetchall()
+        return [
+            {
+                "id": int(row[0]), "path": row[1], "name": Path(row[1]).name,
+                "face_count": int(row[2]), "identified_count": int(row[3]), "year": row[4],
+                "title": row[5], "description": row[6], "tags": row[7], "rating": int(row[8]),
+            }
+            for row in rows
+        ]
+
+    def gallery_photo(self, image_id: int) -> dict[str, object] | None:
+        row = self.connection.execute(
+            """SELECT images.path, images.face_count, images.identified_count,
+                      COALESCE(images.capture_year_override, images.capture_year),
+                      COALESCE(metadata.title, ''), COALESCE(metadata.description, ''),
+                      COALESCE(metadata.tags, ''), COALESCE(metadata.rating, 0)
+               FROM images LEFT JOIN image_metadata metadata ON metadata.image_id = images.id
+               WHERE images.id = ? AND images.missing_since IS NULL""",
+            (image_id,),
+        ).fetchone()
+        if row is None:
+            return None
+        photo: dict[str, object] = {
+            "id": image_id, "path": row[0], "name": Path(row[0]).name,
+            "face_count": int(row[1]), "identified_count": int(row[2]), "year": row[3],
+            "title": row[4], "description": row[5], "tags": row[6], "rating": int(row[7]),
+        }
+        faces = self.connection.execute(
+            """SELECT faces.id, identities.name, faces.intentionally_unknown, faces.is_art,
+                      faces.estimated_age, faces.unknown_group_id
+               FROM faces LEFT JOIN identities ON identities.id = faces.identity_id
+               WHERE faces.image_id = ? ORDER BY faces.face_index""",
+            (image_id,),
+        ).fetchall()
+        photo["faces"] = [
+            {"id": int(row[0]), "name": row[1], "unknown": bool(row[2]), "art": bool(row[3]),
+             "estimated_age": row[4], "unknown_group_id": row[5]}
+            for row in faces
+        ]
+        return photo
+
+    def image_path(self, image_id: int) -> Path | None:
+        row = self.connection.execute(
+            "SELECT path FROM images WHERE id = ? AND missing_since IS NULL", (image_id,)
+        ).fetchone()
+        path = Path(row[0]) if row else None
+        return path if path and path.is_file() else None
+
+    def update_gallery_metadata(
+        self, image_id: int, title: str, description: str, tags: str, rating: int,
+        capture_year: int | None,
+    ) -> None:
+        if rating not in range(6):
+            raise ValueError("Rating must be between 0 and 5.")
+        if capture_year is not None and not 1900 <= capture_year <= datetime.now().year:
+            raise ValueError("Capture year must be between 1900 and the current year.")
+        with self.connection:
+            self.connection.execute(
+                """INSERT INTO image_metadata(image_id, title, description, tags, rating)
+                   VALUES (?, ?, ?, ?, ?)
+                   ON CONFLICT(image_id) DO UPDATE SET title=excluded.title,
+                       description=excluded.description, tags=excluded.tags, rating=excluded.rating""",
+                (image_id, title.strip(), description.strip(), tags.strip(), rating),
+            )
+            self.connection.execute(
+                "UPDATE images SET capture_year_override = ? WHERE id = ?", (capture_year, image_id)
+            )
 
     def identities(self) -> list[KnownIdentity]:
         rows = self.connection.execute(

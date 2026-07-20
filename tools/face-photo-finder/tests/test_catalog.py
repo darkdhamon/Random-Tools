@@ -334,6 +334,25 @@ class CatalogTests(unittest.TestCase):
             self.assertNotIn(group_id, [group.group_id for group in catalog.unknown_groups()])
             catalog.close()
 
+    def test_gallery_metadata_can_be_saved_and_filtered(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            image = root / "holiday.jpg"
+            image.write_bytes(b"gallery image")
+            catalog = FaceCatalog(root / "catalog.sqlite3")
+            stored = catalog.store_scan(image, [], [])
+            catalog.update_gallery_metadata(
+                stored.image_id, "Summer trip", "At the lake", "family, vacation", 5, 2018
+            )
+            photo = catalog.gallery_photo(stored.image_id)
+            self.assertIsNotNone(photo)
+            self.assertEqual(photo["title"], "Summer trip")  # type: ignore[index]
+            self.assertEqual(photo["year"], 2018)  # type: ignore[index]
+            self.assertEqual(photo["rating"], 5)  # type: ignore[index]
+            self.assertEqual([item["id"] for item in catalog.gallery_photos(search="vacation")], [stored.image_id])
+            self.assertEqual([item["id"] for item in catalog.gallery_photos(year=2018)], [stored.image_id])
+            catalog.close()
+
     def test_best_known_identity_applies_threshold(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             catalog = FaceCatalog(Path(temporary) / "catalog.sqlite3")

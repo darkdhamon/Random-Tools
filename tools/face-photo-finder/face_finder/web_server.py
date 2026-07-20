@@ -1,0 +1,118 @@
+from __future__ import annotations
+
+import io
+import json
+import secrets
+import subprocess
+import sys
+import webbrowser
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
+from urllib.parse import parse_qs, urlparse
+
+from PIL import Image, ImageOps
+
+from .catalog import FaceCatalog, default_catalog_path
+
+HOST = "127.0.0.1"
+PORT = 8765
+APP_ROOT = Path(__file__).resolve().parents[1]
+
+
+PAGE = r'''<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width">
+<title>Face Photo Finder Gallery</title><style>
+:root{color-scheme:dark;background:#111;color:#eee;font:15px system-ui}body{margin:0}header{position:sticky;top:0;z-index:2;background:#181818;padding:12px;display:flex;gap:10px;align-items:center;box-shadow:0 2px 8px #000}input,select,textarea,button{background:#292929;color:#eee;border:1px solid #555;border-radius:6px;padding:8px}button{cursor:pointer}.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(210px,1fr));gap:12px;padding:14px}.card{background:#202020;border-radius:9px;overflow:hidden;cursor:pointer}.card img{width:100%;height:180px;object-fit:cover}.info{padding:9px}.muted{color:#aaa;font-size:12px}.stars{color:#ffd65a}.modal{position:fixed;inset:0;background:#000d;display:none;z-index:5;padding:3vh}.panel{max-width:1100px;height:94vh;margin:auto;background:#202020;border-radius:10px;display:grid;grid-template-columns:2fr 1fr;overflow:hidden}.viewer{background:#090909;display:flex;align-items:center;justify-content:center}.viewer img{max-width:100%;max-height:94vh}.editor{padding:16px;overflow:auto}.editor input,.editor textarea,.editor select{width:100%;box-sizing:border-box;margin:5px 0 12px}.faces div{padding:7px;background:#292929;margin:5px 0;border-radius:5px}.close{float:right}@media(max-width:750px){.panel{grid-template-columns:1fr}.viewer{height:48vh}.viewer img{max-height:48vh}}
+</style></head><body><header><strong>Photo Library</strong><input id=q placeholder="Search paths, titles, tags"><select id=person><option value="">All people</option></select><input id=year type=number placeholder="Year" min=1900 style="width:90px"><button onclick="load()">Search</button><button onclick="post('/api/scan',{})">Scan now</button><button onclick="post('/api/open-desktop',{})">Desktop app</button></header><main id=grid class=grid></main>
+<div style="text-align:center;padding:15px"><button id=more onclick="load(false)">Load more</button></div><div id=modal class=modal><div class=panel><div class=viewer><img id=full></div><div class=editor><button class=close onclick="modal.style.display='none'">Close</button><h2 id=name></h2><label>Title<input id=title></label><label>Description<textarea id=description rows=4></textarea></label><label>Tags<input id=tags placeholder="family, vacation"></label><label>Rating<select id=rating><option value=0>Unrated</option><option value=1>★</option><option value=2>★★</option><option value=3>★★★</option><option value=4>★★★★</option><option value=5>★★★★★</option></select></label><label>Capture year<input id=captureYear type=number min=1900></label><button onclick=save()>Save metadata</button><h3>Detected faces</h3><div id=faces class=faces></div></div></div></div>
+<script>const token='__TOKEN__';let current=null,identities=[],offset=0;async function api(u,o){let r=await fetch(u,o);if(!r.ok)throw Error(await r.text());return r.json()}async function post(u,d){let x=await api(u,{method:'POST',headers:{'Content-Type':'application/json','X-Gallery-Token':token},body:JSON.stringify(d)});if(x.message)alert(x.message);return x}async function people(){identities=await api('/api/identities');for(let p of identities){let o=document.createElement('option');o.value=p.id;o.textContent=p.name;person.append(o)}}async function load(reset=true){if(reset){offset=0;grid.innerHTML=''}let p=new URLSearchParams({q:q.value,identity_id:person.value,year:year.value,limit:100,offset});let a=await api('/api/photos?'+p);offset+=a.length;more.style.display=a.length<100?'none':'';for(let x of a){let c=document.createElement('article');c.className='card';c.innerHTML=`<img loading=lazy src="/media?id=${x.id}&thumb=1"><div class=info><b>${esc(x.title||x.name)}</b><div class=muted>${x.year||'Unknown year'} · ${x.identified_count}/${x.face_count} faces</div><div class=stars>${'★'.repeat(x.rating)}</div></div>`;c.onclick=()=>openPhoto(x.id);grid.append(c)}}async function openPhoto(id){current=await api('/api/photo?id='+id);full.src='/media?id='+id;name.textContent=current.name;title.value=current.title||'';description.value=current.description||'';tags.value=current.tags||'';rating.value=current.rating||0;captureYear.value=current.year||'';faces.innerHTML=(current.faces||[]).map(f=>`<div>${esc(f.name||(f.unknown?'Unknown person':'Unprocessed'))}${f.art?' · artwork':''}${f.estimated_age!=null?' · age '+f.estimated_age:''}<br><select onchange="assignFace(${f.id},this.value)"><option value="">Reassign…</option>${identities.map(p=>`<option value="${p.id}">${esc(p.name)}</option>`).join('')}</select></div>`).join('');modal.style.display='block'}async function assignFace(face,id){if(!id)return;await post('/api/face',{face_id:face,identity_id:+id});await openPhoto(current.id)}async function save(){await post('/api/photo',{id:current.id,title:title.value,description:description.value,tags:tags.value,rating:+rating.value,capture_year:captureYear.value?+captureYear.value:null});modal.style.display='none';load()}function esc(s){let d=document.createElement('div');d.textContent=s;return d.innerHTML}people().then(load);</script></body></html>'''
+
+
+class GalleryHandler(BaseHTTPRequestHandler):
+    token = secrets.token_urlsafe(24)
+
+    def log_message(self, format: str, *args: object) -> None:
+        return
+
+    def _json(self, value: object, status: int = 200) -> None:
+        data = json.dumps(value).encode()
+        self.send_response(status)
+        self.send_header("Content-Type", "application/json; charset=utf-8")
+        self.send_header("Content-Length", str(len(data)))
+        self.send_header("Cache-Control", "no-store")
+        self.end_headers()
+        self.wfile.write(data)
+
+    def _catalog(self) -> FaceCatalog:
+        return FaceCatalog(default_catalog_path())
+
+    def do_GET(self) -> None:
+        parsed = urlparse(self.path)
+        query = parse_qs(parsed.query)
+        if parsed.path == "/":
+            data = PAGE.replace("__TOKEN__", self.token).encode()
+            self.send_response(200); self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Content-Length", str(len(data))); self.end_headers(); self.wfile.write(data); return
+        catalog = self._catalog()
+        try:
+            if parsed.path == "/api/photos":
+                identity = query.get("identity_id", [""])[0]
+                year = query.get("year", [""])[0]
+                self._json(catalog.gallery_photos(
+                    query.get("q", [""])[0], int(identity) if identity else None,
+                    int(year) if year else None, int(query.get("limit", ["100"])[0]),
+                    int(query.get("offset", ["0"])[0]),
+                ))
+            elif parsed.path == "/api/photo":
+                photo = catalog.gallery_photo(int(query["id"][0]))
+                self._json(photo if photo else {"error": "not found"}, 200 if photo else 404)
+            elif parsed.path == "/api/identities":
+                self._json([{"id": x.identity_id, "name": x.name, "birth_year": x.birth_year} for x in catalog.identities()])
+            elif parsed.path == "/media":
+                path = catalog.image_path(int(query["id"][0]))
+                if path is None: self.send_error(404); return
+                with Image.open(path) as source:
+                    image = ImageOps.exif_transpose(source).convert("RGB")
+                    if query.get("thumb") == ["1"]: image.thumbnail((500, 360), Image.Resampling.LANCZOS)
+                    output = io.BytesIO(); image.save(output, "JPEG", quality=88); data = output.getvalue()
+                self.send_response(200); self.send_header("Content-Type", "image/jpeg")
+                self.send_header("Content-Length", str(len(data))); self.send_header("Cache-Control", "private, max-age=3600")
+                self.end_headers(); self.wfile.write(data)
+            else: self.send_error(404)
+        except (ValueError, KeyError) as exc: self._json({"error": str(exc)}, 400)
+        finally: catalog.close()
+
+    def do_POST(self) -> None:
+        if self.headers.get("X-Gallery-Token") != self.token:
+            self._json({"error": "invalid request token"}, 403); return
+        try:
+            length = min(int(self.headers.get("Content-Length", "0")), 1_000_000)
+            body = json.loads(self.rfile.read(length) or b"{}")
+            if self.path == "/api/photo":
+                catalog = self._catalog()
+                try:
+                    catalog.update_gallery_metadata(int(body["id"]), str(body.get("title", "")), str(body.get("description", "")), str(body.get("tags", "")), int(body.get("rating", 0)), body.get("capture_year"))
+                finally: catalog.close()
+                self._json({"ok": True})
+            elif self.path == "/api/face":
+                catalog = self._catalog()
+                try: catalog.assign_face(int(body["face_id"]), int(body["identity_id"]))
+                finally: catalog.close()
+                self._json({"ok": True})
+            elif self.path == "/api/scan":
+                subprocess.run(["schtasks", "/Run", "/TN", "Face Photo Finder Background Catalog"], check=True, creationflags=subprocess.CREATE_NO_WINDOW)
+                self._json({"ok": True, "message": "Background catalog scan started."})
+            elif self.path == "/api/open-desktop":
+                subprocess.Popen([sys.executable, str(APP_ROOT / "run.py")], cwd=APP_ROOT, creationflags=subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP)
+                self._json({"ok": True})
+            else: self._json({"error": "not found"}, 404)
+        except Exception as exc: self._json({"error": str(exc)}, 400)
+
+
+def main(open_browser: bool = False) -> None:
+    server = ThreadingHTTPServer((HOST, PORT), GalleryHandler)
+    if open_browser: webbrowser.open(f"http://{HOST}:{PORT}")
+    server.serve_forever()
+
+
+if __name__ == "__main__":
+    main("--open" in sys.argv)
