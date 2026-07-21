@@ -761,6 +761,15 @@ class FaceCatalog:
                 [(album_id, image_id, timestamp) for album_id in selected],
             )
 
+    def remove_photo_from_album(self, album_id: int, image_id: int) -> bool:
+        """Remove one album membership without deleting the photo or its other memberships."""
+        with self.connection:
+            cursor = self.connection.execute(
+                "DELETE FROM album_photos WHERE album_id = ? AND image_id = ?",
+                (album_id, image_id),
+            )
+        return cursor.rowcount == 1
+
     def album_suggestions(self, minimum_photos: int = 10) -> list[dict[str, object]]:
         rows = self.connection.execute(
             """SELECT substr(images.capture_date, 1, 10), COUNT(*)

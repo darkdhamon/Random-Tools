@@ -393,6 +393,12 @@ class CatalogTests(unittest.TestCase):
                 [item["name"] for item in catalog.gallery_photo(image_ids[0])["albums"]],  # type: ignore[index]
                 ["Favorites", "Independence Day"],
             )
+            self.assertTrue(catalog.remove_photo_from_album(first_album, image_ids[0]))
+            self.assertFalse(catalog.remove_photo_from_album(first_album, image_ids[0]))
+            self.assertEqual(
+                [item["name"] for item in catalog.gallery_photo(image_ids[0])["albums"]],  # type: ignore[index]
+                ["Favorites"],
+            )
 
             catalog.dismiss_album_suggestion("2026-07-04")
             self.assertEqual(catalog.album_suggestions(), [])
