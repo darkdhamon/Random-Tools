@@ -89,6 +89,8 @@ class WebGalleryUiTests(unittest.TestCase):
         self.assertIn('addAlbumRecommendations', PAGE)
         self.assertIn("post('/api/add-album-recommendations'", PAGE)
         self.assertIn('id=identitySort', PAGE)
+        self.assertIn('.identity-view{display:none;padding:22px;width:100%;max-width:none', PAGE)
+        self.assertIn('.identity-table-wrap{width:100%;box-sizing:border-box', PAGE)
         self.assertIn("identitySort.value === 'name'", PAGE)
         self.assertIn("identitySort.value === 'photo_count'", PAGE)
         self.assertIn("right.last_seen||''", PAGE)
