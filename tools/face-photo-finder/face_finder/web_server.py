@@ -3,6 +3,7 @@ from __future__ import annotations
 import io
 import hashlib
 import json
+import mimetypes
 import os
 import secrets
 import subprocess
@@ -15,6 +16,7 @@ from urllib.parse import parse_qs, urlparse
 from PIL import Image, ImageFilter, ImageOps
 
 from .catalog import FaceCatalog, default_catalog_path
+from .scanner import VIDEO_EXTENSIONS
 
 HOST = "127.0.0.1"
 PORT = 8765
@@ -23,6 +25,10 @@ PICTURES_ROOT = Path(os.environ.get("OneDrive", Path.home() / "OneDrive")) / "Pi
 GENERAL_ARCHIVE = PICTURES_ROOT / "Hidden Pictures" / "GeneralArchive.zip"
 THUMBNAIL_CACHE_VERSION = 1
 THUMBNAIL_CACHE_ROOT = default_catalog_path().parent / "thumbnail-cache"
+
+
+def is_video_path(path: Path) -> bool:
+    return path.suffix.casefold() in VIDEO_EXTENSIONS
 
 
 def media_bytes(
@@ -43,16 +49,29 @@ def media_bytes(
         except FileNotFoundError:
             pass
 
-    with Image.open(path) as source:
-        image = ImageOps.exif_transpose(source).convert("RGB")
+    if is_video_path(path):
+        command = [
+            "ffmpeg", "-v", "error", "-ss", "1", "-i", str(path), "-frames:v", "1",
+            "-vf", "scale=500:-2:force_original_aspect_ratio=decrease", "-f", "image2pipe",
+            "-vcodec", "mjpeg", "pipe:1",
+        ]
+        result = subprocess.run(command, capture_output=True, timeout=30, check=False)
+        if not result.stdout:
+            image = Image.new("RGB", (500, 281), "#172226")
+        else:
+            image = Image.open(io.BytesIO(result.stdout)).convert("RGB")
+    else:
+        with Image.open(path) as source:
+            image = ImageOps.exif_transpose(source).convert("RGB")
+    if not is_video_path(path):
         if thumbnail:
             image.thumbnail((500, 360), Image.Resampling.LANCZOS)
-        if privacy_blur:
-            image.thumbnail((1200, 900), Image.Resampling.LANCZOS)
-            image = image.filter(ImageFilter.GaussianBlur(radius=24))
-        output = io.BytesIO()
-        image.save(output, "JPEG", quality=88)
-        data = output.getvalue()
+    if privacy_blur:
+        image.thumbnail((1200, 900), Image.Resampling.LANCZOS)
+        image = image.filter(ImageFilter.GaussianBlur(radius=24))
+    output = io.BytesIO()
+    image.save(output, "JPEG", quality=88)
+    data = output.getvalue()
 
     if cache_path is not None:
         cache_path.parent.mkdir(parents=True, exist_ok=True)
@@ -94,6 +113,17 @@ PAGE = r'''<!doctype html><html><head><meta charset="utf-8"><meta name="viewport
 </style></head><body><header><strong>Photo Timeline</strong><input id=q placeholder="Search paths, titles, tags"><select id=person><option value="">All people</option></select><input id=year type=number placeholder="Year" min=1900 style="width:90px"><label><input id=hideNsfw type=checkbox checked onchange="load()"> Hide NSFW</label><label><input id=hideScreenshots type=checkbox checked onchange="load()"> Hide screenshots</label><label><input id=hideDocuments type=checkbox checked onchange="load()"> Hide documents</label><select id=contentFilter onchange="load()"><option value=normal>Normal browsing</option><option value=nsfw>NSFW only</option><option value=all>Include NSFW</option><option value=screenshot>Screenshots only</option><option value=document>Documents only</option></select><button onclick="load()">Search</button><button onclick="post('/api/scan',{})">Scan now</button><button onclick="post('/api/open-desktop',{})">Desktop app</button></header><main id=timeline class=timeline></main>
 <div style="text-align:center;padding:15px"><button id=more onclick="load(false)">Load more</button></div><div id=modal class=modal><div class=panel><div class=viewer><img id=full></div><div class=editor><button class=close onclick="closePhotoViewer()">Close</button><h2 id=name></h2><label>Title<input id=title></label><label>Description<textarea id=description rows=4></textarea></label><label>Tags<input id=tags placeholder="family, vacation"></label><label>Rating<select id=rating><option value=0>Unrated</option><option value=1>★</option><option value=2>★★</option><option value=3>★★★</option><option value=4>★★★★</option><option value=5>★★★★★</option></select></label><label>Capture year<input id=captureYear type=number min=1900></label><h3>Location</h3><label>Place name<input id=locationName placeholder="Home, Chicago, Grand Canyon…"></label><div class=location-row><label>Latitude<input id=latitude type=number min=-90 max=90 step=any></label><label>Longitude<input id=longitude type=number min=-180 max=180 step=any></label></div><div class=compact-map-layers><select id=photoMapStyle onchange=updateMap()><option value=hybrid>Satellite + roads</option><option value=satellite>Satellite</option><option value=road>Road map</option></select><label><input id=photoMapRoads type=checkbox checked onchange=updateMap()> Roads</label><label><input id=photoMapLabels type=checkbox checked onchange=updateMap()> Labels</label></div><div id=map class=map><div id=photoMapTiles class=geofence-tiles></div><div id=pin class=pin></div></div><a id=mapLink class=map-link target=_blank rel="noopener noreferrer">Open in OpenStreetMap</a><label>Content type<select id=mediaKindOverride><option value="">Automatic</option><option value=photo>Photo</option><option value=screenshot>Screenshot</option><option value=document>Document</option></select></label><label>NSFW classification<select id=nsfwOverride><option value="">Automatic</option><option value=0>Mark safe</option><option value=1>Mark NSFW</option></select></label><div id=nsfwScore class=muted></div><div id=saveState class=save-state></div><h3>Detected faces</h3><div id=faces class=faces></div></div></div></div>
 <script>const token='__TOKEN__';let current=null,identities=[],offset=0,saveTimer=null;async function api(u,o){let r=await fetch(u,o);if(!r.ok)throw Error(await r.text());return r.json()}async function post(u,d){let x=await api(u,{method:'POST',headers:{'Content-Type':'application/json','X-Gallery-Token':token},body:JSON.stringify(d)});if(x.message)alert(x.message);return x}async function people(){identities=await api('/api/identities');for(let p of identities){let o=document.createElement('option');o.value=p.id;o.textContent=p.name;person.append(o)}}function yearGrid(value){let label=value||'Unknown date',id='year-'+String(label).replace(/\W/g,'-'),grid=document.getElementById(id);if(!grid){let section=document.createElement('section');section.className='year-group';section.innerHTML=`<h2>${esc(String(label))}</h2><div id="${id}" class="grid"></div>`;timeline.append(section);grid=document.getElementById(id)}return grid}async function load(reset=true){if(reset){offset=0;timeline.innerHTML=''}let filter=contentFilter.value==='nsfw'?'nsfw':(contentFilter.value==='all'||!hideNsfw.checked?'all':'safe');let media=['screenshot','document'].includes(contentFilter.value)?contentFilter.value:'';let excluded=[];if(!media&&hideScreenshots.checked)excluded.push('screenshot');if(!media&&hideDocuments.checked)excluded.push('document');let p=new URLSearchParams({q:q.value,identity_id:person.value,year:year.value,nsfw:filter,media_kind:media,exclude_kinds:excluded.join(','),limit:100,offset});let a=await api('/api/photos?'+p);offset+=a.length;more.style.display=a.length<100?'none':'';for(let x of a){let c=document.createElement('article');c.className='card';c.innerHTML=`<img loading=lazy src="/media?id=${x.id}&thumb=1"><div class=info><b>${esc(x.title||x.name)}</b><div class=muted>${x.identified_count}/${x.face_count} faces · ${x.media_kind}${x.location_name?' · '+esc(x.location_name):''}${x.is_nsfw?' · NSFW':''}</div><div class=stars>${'★'.repeat(x.rating)}</div></div>`;c.onclick=()=>openPhoto(x.id);yearGrid(x.year).append(c)}}function updateMap(){let lat=parseFloat(latitude.value),lon=parseFloat(longitude.value),valid=Number.isFinite(lat)&&Number.isFinite(lon)&&lat>=-90&&lat<=90&&lon>=-180&&lon<=180;pin.style.display=valid?'block':'none';mapLink.style.display=valid?'inline-block':'none';if(valid){pin.style.left=((lon+180)/360*100)+'%';pin.style.top=((90-lat)/180*100)+'%';mapLink.href=`https://www.openstreetmap.org/?mlat=${lat}&mlon=${lon}#map=13/${lat}/${lon}`}}async function openPhoto(id){clearTimeout(saveTimer);current=await api('/api/photo?id='+id);full.src='/media?id='+id;name.textContent=current.name;title.value=current.title||'';description.value=current.description||'';tags.value=current.tags||'';rating.value=current.rating||0;captureYear.value=current.year||'';locationName.value=current.location_name||'';latitude.value=current.latitude==null?'':current.latitude;longitude.value=current.longitude==null?'':current.longitude;updateMap();mediaKindOverride.value=current.media_kind_override==null?'':current.media_kind_override;nsfwOverride.value=current.nsfw_override==null?'':current.nsfw_override;saveState.textContent='';nsfwScore.textContent=`Detected type: ${current.media_kind}. `+(current.nsfw_score==null?'Not NSFW-classified yet':`Automatic NSFW confidence: ${(current.nsfw_score*100).toFixed(1)}%`);faces.innerHTML=(current.faces||[]).map(f=>`<div>${esc(f.name||(f.unknown?'Unknown person':'Unprocessed'))}${f.art?' · artwork':''}${f.estimated_age!=null?' · age '+f.estimated_age:''}<br><select onchange="assignFace(${f.id},this.value)"><option value="">Reassign…</option>${identities.map(p=>`<option value="${p.id}">${esc(p.name)}</option>`).join('')}</select></div>`).join('');modal.style.display='block'}async function assignFace(face,id){if(!id)return;await post('/api/face',{face_id:face,identity_id:+id});saveState.textContent='Face assignment saved';await openPhoto(current.id)}function queueSave(immediate=false){if(!current)return;clearTimeout(saveTimer);updateMap();saveState.textContent='Saving…';saveTimer=setTimeout(save,immediate?0:700)}async function save(){if(!current)return;saveTimer=null;try{await post('/api/photo',{id:current.id,title:title.value,description:description.value,tags:tags.value,rating:+rating.value,capture_year:captureYear.value?+captureYear.value:null,location_name:locationName.value,latitude:latitude.value===''?null:+latitude.value,longitude:longitude.value===''?null:+longitude.value,nsfw_override:nsfwOverride.value===''?null:+nsfwOverride.value,media_kind_override:mediaKindOverride.value||null});saveState.textContent='Saved automatically';}catch(e){saveState.textContent='Save failed: '+e.message}}function esc(s){let d=document.createElement('div');d.textContent=s;return d.innerHTML}for(let id of ['title','description','tags','captureYear','locationName','latitude','longitude'])document.getElementById(id).addEventListener('input',()=>queueSave(false));for(let id of ['rating','mediaKindOverride','nsfwOverride'])document.getElementById(id).addEventListener('change',()=>queueSave(true));people().then(load);</script></body></html>'''
+
+PAGE = PAGE.replace(
+    '<option value=document>Documents only</option>',
+    '<option value=document>Documents only</option><option value=video>Videos only</option>',
+).replace(
+    '<option value=photo>Photo</option><option value=screenshot>',
+    '<option value=photo>Photo</option><option value=video>Video</option><option value=screenshot>',
+).replace(
+    "['screenshot','document'].includes(contentFilter.value)",
+    "['screenshot','document','video'].includes(contentFilter.value)",
+)
 
 PAGE = PAGE.replace(
     "</body>",
@@ -629,6 +659,8 @@ async function executeBulkAction() {
 )
 
 
+PAGE = PAGE.replace("</style>", r'''.viewer video{max-width:100%;max-height:100vh}</style>''', 1)
+
 PAGE = PAGE.replace(
     "</style>",
     r'''.face-entry,.person-tag,.pet-tag{display:grid;grid-template-columns:1fr auto;gap:7px;align-items:center}.face-assignment{grid-column:1/2;display:flex;gap:7px}.face-assignment input{margin:0!important;min-width:0;flex:1}.face-assignment button{white-space:nowrap}.face-visual-assignment .unknown-identity-picker{flex:1;min-width:0}.face-visual-assignment .unknown-identity-choices{left:auto;right:0;width:min(380px,82vw);z-index:90}.face-visual-assignment .unknown-identity-choice{grid-template-columns:48px minmax(0,1fr)}.face-entry .remove-face{grid-column:2;background:#70242a;border-color:#bd5058}.person-tag-actions,.pet-tag-actions{grid-column:2;display:flex;gap:6px}.person-tag-actions .remove-tag,.pet-tag-actions .remove-tag{background:#70242a;border-color:#bd5058}.add-person-tag,.add-pet-tag{display:flex;gap:7px;margin-top:9px;flex-wrap:wrap}.add-person-tag select{margin:0!important;flex:1}.add-pet-tag input{margin:0!important;flex:1;min-width:100px}.viewer.manual-targeting img{cursor:crosshair}.viewer.manual-targeting .face-reticle{pointer-events:none}.empty-faces{padding:8px 0;color:#aaa}</style>''',
@@ -643,7 +675,7 @@ PAGE = PAGE.replace(
     r'''<script>
 const openPhotoWithFaceTags = openPhoto;
 let pendingManualTagIdentityId = null, pendingPetTarget = null;
-openPhoto = async function(id) { pendingManualTagIdentityId = null; pendingPetTarget = null; full.parentElement.classList.remove('manual-targeting'); await openPhotoWithFaceTags(id); renderFaceTagControls(); };
+openPhoto = async function(id) { pendingManualTagIdentityId = null; pendingPetTarget = null; full.parentElement.classList.remove('manual-targeting'); await openPhotoWithFaceTags(id); const video=current.media_kind==='video';if(video&&(!current.is_nsfw||showNsfw.checked)){full.style.display='none';full.removeAttribute('src');fullVideo.style.display='block';fullVideo.src=`/media?id=${id}`}else{fullVideo.pause();fullVideo.removeAttribute('src');fullVideo.style.display='none';full.style.display='block';if(video)full.src=`/media?id=${id}&thumb=1${privacySuffix()}`} renderFaceTagControls(); };
 function assignmentBaseLabel(suggestion) { return `${suggestion.name} (#${suggestion.id})`; }
 function assignmentMatchLabel(suggestion) { return `${suggestion.same_day?'Same day · ':''}${suggestion.match_score==null?'No biometric profile':`${(suggestion.match_score*100).toFixed(1)}% match`}`; }
 function htmlAttribute(value) { return esc(value).replaceAll('"','&quot;'); }
@@ -715,6 +747,7 @@ full.addEventListener('click', async event => {
 function closePhotoViewer() {
   pendingManualTagIdentityId = null; pendingPetTarget = null;
   full.parentElement.classList.remove('manual-targeting');
+  fullVideo.pause(); fullVideo.removeAttribute('src'); fullVideo.style.display='none';
   modal.style.display = 'none';
 }
 document.addEventListener('keydown', event => {
@@ -762,7 +795,7 @@ PAGE = PAGE.replace(
 
 PAGE = PAGE.replace(
     '<div class=viewer><img id=full>',
-    '<div class=viewer><img id=full><div id=faceReticleLayer class=face-reticle-layer></div>',
+    '<div class=viewer><img id=full><video id=fullVideo controls preload=metadata style="display:none"></video><div id=faceReticleLayer class=face-reticle-layer></div>',
 ).replace(
     "</style>",
     r'''.viewer{position:relative}.face-reticle-layer{position:absolute;inset:0;pointer-events:none;display:none}.face-reticle{position:absolute;border:3px solid var(--reticle-color);box-sizing:border-box;filter:drop-shadow(0 1px 2px #000);pointer-events:auto;cursor:pointer}.face-reticle:before,.face-reticle:after{content:'';position:absolute;background:var(--reticle-color)}.face-reticle:before{width:18px;height:2px;left:50%;top:50%;transform:translate(-50%,-50%)}.face-reticle:after{width:2px;height:18px;left:50%;top:50%;transform:translate(-50%,-50%)}.face-reticle.recognized{--reticle-color:#35e287}.face-reticle.unknown{--reticle-color:#a4aeb2}.face-reticle.unprocessed{--reticle-color:#ff4f5f}.face-reticle.active{--reticle-color:#21d9ee}.face-reticle.manual-tag{--reticle-color:#ffd65a;pointer-events:none}.face-reticle.pet{--reticle-color:#b978ff;pointer-events:none}.face-reticle-label{position:absolute;left:-3px;top:-27px;max-width:220px;padding:3px 6px;background:var(--reticle-color);color:#07110d;border-radius:4px;font-weight:700;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.show-tags-button{margin:8px 0;width:100%}</style>''',
@@ -1400,6 +1433,25 @@ window.addEventListener('load',async()=>{
 )
 
 
+PAGE = PAGE.replace(
+    '<img id=albumDetailImage alt="Selected album photo">',
+    '<img id=albumDetailImage alt="Selected album photo"><video id=albumDetailVideo controls preload=metadata style="display:none"></video>',
+).replace(
+    "function closeAlbumViewer(){albumDetailDialog.classList.remove('open');albumDetailImage.removeAttribute('src')}",
+    "function closeAlbumViewer(){albumDetailDialog.classList.remove('open');albumDetailImage.removeAttribute('src');albumDetailVideo.pause();albumDetailVideo.removeAttribute('src')}",
+).replace(
+    "if(!albumDetailPhotos.length){albumDetailImage.removeAttribute('src');",
+    "if(!albumDetailPhotos.length){albumDetailImage.removeAttribute('src');albumDetailVideo.pause();albumDetailVideo.removeAttribute('src');albumDetailVideo.style.display='none';",
+).replace(
+    "const selected=albumDetailPhotos[albumDetailIndex];albumDetailImage.src=`/media?id=${selected.id}${privacySuffix()}`;albumDetailName.textContent=selected.title||selected.name;",
+    "const selected=albumDetailPhotos[albumDetailIndex],video=selected.media_kind==='video';albumDetailImage.style.display=video?'none':'block';albumDetailVideo.style.display=video?'block':'none';if(video){albumDetailImage.removeAttribute('src');albumDetailVideo.src=`/media?id=${selected.id}`}else{albumDetailVideo.pause();albumDetailVideo.removeAttribute('src');albumDetailImage.src=`/media?id=${selected.id}${privacySuffix()}`}albumDetailName.textContent=selected.title||selected.name;",
+).replace(
+    '</style>',
+    r'''.album-detail-stage video{min-height:0;max-width:100%;max-height:calc(100% - 52px)}</style>''',
+    1,
+)
+
+
 class GalleryHandler(BaseHTTPRequestHandler):
     token = secrets.token_urlsafe(24)
 
@@ -1417,6 +1469,33 @@ class GalleryHandler(BaseHTTPRequestHandler):
 
     def _catalog(self) -> FaceCatalog:
         return FaceCatalog(default_catalog_path())
+
+    def _serve_video(self, path: Path) -> None:
+        size = path.stat().st_size
+        start, end = 0, size - 1
+        range_header = self.headers.get("Range")
+        if range_header and range_header.startswith("bytes="):
+            values = range_header[6:].split("-", 1)
+            start = int(values[0] or 0)
+            end = min(int(values[1]) if values[1] else size - 1, size - 1)
+        length = max(0, end - start + 1)
+        self.send_response(206 if range_header else 200)
+        self.send_header("Content-Type", mimetypes.guess_type(path.name)[0] or "video/mp4")
+        self.send_header("Accept-Ranges", "bytes")
+        self.send_header("Content-Length", str(length))
+        if range_header:
+            self.send_header("Content-Range", f"bytes {start}-{end}/{size}")
+        self.send_header("Cache-Control", "private, max-age=3600")
+        self.end_headers()
+        with path.open("rb") as source:
+            source.seek(start)
+            remaining = length
+            while remaining:
+                chunk = source.read(min(1024 * 1024, remaining))
+                if not chunk:
+                    break
+                self.wfile.write(chunk)
+                remaining -= len(chunk)
 
     def do_GET(self) -> None:
         parsed = urlparse(self.path)
@@ -1490,6 +1569,8 @@ class GalleryHandler(BaseHTTPRequestHandler):
                 if path is None: self.send_error(404); return
                 thumbnail = query.get("thumb") == ["1"]
                 privacy_blur = query.get("privacy") == ["1"] and catalog.image_is_nsfw(image_id)
+                if is_video_path(path) and not thumbnail and not privacy_blur:
+                    self._serve_video(path); return
                 data, cache_hit = media_bytes(path, image_id, thumbnail, privacy_blur)
                 self.send_response(200); self.send_header("Content-Type", "image/jpeg")
                 self.send_header("Content-Length", str(len(data)))

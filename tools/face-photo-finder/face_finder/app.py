@@ -46,6 +46,7 @@ from .scanner import (
     best_similarity,
     build_reference_embeddings,
     image_files,
+    VIDEO_EXTENSIONS,
     read_image,
 )
 from .settings import AppSettings, load_settings, save_settings
@@ -613,6 +614,7 @@ class FaceFinderApp(tk.Tk):
             uncached_paths = [
                 path for path in files
                 if catalog.cached_image(path) is None and filename_media_kind(path) != "screenshot"
+                and path.suffix.casefold() not in VIDEO_EXTENSIONS
             ]
             self.prefetcher = DetectionPrefetcher(
                 uncached_paths,
@@ -634,6 +636,13 @@ class FaceFinderApp(tk.Tk):
                 match: MatchResult | None = None
                 try:
                     cached = catalog.cached_image(path)
+                    if path.suffix.casefold() in VIDEO_EXTENSIONS:
+                        if cached is None:
+                            cached = catalog.store_scan(path, [], [])
+                        catalog.set_media_kind(cached.image_id, "video")
+                        catalog.ensure_image_location(cached.image_id, path)
+                        self._on_progress(ScanProgress(index, len(files), path, None, None))
+                        continue
                     stored_media_kind = catalog.media_kind_for_path(path)
                     media_kind = stored_media_kind or classify_media_kind(path)
                     if cached and stored_media_kind is None:

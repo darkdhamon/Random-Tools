@@ -75,8 +75,11 @@ class ScannerUtilitiesTests(unittest.TestCase):
             nested.mkdir()
             (root / "one.JPG").touch()
             (nested / "two.png").touch()
+            (nested / "clip.mp4").touch()
             (nested / "notes.txt").touch()
-            self.assertCountEqual([item.name for item in image_files(root)], ["one.JPG", "two.png"])
+            self.assertCountEqual(
+                [item.name for item in image_files(root)], ["one.JPG", "two.png", "clip.mp4"]
+            )
 
     def test_image_files_excludes_output_tree(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

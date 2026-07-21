@@ -7,6 +7,7 @@ import numpy as np
 
 SCREENSHOT_WORDS = ("screenshot", "screen shot", "screen_capture", "screen-capture")
 DOCUMENT_WORDS = ("receipt", "document", "invoice", "statement", "paperwork", "scan_")
+VIDEO_EXTENSIONS = {".mp4", ".mov", ".m4v", ".avi", ".mkv", ".webm", ".mts", ".m2ts", ".3gp"}
 
 
 def filename_media_kind(path: Path) -> str | None:
@@ -20,6 +21,8 @@ def filename_media_kind(path: Path) -> str | None:
 
 def classify_media_kind(path: Path) -> str:
     """Classify screenshots and document-like photos with conservative local heuristics."""
+    if path.suffix.casefold() in VIDEO_EXTENSIONS:
+        return "video"
     named = filename_media_kind(path)
     if named:
         return named

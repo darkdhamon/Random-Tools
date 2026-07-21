@@ -1742,7 +1742,7 @@ class FaceCatalog:
             raise ValueError("Capture year must be between 1900 and the current year.")
         if nsfw_override not in (None, 0, 1):
             raise ValueError("NSFW override must be automatic, safe, or NSFW.")
-        if media_kind_override not in (None, "photo", "screenshot", "document"):
+        if media_kind_override not in (None, "photo", "video", "screenshot", "document"):
             raise ValueError("Content type must be automatic, photo, screenshot, or document.")
         if latitude is not None and not -90 <= latitude <= 90:
             raise ValueError("Latitude must be between -90 and 90.")
@@ -1955,7 +1955,7 @@ class FaceCatalog:
         return row[0] if row else None
 
     def set_media_kind(self, image_id: int, media_kind: str) -> None:
-        if media_kind not in ("photo", "screenshot", "document"):
+        if media_kind not in ("photo", "video", "screenshot", "document"):
             raise ValueError("Invalid content type.")
         with self.connection:
             self.connection.execute("UPDATE images SET media_kind = ? WHERE id = ?", (media_kind, image_id))

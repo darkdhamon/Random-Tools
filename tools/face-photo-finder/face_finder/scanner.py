@@ -11,6 +11,8 @@ import numpy as np
 from .art_classifier import ArtClassifier, face_context
 
 IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp", ".bmp", ".tif", ".tiff"}
+VIDEO_EXTENSIONS = {".mp4", ".mov", ".m4v", ".avi", ".mkv", ".webm", ".mts", ".m2ts", ".3gp"}
+MEDIA_EXTENSIONS = IMAGE_EXTENSIONS | VIDEO_EXTENSIONS
 DETECTION_MAX_EDGE = 1280
 MIN_PROFILE_SHARPNESS = 75.0
 
@@ -167,7 +169,7 @@ def image_files(
     excluded = [root.resolve() for root in excluded_roots]
     files: list[Path] = []
     for path in folder.rglob("*"):
-        if not path.is_file() or path.suffix.lower() not in IMAGE_EXTENSIONS:
+        if not path.is_file() or path.suffix.lower() not in MEDIA_EXTENSIONS:
             continue
         if skip_screenshots and "screenshot" in path.name.casefold():
             continue
