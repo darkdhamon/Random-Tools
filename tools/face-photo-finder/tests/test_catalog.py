@@ -228,8 +228,14 @@ class CatalogTests(unittest.TestCase):
             same_day = root / "PXL_20260713_010000_same.jpg"; same_day.touch()
             other_day = root / "PXL_20260712_010000_other.jpg"; other_day.touch()
             target = root / "PXL_20260713_020000_target.jpg"; target.touch()
-            catalog.store_scan(same_day, [np.array([0.6, 0.8], dtype=np.float32)], [same_day_id])
-            catalog.store_scan(other_day, [np.array([0.99, 0.1], dtype=np.float32)], [closest_id])
+            same_stored = catalog.store_scan(
+                same_day, [np.array([0.6, 0.8], dtype=np.float32)], [same_day_id],
+                previews=[np.frombuffer(b"same-day-preview", dtype=np.uint8)],
+            )
+            closest_stored = catalog.store_scan(
+                other_day, [np.array([0.99, 0.1], dtype=np.float32)], [closest_id],
+                previews=[np.frombuffer(b"closest-preview", dtype=np.uint8)],
+            )
             stored = catalog.store_scan(target, [np.array([1.0, 0.0], dtype=np.float32)], [None])
 
             suggestions = catalog.face_assignment_suggestions(
@@ -239,7 +245,16 @@ class CatalogTests(unittest.TestCase):
             self.assertEqual([item["id"] for item in suggestions], [same_day_id, closest_id, empty_id])
             self.assertTrue(suggestions[0]["same_day"])
             self.assertGreater(suggestions[1]["match_score"], suggestions[0]["match_score"])
+            self.assertEqual(
+                suggestions[0]["reference_face_id"],
+                catalog.faces_for_image(same_stored.image_id)[0].face_id,
+            )
+            self.assertEqual(
+                suggestions[1]["reference_face_id"],
+                catalog.faces_for_image(closest_stored.image_id)[0].face_id,
+            )
             self.assertIsNone(suggestions[2]["match_score"])
+            self.assertIsNone(suggestions[2]["reference_face_id"])
             catalog.close()
 
     def test_face_assignments_can_be_moved_and_empty_duplicate_removed(self) -> None:

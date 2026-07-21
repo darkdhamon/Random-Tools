@@ -1549,16 +1549,46 @@ class FaceCatalog:
                     (capture_day,),
                 )
             }
+        reference_records: dict[int, list[tuple[int, np.ndarray, int | None, bool]]] = {}
+        records = self.connection.execute(
+            """SELECT faces.identity_id, faces.id, faces.embedding,
+                      COALESCE(images.capture_year_override, images.capture_year),
+                      faces.profile_eligible
+               FROM faces JOIN images ON images.id = faces.image_id
+               WHERE faces.identity_id IS NOT NULL AND faces.is_art = 0
+                     AND faces.embedding IS NOT NULL AND faces.preview IS NOT NULL
+               UNION ALL
+               SELECT identity_id, -source_face_id, embedding, capture_year, profile_eligible
+               FROM retained_identity_samples
+               WHERE embedding IS NOT NULL AND preview IS NOT NULL"""
+        ).fetchall()
+        for identity_id, reference_id, blob, sample_year, eligible in records:
+            reference_records.setdefault(int(identity_id), []).append((
+                int(reference_id), np.frombuffer(blob, dtype=np.float32).copy(),
+                int(sample_year) if sample_year is not None else None, bool(eligible),
+            ))
         suggestions: list[dict[str, object]] = []
         for identity in self.identities():
-            samples = identity_embeddings_for_year(identity, capture_year)
-            if not samples:
-                samples = fallback_identity_embeddings_for_year(identity, capture_year)
-            score = max((float(np.dot(embedding, known)) for known in samples), default=-1.0)
+            candidates = [item for item in reference_records.get(identity.identity_id, []) if item[3]]
+            if not candidates:
+                candidates = [item for item in reference_records.get(identity.identity_id, []) if not item[3]]
+            dated = [item for item in candidates if item[2] is not None]
+            if capture_year is not None and dated:
+                exact = [item for item in dated if item[2] == capture_year]
+                if exact:
+                    candidates = exact
+                else:
+                    distance = min(abs(int(item[2]) - int(capture_year)) for item in dated)
+                    candidates = [item for item in dated if abs(int(item[2]) - int(capture_year)) == distance]
+            closest_reference_id, score = max(
+                ((item[0], float(np.dot(embedding, item[1]))) for item in candidates),
+                key=lambda item: item[1], default=(None, -1.0),
+            )
             suggestions.append({
                 "id": identity.identity_id, "name": identity.name,
                 "same_day": identity.identity_id in same_day_ids,
                 "match_score": None if score < 0 else max(0.0, min(1.0, score)),
+                "reference_face_id": closest_reference_id,
             })
         suggestions.sort(key=lambda item: (
             not bool(item["same_day"]),
