@@ -309,9 +309,9 @@ function renderUnidentifiedTable() {
       choices.querySelectorAll('[data-new-name]').forEach(button=>button.onclick=()=>{identityInput.value=button.dataset.newName;delete identityInput.dataset.identityId;choices.classList.remove('open')});
     }
     identityInput.oninput=()=>{delete identityInput.dataset.identityId;renderChoices();choices.classList.add('open')};
-    identityInput.onfocus=()=>{renderChoices();choices.classList.add('open')};
+    identityInput.onfocus=()=>{document.querySelectorAll('.unknown-identity-choices.open').forEach(item=>item.classList.remove('open'));renderChoices();choices.classList.add('open')};
     identityInput.onkeydown=event=>{if(event.key==='Enter'){event.preventDefault();assignUnknownCluster(group,identityInput)}else if(event.key==='Escape')choices.classList.remove('open')};
-    renderChoices(); picker.append(identityInput,choices);
+    picker.append(identityInput,choices);
     const assignButton = document.createElement('button'); assignButton.textContent = 'Add to known identity';
     assignButton.onclick = () => assignUnknownCluster(group, identityInput);
     identityCell.append(picker, assignButton);
