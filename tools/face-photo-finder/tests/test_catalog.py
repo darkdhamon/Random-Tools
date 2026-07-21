@@ -1059,6 +1059,39 @@ class CatalogTests(unittest.TestCase):
             self.assertEqual(len(catalog.unidentified_summaries()), 1)
             catalog.close()
 
+    def test_unidentified_people_rank_visual_identity_matches_with_closest_reference(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            catalog = FaceCatalog(root / "catalog.sqlite3")
+            near_id = catalog.create_identity("Near match")
+            far_id = catalog.create_identity("Far match")
+            for name, embedding, identity_id in (
+                ("near.jpg", np.array([0.98, 0.02], dtype=np.float32), near_id),
+                ("far.jpg", np.array([0.0, 1.0], dtype=np.float32), far_id),
+            ):
+                image = root / name; image.write_bytes(name.encode())
+                catalog.store_scan(
+                    image, [embedding], [identity_id],
+                    previews=[np.frombuffer(("preview-" + name).encode(), dtype=np.uint8)],
+                )
+            group_id = catalog.create_unknown_group()
+            unknown = root / "unknown.jpg"; unknown.write_bytes(b"unknown")
+            catalog.store_scan(
+                unknown, [np.array([1.0, 0.0], dtype=np.float32)], [None],
+                intentionally_unknown=[True], unknown_group_ids=[group_id],
+                previews=[np.frombuffer(b"unknown-preview", dtype=np.uint8)],
+            )
+
+            matches = catalog.unidentified_summaries()[0]["identity_matches"]
+            self.assertEqual([item["id"] for item in matches[:2]], [near_id, far_id])
+            self.assertGreater(matches[0]["match_score"], matches[1]["match_score"])
+            self.assertIsNotNone(matches[0]["reference_face_id"])
+            self.assertEqual(
+                catalog.identity_reference_preview(matches[0]["reference_face_id"]),
+                b"preview-near.jpg",
+            )
+            catalog.close()
+
     def test_gallery_metadata_can_be_saved_and_filtered(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

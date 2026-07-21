@@ -295,22 +295,42 @@ function renderUnidentifiedTable() {
     referenceCell.append(strip);
     row.insertCell().textContent = group.photo_count;
     row.insertCell().textContent = group.face_count;
-    const identityCell = row.insertCell(); const identitySelect = document.createElement('select');
-    identitySelect.innerHTML = `<option value="">Choose known identity…</option>${identities.map(item=>`<option value="${item.id}">${esc(item.name)} (#${item.id})</option>`).join('')}`;
+    const identityCell = row.insertCell();
+    const picker = document.createElement('div'); picker.className = 'unknown-identity-picker';
+    const identityInput = document.createElement('input'); identityInput.placeholder = 'Type a name or choose a match';
+    identityInput.autocomplete = 'off'; identityInput.setAttribute('aria-label', `Assign ${group.label}`);
+    const choices = document.createElement('div'); choices.className = 'unknown-identity-choices';
+    const matches = group.identity_matches || identities.map(item=>({...item,match_score:null,reference_face_id:null}));
+    function renderChoices() {
+      const query = identityInput.value.trim().toLocaleLowerCase();
+      const visible = matches.filter(item => !query || item.name.toLocaleLowerCase().includes(query) || String(item.id) === query);
+      choices.innerHTML = visible.map(item=>`<button type="button" class="unknown-identity-choice" data-id="${item.id}">${item.reference_face_id==null?'<span class="unknown-match-placeholder">?</span>':`<img loading="lazy" src="/api/identity-reference?id=${item.reference_face_id}" alt="">`}<span><strong>${esc(item.name)} (#${item.id})</strong><small>${item.match_score==null?'No biometric sample':`${(item.match_score*100).toFixed(1)}% visual match`}</small></span></button>`).join('') + (query && !matches.some(item=>item.name.toLocaleLowerCase()===query)?`<button type="button" class="unknown-identity-choice create" data-new-name="${htmlAttribute(identityInput.value.trim())}"><span class="unknown-match-placeholder">+</span><span><strong>Create “${esc(identityInput.value.trim())}”</strong><small>New identity</small></span></button>`:'');
+      choices.querySelectorAll('[data-id]').forEach(button=>button.onclick=()=>{const match=matches.find(item=>item.id===+button.dataset.id);identityInput.value=`${match.name} (#${match.id})`;identityInput.dataset.identityId=match.id;choices.classList.remove('open')});
+      choices.querySelectorAll('[data-new-name]').forEach(button=>button.onclick=()=>{identityInput.value=button.dataset.newName;delete identityInput.dataset.identityId;choices.classList.remove('open')});
+    }
+    identityInput.oninput=()=>{delete identityInput.dataset.identityId;renderChoices();choices.classList.add('open')};
+    identityInput.onfocus=()=>{renderChoices();choices.classList.add('open')};
+    identityInput.onkeydown=event=>{if(event.key==='Enter'){event.preventDefault();assignUnknownCluster(group,identityInput)}else if(event.key==='Escape')choices.classList.remove('open')};
+    renderChoices(); picker.append(identityInput,choices);
     const assignButton = document.createElement('button'); assignButton.textContent = 'Add to known identity';
-    assignButton.onclick = () => assignUnknownCluster(group, identitySelect.value);
-    identityCell.append(identitySelect, assignButton);
+    assignButton.onclick = () => assignUnknownCluster(group, identityInput);
+    identityCell.append(picker, assignButton);
     const actionCell = row.insertCell(); const viewButton = document.createElement('button');
     viewButton.textContent = 'View photos'; viewButton.onclick = () => viewUnidentifiedTimeline(group.group_ids); actionCell.append(viewButton);
     unidentifiedTableBody.append(row);
   }
   identityStatus.textContent = `${unidentifiedManagementRows.length} unidentified review clusters`;
 }
-async function assignUnknownCluster(group, identityId) {
-  if (!identityId) { identityStatus.textContent = 'Choose a known identity first.'; return; }
-  const target = identities.find(item => item.id === +identityId);
+async function assignUnknownCluster(group, identityInput) {
+  const value = identityInput.value.trim(); if (!value) { identityStatus.textContent = 'Choose or type an identity first.'; return; }
+  let target = identities.find(item => item.id === +identityInput.dataset.identityId);
+  if (!target) { const exact = identities.filter(item=>item.name.toLocaleLowerCase()===value.toLocaleLowerCase()); if(exact.length===1)target=exact[0]; }
+  if (!target) {
+    if (!confirm(`Create a new identity named "${value}" and assign all ${group.face_count} face(s) to it?`)) return;
+    const created=await post('/api/create-identity',{name:value}); await people(true); target=identities.find(item=>item.id===created.id);
+  }
   if (!confirm(`Assign all ${group.face_count} face(s) in this similar-identity cluster to ${target.name} (#${target.id})?`)) return;
-  try { await post('/api/assign-unknown-groups',{group_ids:group.group_ids,identity_id:+identityId}); await people(true); await loadIdentityTable(); identityStatus.textContent = `Added cluster to ${target.name} (#${target.id})`; }
+  try { await post('/api/assign-unknown-groups',{group_ids:group.group_ids,identity_id:target.id}); await people(true); await loadIdentityTable(); identityStatus.textContent = `Added cluster to ${target.name} (#${target.id})`; }
   catch (error) { identityStatus.textContent = 'Assignment failed: ' + error.message; }
 }
 async function saveIdentityRow(identity, nameInput, yearInput, rerender) {
@@ -832,7 +852,7 @@ PAGE = PAGE.replace(
     '<th>Anonymous group</th><th>Last seen</th><th>Appearances</th>',
 ).replace(
     '</style>',
-    r'''.reference-item{display:flex;flex:0 0 auto;width:64px}.reference-item .reference-thumb{width:64px}.reference-actions{display:flex;justify-content:center;margin-top:16px}.reference-not-face{background:#9d1c25;border-color:#ef5963;color:#fff;font-weight:700}.reference-not-face:hover{background:#c32632}</style>''',
+    r'''.reference-item{display:flex;flex:0 0 auto;width:64px}.reference-item .reference-thumb{width:64px}.reference-actions{display:flex;justify-content:center;margin-top:16px}.reference-not-face{background:#9d1c25;border-color:#ef5963;color:#fff;font-weight:700}.reference-not-face:hover{background:#c32632}.unknown-identity-picker{position:relative;display:inline-block;min-width:330px}.unknown-identity-picker>input{width:100%;box-sizing:border-box}.unknown-identity-choices{display:none;position:absolute;z-index:60;left:0;right:0;top:100%;max-height:360px;overflow:auto;background:#171d1f;border:1px solid #56757c;border-radius:0 0 7px 7px;box-shadow:0 8px 20px #000b}.unknown-identity-choices.open{display:block}.unknown-identity-choice{display:grid;grid-template-columns:48px 1fr;gap:8px;align-items:center;width:100%;padding:6px;text-align:left;border:0;border-bottom:1px solid #303b3e;border-radius:0;background:#171d1f}.unknown-identity-choice:hover,.unknown-identity-choice:focus{background:#174d58}.unknown-identity-choice img,.unknown-match-placeholder{width:46px;height:46px;object-fit:cover;border-radius:5px;background:#27363a;display:grid;place-items:center;font-size:22px}.unknown-identity-choice span:last-child{min-width:0}.unknown-identity-choice strong,.unknown-identity-choice small{display:block;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.unknown-identity-choice small{color:#8fd4dd;margin-top:3px}.unknown-identity-choice.create{background:#203b31}@media(max-width:750px){.unknown-identity-picker{min-width:220px}}</style>''',
 )
 
 PAGE = PAGE.replace(

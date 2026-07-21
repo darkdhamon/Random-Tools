@@ -2199,10 +2199,48 @@ class FaceCatalog:
             if len(group_previews) < 12 and has_preview:
                 group_previews.append(int(face_id))
         summaries = []
+        identities = self.identities()
+        identity_references: dict[int, list[tuple[int, np.ndarray]]] = {}
+        for identity_id, face_id, embedding in self.connection.execute(
+            """SELECT faces.identity_id, faces.id, faces.embedding
+               FROM faces JOIN images ON images.id = faces.image_id
+               WHERE faces.identity_id IS NOT NULL AND faces.profile_eligible = 1
+                     AND faces.is_art = 0 AND faces.embedding IS NOT NULL
+                     AND faces.preview IS NOT NULL
+               UNION ALL
+               SELECT identity_id, -source_face_id, embedding
+               FROM retained_identity_samples
+               WHERE profile_eligible = 1 AND embedding IS NOT NULL AND preview IS NOT NULL"""
+        ).fetchall():
+            identity_references.setdefault(int(identity_id), []).append(
+                (int(face_id), np.frombuffer(embedding, dtype=np.float32).copy())
+            )
         for members in clusters.values():
             members.sort(reverse=True)
             cluster_previews = [face_id for group_id in members for face_id in previews.get(group_id, [])][:12]
             distinct_photos = set().union(*(photo_ids.get(group_id, set()) for group_id in members))
+            cluster_embeddings = [
+                embedding for group_id in members for embedding in profiles.get(group_id, ())
+            ]
+            matches = []
+            for identity in identities:
+                closest_face_id, score = None, None
+                references = identity_references.get(identity.identity_id, [])
+                if cluster_embeddings and references:
+                    closest_face_id, score = max(
+                        ((face_id, float(np.dot(unknown, known)))
+                         for unknown in cluster_embeddings for face_id, known in references),
+                        key=lambda item: item[1],
+                    )
+                matches.append({
+                    "id": identity.identity_id, "name": identity.name,
+                    "match_score": score, "reference_face_id": closest_face_id,
+                })
+            matches.sort(key=lambda item: (
+                item["match_score"] is None,
+                -(float(item["match_score"]) if item["match_score"] is not None else -1.0),
+                str(item["name"]).casefold(), int(item["id"]),
+            ))
             summaries.append({
                 "id": members[0], "group_ids": members,
                 "label": (f"Unidentified person {members[0]}" if len(members) == 1
@@ -2210,6 +2248,7 @@ class FaceCatalog:
                 "face_count": sum(counts[group_id][0] for group_id in members),
                 "photo_count": len(distinct_photos), "reference_face_ids": cluster_previews,
                 "last_seen": max((last_seen[group_id] or "" for group_id in members), default="") or None,
+                "identity_matches": matches,
             })
         summaries.sort(key=lambda item: int(item["id"]), reverse=True)
         return summaries
