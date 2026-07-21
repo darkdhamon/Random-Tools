@@ -715,6 +715,7 @@ class FaceCatalog:
                 "id": album_id, "name": row[1], "photo_count": int(row[2]),
                 "capture_start": row[3], "capture_end": row[4],
                 "preview_photo_ids": previews, "people": people,
+                "recommended_photos": self.album_photo_recommendations(album_id),
             })
         return result
 
@@ -760,7 +761,7 @@ class FaceCatalog:
                 [(album_id, image_id, timestamp) for album_id in selected],
             )
 
-    def album_suggestions(self, minimum_photos: int = 21) -> list[dict[str, object]]:
+    def album_suggestions(self, minimum_photos: int = 10) -> list[dict[str, object]]:
         rows = self.connection.execute(
             """SELECT substr(images.capture_date, 1, 10), COUNT(*)
                FROM images
@@ -796,6 +797,48 @@ class FaceCatalog:
                 "nearby_albums": nearby,
             })
         return suggestions
+
+    def album_photo_recommendations(
+        self, album_id: int, nearby_days: int = 7, limit: int = 80
+    ) -> list[dict[str, object]]:
+        """Return reviewable ungrouped photos captured near an album's date range."""
+        date_range = self.connection.execute(
+            """SELECT MIN(substr(images.capture_date,1,10)),MAX(substr(images.capture_date,1,10))
+               FROM album_photos JOIN images ON images.id=album_photos.image_id
+               WHERE album_photos.album_id=? AND images.missing_since IS NULL
+                 AND length(images.capture_date)>=10""",
+            (album_id,),
+        ).fetchone()
+        if not date_range or not date_range[0] or not date_range[1]:
+            return []
+        return [
+            {"id": int(row[0]), "name": Path(row[1]).name, "capture_date": row[2]}
+            for row in self.connection.execute(
+                """SELECT images.id,images.path,substr(images.capture_date,1,10)
+                   FROM images LEFT JOIN image_metadata metadata ON metadata.image_id=images.id
+                   WHERE images.missing_since IS NULL AND length(images.capture_date)>=10
+                     AND COALESCE(metadata.media_kind_override,images.media_kind,'photo') <> 'document'
+                     AND NOT EXISTS (SELECT 1 FROM album_photos WHERE album_photos.image_id=images.id)
+                     AND julianday(substr(images.capture_date,1,10)) BETWEEN julianday(?)-? AND julianday(?)+?
+                   ORDER BY images.capture_date,images.id LIMIT ?""",
+                (date_range[0], nearby_days, date_range[1], nearby_days, limit),
+            )
+        ]
+
+    def add_album_recommendations(self, album_id: int, image_ids: list[int]) -> int:
+        """Add selected recommended photos without removing any other album memberships."""
+        selected = sorted(set(map(int, image_ids)))
+        recommended = {int(item["id"]) for item in self.album_photo_recommendations(album_id)}
+        accepted = [image_id for image_id in selected if image_id in recommended]
+        if selected and len(accepted) != len(selected):
+            raise ValueError("One or more photos are no longer recommended for this album.")
+        timestamp = datetime.now(timezone.utc).isoformat()
+        with self.connection:
+            self.connection.executemany(
+                "INSERT OR IGNORE INTO album_photos(album_id,image_id,added_at) VALUES (?,?,?)",
+                [(album_id, image_id, timestamp) for image_id in accepted],
+            )
+        return len(accepted)
 
     def create_suggested_album(self, capture_date: str, name: str) -> tuple[int, int]:
         try:

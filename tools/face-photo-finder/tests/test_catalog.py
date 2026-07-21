@@ -430,6 +430,43 @@ class CatalogTests(unittest.TestCase):
             self.assertEqual(next(item for item in catalog.albums() if item["id"] == album_id)["photo_count"], 22)
             catalog.close()
 
+    def test_album_threshold_is_ten_and_existing_album_recommends_quiet_days(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            catalog = FaceCatalog(root / "catalog.sqlite3")
+            busy_ids = []
+            for index in range(10):
+                image = root / f"busy-{index}.jpg"; image.write_bytes(str(index).encode())
+                busy_ids.append(catalog.store_scan(image, [], []).image_id)
+            trip = root / "trip.jpg"; trip.write_bytes(b"trip")
+            trip_id = catalog.store_scan(trip, [], []).image_id
+            quiet_ids = []
+            for index in range(3):
+                image = root / f"quiet-{index}.jpg"; image.write_bytes(str(index).encode())
+                quiet_ids.append(catalog.store_scan(image, [], []).image_id)
+            with catalog.connection:
+                catalog.connection.execute(
+                    "UPDATE images SET capture_date='2026-06-01' WHERE id IN (%s)" %
+                    ",".join("?" for _ in busy_ids), busy_ids,
+                )
+                catalog.connection.execute(
+                    "UPDATE images SET capture_date='2026-07-10' WHERE id=?", (trip_id,)
+                )
+                catalog.connection.execute(
+                    "UPDATE images SET capture_date='2026-07-12' WHERE id IN (%s)" %
+                    ",".join("?" for _ in quiet_ids), quiet_ids,
+                )
+            self.assertEqual(catalog.album_suggestions()[0]["photo_count"], 10)
+            album_id = catalog.create_album("Road trip")
+            catalog.set_photo_albums(trip_id, [album_id])
+            recommendations = catalog.album_photo_recommendations(album_id)
+            self.assertEqual([item["id"] for item in recommendations], quiet_ids)
+            self.assertEqual(catalog.add_album_recommendations(album_id, quiet_ids[:2]), 2)
+            self.assertEqual(
+                next(item for item in catalog.albums() if item["id"] == album_id)["photo_count"], 3
+            )
+            catalog.close()
+
     def test_bulk_album_location_only_updates_photos_without_coordinates(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
