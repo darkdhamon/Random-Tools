@@ -1353,18 +1353,29 @@ class FaceCatalog:
         parents = {int(row[0]): int(row[1]) if row[1] is not None else None
                    for row in self.connection.execute("SELECT id,parent_id FROM locations")}
         direct_by_image: dict[int, set[int]] = {}
+        visible_photo_ids = {
+            int(row[0]) for row in self.connection.execute(
+                """SELECT images.id FROM images
+                   LEFT JOIN image_metadata metadata ON metadata.image_id=images.id
+                   WHERE images.missing_since IS NULL
+                     AND COALESCE(metadata.media_kind_override,images.media_kind,'photo') <> 'document'"""
+            )
+        }
         for image_id, location_id in self.connection.execute(
             "SELECT image_id,location_id FROM photo_imported_location_matches"
         ):
-            direct_by_image.setdefault(int(image_id), set()).add(int(location_id))
+            if int(image_id) in visible_photo_ids:
+                direct_by_image.setdefault(int(image_id), set()).add(int(location_id))
         for image_id, location_id in self.connection.execute(
             "SELECT image_id,location_id FROM photo_custom_location_matches"
         ):
-            direct_by_image.setdefault(int(image_id), set()).add(int(location_id))
+            if int(image_id) in visible_photo_ids:
+                direct_by_image.setdefault(int(image_id), set()).add(int(location_id))
         for image_id, location_id in self.connection.execute(
             "SELECT image_id,location_id FROM photo_location_assignments"
         ):
-            direct_by_image.setdefault(int(image_id), set()).add(int(location_id))
+            if int(image_id) in visible_photo_ids:
+                direct_by_image.setdefault(int(image_id), set()).add(int(location_id))
         photo_ids_by_location: dict[int, list[int]] = {}
         for image_id, direct_ids in direct_by_image.items():
             for location_id in self._with_location_ancestors(direct_ids, parents):
@@ -1428,6 +1439,7 @@ class FaceCatalog:
                           CASE WHEN COALESCE(metadata.location_removed,0)=1 THEN NULL ELSE COALESCE(metadata.longitude, images.gps_longitude) END
                    FROM images LEFT JOIN image_metadata metadata ON metadata.image_id=images.id
                    WHERE images.missing_since IS NULL
+                     AND COALESCE(metadata.media_kind_override,images.media_kind,'photo') <> 'document'
                      AND COALESCE(metadata.location_removed,0)=0
                      AND COALESCE(metadata.latitude, images.gps_latitude) IS NOT NULL
                      AND COALESCE(metadata.longitude, images.gps_longitude) IS NOT NULL
@@ -1701,6 +1713,7 @@ class FaceCatalog:
         # A resized/exported copy can have its own image row even though it is the same photo.
         # Keep the privacy decision consistent across those catalog records.
         self.set_nsfw_overrides([image_id], nsfw_override)
+        self._photo_ids_by_location_cache = None
 
     def _related_nsfw_image_ids(self, image_ids: list[int]) -> list[int]:
         """Find conservative duplicate records that should share one privacy decision."""
@@ -1763,6 +1776,7 @@ class FaceCatalog:
                    ON CONFLICT(image_id) DO UPDATE SET media_kind_override=excluded.media_kind_override""",
                 [(image_id, value) for image_id in unique_ids],
             )
+        self._photo_ids_by_location_cache = None
         return len(unique_ids)
 
     def set_gallery_locations(

@@ -513,6 +513,34 @@ class CatalogTests(unittest.TestCase):
                 )
             catalog.close()
 
+    def test_documents_are_excluded_from_location_views(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            catalog = FaceCatalog(root / "catalog.sqlite3")
+            photo = root / "photo.jpg"; photo.write_bytes(b"photo")
+            document = root / "receipt.jpg"; document.write_bytes(b"document")
+            photo_id = catalog.store_scan(photo, [], []).image_id
+            document_id = catalog.store_scan(document, [], []).image_id
+            location_id = catalog.create_location("Home", "custom", 44.2, -93.8, 100)
+            catalog.set_photo_locations(photo_id, [location_id])
+            catalog.set_photo_locations(document_id, [location_id])
+            catalog.update_gallery_metadata(
+                photo_id, "", "", "", 0, None, latitude=44.2, longitude=-93.8,
+            )
+            catalog.update_gallery_metadata(
+                document_id, "", "", "", 0, None, media_kind_override="document",
+                latitude=44.2, longitude=-93.8,
+            )
+
+            summary = next(item for item in catalog.location_summaries() if item["id"] == location_id)
+            self.assertEqual(summary["photo_count"], 1)
+            self.assertEqual(summary["preview_photo_ids"], [photo_id])
+            self.assertEqual(catalog.image_ids_for_location(location_id), {photo_id})
+            self.assertEqual(catalog.photo_location_points(), [
+                {"id": photo_id, "latitude": 44.2, "longitude": -93.8}
+            ])
+            catalog.close()
+
     def test_boundary_matches_refresh_only_on_location_events(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
