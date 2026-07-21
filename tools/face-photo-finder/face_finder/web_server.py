@@ -396,7 +396,7 @@ PAGE = PAGE.replace(
     "yearGrid(x.year).append(c)}hasMore=a.length===100}finally{loading=false;if(reloadAfterLoad){reloadAfterLoad=false;load(true)}}}function updateMap()",
 ).replace(
     "people().then(load);</script>",
-    "const infiniteObserver=new IntersectionObserver(entries=>{if(entries.some(entry=>entry.isIntersecting))load(false)},{rootMargin:'600px 0px'});infiniteObserver.observe(more);people().then(load);</script>",
+    "const infiniteObserver=new IntersectionObserver(entries=>{if(timeline.style.display!=='none'&&entries.some(entry=>entry.isIntersecting))load(false)},{rootMargin:'600px 0px'});infiniteObserver.observe(more);people().then(load);</script>",
 )
 PAGE = PAGE.replace(
     "c.className='card';c.innerHTML=",
@@ -1222,6 +1222,44 @@ function toggleNsfwVisibility(){
 showNsfw.checked=localStorage.getItem('galleryShowNsfw')==='1';
 hideNsfw.checked=!showNsfw.checked;
 if(showNsfw.checked&&contentFilter.value==='normal')contentFilter.value='all';
+</script></body>''',
+    1,
+)
+
+# Primary sections are real pages. Moving between them unloads the previous page's
+# image elements instead of retaining every visited tab in one long-lived document.
+PAGE = PAGE.replace(
+    '<button id=timelineTabButton class=active onclick="showAppTab(\'timeline\')">Timeline</button>',
+    '<a id=timelineTabButton class=active href="/?page=timeline">Timeline</a>',
+).replace(
+    '<button id=identityTabButton onclick="showAppTab(\'identity\')">Identity</button>',
+    '<a id=identityTabButton href="/?page=identity">Identity</a>',
+).replace(
+    '<button id=albumTabButton onclick="showAppTab(\'albums\')">Albums</button>',
+    '<a id=albumTabButton href="/?page=albums">Albums</a>',
+).replace(
+    '<button id=locationTabButton onclick="showAppTab(\'locations\')">Locations</button>',
+    '<a id=locationTabButton href="/?page=locations">Locations</a>',
+).replace(
+    '<button id=settingsTabButton onclick="showAppTab(\'settings\')">Settings</button>',
+    '<a id=settingsTabButton href="/?page=settings">Settings</a>',
+).replace('people().then(load);', '')
+
+PAGE = PAGE.replace(
+    '</style>',
+    r'''.app-tabs a{display:inline-block;color:#eee;text-decoration:none;border:1px solid transparent;border-radius:6px;padding:8px;font-weight:700}.app-tabs a.active{background:#176679;border-color:#63d7e8}</style>''',
+    1,
+).replace(
+    '</body>',
+    r'''<script>
+const requestedAppPage=new URLSearchParams(location.search).get('page')||'timeline';
+const initialAppPage=['timeline','identity','albums','locations','settings'].includes(requestedAppPage)?requestedAppPage:'timeline';
+if(initialAppPage!=='timeline'){timeline.style.display='none';timelineMore.style.display='none';timelineHeader.style.display='none'}
+window.addEventListener('load',async()=>{
+  await people();
+  showAppTab(initialAppPage,true);
+  if(initialAppPage==='timeline')load(true);
+});
 </script></body>''',
     1,
 )
