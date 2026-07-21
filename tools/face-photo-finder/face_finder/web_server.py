@@ -1226,6 +1226,34 @@ if(showNsfw.checked&&contentFilter.value==='normal')contentFilter.value='all';
     1,
 )
 
+# Media thumbnails use data-src so merely constructing an album or location tree
+# does not start image decoding. The observer below requests them near the viewport.
+PAGE = PAGE.replace('loading=lazy src=', 'loading=lazy data-src=').replace(
+    'loading="lazy" src=', 'loading="lazy" data-src='
+).replace(
+    '</body>',
+    r'''<script>
+const deferredImageObserver=new IntersectionObserver(entries=>{
+  for(const entry of entries){
+    if(!entry.isIntersecting)continue;
+    const image=entry.target,source=image.dataset.src;
+    if(source){image.src=source;delete image.dataset.src}
+    deferredImageObserver.unobserve(image);
+  }
+},{rootMargin:'320px'});
+function observeDeferredImages(root=document){
+  if(root.matches?.('img[data-src]'))deferredImageObserver.observe(root);
+  root.querySelectorAll?.('img[data-src]').forEach(image=>deferredImageObserver.observe(image));
+}
+const deferredImageMutations=new MutationObserver(records=>{
+  for(const record of records)for(const node of record.addedNodes)if(node.nodeType===1)observeDeferredImages(node);
+});
+deferredImageMutations.observe(document.body,{childList:true,subtree:true});
+observeDeferredImages();
+</script></body>''',
+    1,
+)
+
 # Primary sections are real pages. Moving between them unloads the previous page's
 # image elements instead of retaining every visited tab in one long-lived document.
 PAGE = PAGE.replace(
