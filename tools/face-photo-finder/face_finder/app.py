@@ -779,6 +779,9 @@ class FaceFinderApp(tk.Tk):
                         forced_unknown_groups: dict[int, int] = {}
                         accepted_index_by_detected: dict[int, int] = {}
                         for detected_index, face in enumerate(detected):
+                            if catalog.is_rejected_face(path, face.bbox):
+                                review_states[detected_index] = ("not_face", "Not a face")
+                                continue
                             if face.is_art:
                                 review_states[detected_index] = (
                                     "artwork", f"Automatic {face.visual_kind}"
@@ -860,6 +863,7 @@ class FaceFinderApp(tk.Tk):
                                 )
                                 skip_unknowns = skip_unknowns or stop_asking
                                 if not_a_face:
+                                    catalog.reject_face_detection(path, face.bbox)
                                     review_states[detected_index] = ("not_face", "Not a face")
                                     continue
                                 if name:
@@ -917,6 +921,7 @@ class FaceFinderApp(tk.Tk):
                                 )
                                 skip_unknowns = skip_unknowns or stop_asking
                                 if not_a_face:
+                                    catalog.reject_face_detection(path, face.bbox)
                                     review_states[detected_index] = ("not_face", "Not a face")
                                     continue
                                 if name:

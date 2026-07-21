@@ -1074,6 +1074,22 @@ class CatalogTests(unittest.TestCase):
             self.assertFalse(catalog.image_is_nsfw(resized_id))
             catalog.close()
 
+    def test_removed_false_face_is_remembered_for_future_scans(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            image = root / "false-face.jpg"
+            image.write_bytes(b"image")
+            catalog = FaceCatalog(root / "catalog.sqlite3")
+            stored = catalog.store_scan(
+                image, [np.array([1.0, 0.0], dtype=np.float32)], [None],
+                boxes=[(100, 120, 80, 90)],
+            )
+            catalog.remove_face(catalog.faces_for_image(stored.image_id)[0].face_id)
+
+            self.assertTrue(catalog.is_rejected_face(image, (102, 121, 79, 91)))
+            self.assertFalse(catalog.is_rejected_face(image, (400, 400, 50, 50)))
+            catalog.close()
+
     def test_best_known_identity_applies_threshold(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             catalog = FaceCatalog(Path(temporary) / "catalog.sqlite3")

@@ -166,6 +166,13 @@ class FaceCatalog:
                 UNIQUE(image_id, face_index)
             );
             CREATE INDEX IF NOT EXISTS faces_identity_idx ON faces(identity_id);
+            CREATE TABLE IF NOT EXISTS rejected_face_detections (
+                image_id INTEGER NOT NULL REFERENCES images(id) ON DELETE CASCADE,
+                bbox_x INTEGER NOT NULL, bbox_y INTEGER NOT NULL,
+                bbox_width INTEGER NOT NULL, bbox_height INTEGER NOT NULL,
+                rejected_at TEXT NOT NULL,
+                PRIMARY KEY(image_id, bbox_x, bbox_y, bbox_width, bbox_height)
+            );
             CREATE TABLE IF NOT EXISTS retained_identity_samples (
                 source_face_id INTEGER PRIMARY KEY,
                 identity_id INTEGER NOT NULL REFERENCES identities(id) ON DELETE CASCADE,
@@ -2780,7 +2787,7 @@ class FaceCatalog:
         return group_id
 
     def remove_face(self, face_id: int) -> None:
-        """Mark a detector false-positive by removing it and refreshing image counts."""
+        """Persist a detector false-positive, remove it, and refresh image counts."""
         if face_id < 0:
             with self.connection:
                 self.connection.execute(
@@ -2790,11 +2797,19 @@ class FaceCatalog:
             return
         with self.connection:
             image_row = self.connection.execute(
-                "SELECT image_id, unknown_group_id FROM faces WHERE id = ?", (face_id,)
+                """SELECT image_id, unknown_group_id, bbox_x, bbox_y, bbox_width, bbox_height
+                   FROM faces WHERE id = ?""", (face_id,)
             ).fetchone()
             if not image_row:
                 return
             image_id = int(image_row[0])
+            if all(value is not None for value in image_row[2:6]):
+                self.connection.execute(
+                    """INSERT OR REPLACE INTO rejected_face_detections(
+                           image_id,bbox_x,bbox_y,bbox_width,bbox_height,rejected_at
+                       ) VALUES (?,?,?,?,?,?)""",
+                    (image_id, *map(int, image_row[2:6]), datetime.now(timezone.utc).isoformat()),
+                )
             self.connection.execute("DELETE FROM faces WHERE id = ?", (face_id,))
             self.connection.execute(
                 """UPDATE images SET
@@ -2809,6 +2824,40 @@ class FaceCatalog:
                        AND NOT EXISTS (SELECT 1 FROM faces WHERE unknown_group_id = ?)""",
                     (image_row[1], image_row[1]),
                 )
+
+    def reject_face_detection(self, path: Path, bbox: tuple[int, int, int, int]) -> None:
+        """Remember a false-positive region even when the current scan is not stored yet."""
+        resolved = path.resolve()
+        image = self.cached_image(resolved)
+        if image is None:
+            image = self.store_scan(resolved, [], [])
+        with self.connection:
+            self.connection.execute(
+                """INSERT OR REPLACE INTO rejected_face_detections(
+                       image_id,bbox_x,bbox_y,bbox_width,bbox_height,rejected_at
+                   ) VALUES (?,?,?,?,?,?)""",
+                (image.image_id, *map(int, bbox), datetime.now(timezone.utc).isoformat()),
+            )
+
+    def is_rejected_face(self, path: Path, bbox: tuple[int, int, int, int]) -> bool:
+        """Return whether a detected region overlaps a previously rejected face."""
+        rows = self.connection.execute(
+            """SELECT rejected.bbox_x,rejected.bbox_y,rejected.bbox_width,rejected.bbox_height
+               FROM rejected_face_detections rejected
+               JOIN images ON images.id=rejected.image_id
+               WHERE images.path=? AND images.missing_since IS NULL""",
+            (str(path.resolve()),),
+        ).fetchall()
+        x, y, width, height = map(int, bbox)
+        area = max(0, width) * max(0, height)
+        for old_x, old_y, old_width, old_height in rows:
+            intersection = max(0, min(x + width, old_x + old_width) - max(x, old_x)) * max(
+                0, min(y + height, old_y + old_height) - max(y, old_y)
+            )
+            union = area + old_width * old_height - intersection
+            if union > 0 and intersection / union >= 0.45:
+                return True
+        return False
 
 
 def best_known_identity(
