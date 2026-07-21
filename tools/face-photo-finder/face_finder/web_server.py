@@ -1237,7 +1237,7 @@ const deferredImageObserver=new IntersectionObserver(entries=>{
   for(const entry of entries){
     if(!entry.isIntersecting)continue;
     const image=entry.target,source=image.dataset.src;
-    if(source){image.src=source;delete image.dataset.src}
+    if(source){image.dataset.retrySource=source;image.src=source;delete image.dataset.src}
     deferredImageObserver.unobserve(image);
   }
 },{rootMargin:'320px'});
@@ -1250,6 +1250,24 @@ const deferredImageMutations=new MutationObserver(records=>{
 });
 deferredImageMutations.observe(document.body,{childList:true,subtree:true});
 observeDeferredImages();
+document.addEventListener('error',event=>{
+  const image=event.target;
+  if(!(image instanceof HTMLImageElement))return;
+  const source=image.dataset.retrySource||image.currentSrc||image.src;
+  if(!source||!source.includes('/media?'))return;
+  const attempt=Number(image.dataset.retryAttempt||0)+1;
+  if(attempt>5){image.classList.add('image-load-failed');return}
+  image.dataset.retryAttempt=String(attempt);image.dataset.retrySource=source;
+  const delay=Math.min(8000,750*2**(attempt-1));
+  setTimeout(()=>{
+    if(!image.isConnected)return;
+    const retryUrl=new URL(source,location.href);retryUrl.searchParams.set('_retry',String(Date.now()));
+    image.src=retryUrl.href;
+  },delay);
+},true);
+document.addEventListener('load',event=>{
+  if(event.target instanceof HTMLImageElement)delete event.target.dataset.retryAttempt;
+},true);
 </script></body>''',
     1,
 )
