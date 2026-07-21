@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import io
+import hashlib
 import json
 import os
 import secrets
@@ -20,6 +21,48 @@ PORT = 8765
 APP_ROOT = Path(__file__).resolve().parents[1]
 PICTURES_ROOT = Path(os.environ.get("OneDrive", Path.home() / "OneDrive")) / "Pictures"
 GENERAL_ARCHIVE = PICTURES_ROOT / "Hidden Pictures" / "GeneralArchive.zip"
+THUMBNAIL_CACHE_VERSION = 1
+THUMBNAIL_CACHE_ROOT = default_catalog_path().parent / "thumbnail-cache"
+
+
+def media_bytes(
+    path: Path, image_id: int, thumbnail: bool, privacy_blur: bool,
+    cache_root: Path = THUMBNAIL_CACHE_ROOT,
+) -> tuple[bytes, bool]:
+    """Render media, persistently caching source-versioned thumbnail variants."""
+    cache_path: Path | None = None
+    if thumbnail:
+        stat = path.stat()
+        cache_key = hashlib.sha256(
+            f"{THUMBNAIL_CACHE_VERSION}|{image_id}|{path.resolve()}|{stat.st_size}|"
+            f"{stat.st_mtime_ns}|{'blur' if privacy_blur else 'normal'}".encode()
+        ).hexdigest()
+        cache_path = cache_root / cache_key[:2] / f"{cache_key}.jpg"
+        try:
+            return cache_path.read_bytes(), True
+        except FileNotFoundError:
+            pass
+
+    with Image.open(path) as source:
+        image = ImageOps.exif_transpose(source).convert("RGB")
+        if thumbnail:
+            image.thumbnail((500, 360), Image.Resampling.LANCZOS)
+        if privacy_blur:
+            image.thumbnail((1200, 900), Image.Resampling.LANCZOS)
+            image = image.filter(ImageFilter.GaussianBlur(radius=24))
+        output = io.BytesIO()
+        image.save(output, "JPEG", quality=88)
+        data = output.getvalue()
+
+    if cache_path is not None:
+        cache_path.parent.mkdir(parents=True, exist_ok=True)
+        temporary = cache_path.with_name(f".{cache_path.name}.{secrets.token_hex(6)}.tmp")
+        try:
+            temporary.write_bytes(data)
+            os.replace(temporary, cache_path)
+        finally:
+            temporary.unlink(missing_ok=True)
+    return data, False
 
 
 def archive_path_for_name(value: object = None) -> Path:
@@ -1399,15 +1442,12 @@ class GalleryHandler(BaseHTTPRequestHandler):
                 image_id = int(query["id"][0])
                 path = catalog.image_path(image_id)
                 if path is None: self.send_error(404); return
-                with Image.open(path) as source:
-                    image = ImageOps.exif_transpose(source).convert("RGB")
-                    if query.get("thumb") == ["1"]: image.thumbnail((500, 360), Image.Resampling.LANCZOS)
-                    if query.get("privacy") == ["1"] and catalog.image_is_nsfw(image_id):
-                        image.thumbnail((1200, 900), Image.Resampling.LANCZOS)
-                        image = image.filter(ImageFilter.GaussianBlur(radius=24))
-                    output = io.BytesIO(); image.save(output, "JPEG", quality=88); data = output.getvalue()
+                thumbnail = query.get("thumb") == ["1"]
+                privacy_blur = query.get("privacy") == ["1"] and catalog.image_is_nsfw(image_id)
+                data, cache_hit = media_bytes(path, image_id, thumbnail, privacy_blur)
                 self.send_response(200); self.send_header("Content-Type", "image/jpeg")
                 self.send_header("Content-Length", str(len(data)))
+                self.send_header("X-Thumbnail-Cache", "HIT" if cache_hit else "MISS")
                 self.send_header(
                     "Cache-Control",
                     "private, no-store" if query.get("privacy") == ["1"] else "private, max-age=3600",
