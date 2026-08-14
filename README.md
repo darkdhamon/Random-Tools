@@ -32,7 +32,7 @@ Shared documentation and reusable assets belong in `docs/` and `shared/` respect
 
 ## Tool index
 
-No tools have been added yet.
+- [OCR PDF](tools/ocr-pdf/README.md) - turn scanned PDFs or ordered image files into searchable PDFs using local OCR.
 
 ## Contributing
 
