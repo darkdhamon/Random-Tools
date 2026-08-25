@@ -1,0 +1,2 @@
+ocrmypdf>=16,<18
+Pillow>=10,<12
