@@ -32,6 +32,7 @@ Shared documentation and reusable assets belong in `docs/` and `shared/` respect
 
 ## Tool index
 
+- [Notification Audio](tools/notification-audio/README.md) - dismissible Windows desktop audio alerts, queued notifications and audio-device configuration.
 - [OCR PDF](tools/ocr-pdf/README.md) - turn scanned PDFs or ordered image files into searchable PDFs using local OCR.
 - [Face Photo Finder](tools/face-photo-finder/README.md) — recursively find photos likely to contain a person shown in reference images, with all processing performed locally.
 

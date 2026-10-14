@@ -1,0 +1,9 @@
+Alert Queue/
+Sync Calibration Recordings/
+AudioDeviceConfig.json
+AudioDeviceDelays.json
+*.pid
+*.log
+*.tmp
+bin/
+obj/
